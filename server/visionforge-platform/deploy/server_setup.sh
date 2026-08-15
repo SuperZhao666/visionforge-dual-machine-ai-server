@@ -407,7 +407,7 @@ require_command systemd-analyze
 require_directory "${PROJECT_ROOT}"
 require_directory "${PROJECT_ROOT}/app"
 require_directory "${PROJECT_ROOT}/app/static"
-require_file "${PROJECT_ROOT}/requirements.txt"
+require_file "${PROJECT_ROOT}/requirements.lock"
 require_file "${PROJECT_ROOT}/venv/bin/pip"
 require_file "${PROJECT_ROOT}/venv/bin/python"
 require_file "${PROJECT_ROOT}/deploy/create_single_server_env.py"
@@ -425,7 +425,7 @@ verify_runtime_group_access
 cd "${PROJECT_ROOT}"
 
 echo "=== Install Python deps ==="
-run_as_user "${DEPLOY_USER}" venv/bin/pip install -r requirements.txt -q
+run_as_user "${DEPLOY_USER}" venv/bin/pip install --require-hashes -r requirements.lock -q
 echo "PIP OK"
 
 echo "=== Configure .env ==="
