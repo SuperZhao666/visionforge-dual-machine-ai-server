@@ -63,7 +63,6 @@ jobs:
             echo 'ENVIRONMENT=test'
             echo 'SITE_URL=http://127.0.0.1:8000'
             echo 'COOKIE_SECURE=0'
-            printf 'SECRET_KEY=%s\n' "$(python -c 'import secrets; print(secrets.token_hex(32))')"
             printf 'DATABASE_PATH=%s/visionforge-platform-test.db\n' "${RUNNER_TEMP}"
           } >> "${GITHUB_ENV}"
 
@@ -72,6 +71,7 @@ jobs:
 
       - name: Compile and import the Platform
         run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
           python -m compileall -q app deploy
           python -c "from app.main import app; assert app.title == 'VisionForge Platform'; print('platform_import=ok')"
 
@@ -80,6 +80,7 @@ jobs:
 
       - name: Run startup and HTTP smoke
         run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
           python - <<'PY'
           from fastapi.testclient import TestClient
 
@@ -92,7 +93,9 @@ jobs:
           PY
 
       - name: Run Platform tests
-        run: python -m pytest -q tests
+        run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          python -m pytest -q tests
 
   sidecar:
     name: Sidecar tests and security negatives
@@ -125,7 +128,7 @@ jobs:
       - name: Configure the Release build
         shell: pwsh
         run: |
-          cmake -S dual_machine_runtime -B build/dual_machine_runtime -G 'Visual Studio 17 2022' -A x64 -DVFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY=OFF
+          cmake -S dual_machine_runtime -B build/dual_machine_runtime -G 'Visual Studio 17 2022' -A x64 -DVFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY=OFF -DVFDUAL_POWERSHELL_EXECUTABLE=pwsh
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build the Host and test targets
