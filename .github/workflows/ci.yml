@@ -1,0 +1,228 @@
+name: VisionForge CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visionforge-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-metadata:
+    name: Record commit and lock evidence
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Record immutable CI inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-metadata
+          printf 'commit=%s\n' "${GITHUB_SHA}" > ci-metadata/build-inputs.txt
+          sha256sum \
+            server/visionforge-platform/requirements.lock \
+            server/visionforge-platform/requirements-dev.lock \
+            > ci-metadata/lock-sha256.txt
+
+      - name: Upload CI evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: visionforge-ci-inputs-${{ github.sha }}
+          path: ci-metadata/
+          if-no-files-found: error
+
+  platform:
+    name: Platform tests and startup smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/visionforge-platform
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure an ephemeral test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'ENVIRONMENT=test'
+            echo 'SITE_URL=http://127.0.0.1:8000'
+            echo 'COOKIE_SECURE=0'
+            printf 'DATABASE_PATH=%s/visionforge-platform-test.db\n' "${RUNNER_TEMP}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Install the locked development environment
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Compile and import the Platform
+        run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          python -m compileall -q app deploy
+          python -c "from app.main import app; assert app.title == 'VisionForge Platform'; print('platform_import=ok')"
+
+      - name: Run read-only retention smoke
+        run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          python deploy/purge_log_storage.py --smoke-check
+
+      - name: Run startup and HTTP smoke
+        run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+
+          from app.main import app
+
+          with TestClient(app) as client:
+              response = client.get("/")
+              assert response.status_code < 500, response.text[:500]
+              print(f"platform_http_smoke={response.status_code}")
+          PY
+
+      - name: Run Platform tests
+        run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          python -m pytest -q tests
+
+  sidecar:
+    name: Sidecar tests and security negatives
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/visionforge-platform
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the locked development environment
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Run Sidecar tests
+        run: python -m pytest -q dual_machine_service/tests
+
+  host:
+    name: Windows Host CMake build and unit tests
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure the Release build
+        shell: pwsh
+        run: |
+          cmake -S dual_machine_runtime -B build/dual_machine_runtime -G 'Visual Studio 17 2022' -A x64 -DVFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY=OFF -DVFDUAL_POWERSHELL_EXECUTABLE=pwsh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build the Host and test targets
+        shell: pwsh
+        run: |
+          cmake --build build/dual_machine_runtime --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build/dual_machine_runtime -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  host-formal-release:
+    name: Host formal release gate (blocked until security review)
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Prove the incomplete formal gate remains blocking
+        shell: pwsh
+        run: |
+          $log = (& cmake -S dual_machine_runtime -B build/dual_machine_formal -G 'Visual Studio 17 2022' -A x64 -DVFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY=ON 2>&1 | Out-String)
+          $exitCode = $LASTEXITCODE
+          $log
+          if ($exitCode -eq 0) {
+            Write-Error 'Formal security gate unexpectedly accepted an incomplete capability.'
+            exit 1
+          }
+          if ($log -notmatch 'Formal secure data plane is not implemented') {
+            Write-Error 'Formal build failed without the expected fail-closed reason.'
+            exit 1
+          }
+          Write-Output 'VFDUAL_FORMAL_RELEASE_STATUS=BLOCKED'
+          exit 1
+
+  android-public:
+    name: Android public wrapper, lint, unit, and gate checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android_inference_benchmark
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Verify Gradle wrapper and run public checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace :app:check
+
+  private-artifact-boundary:
+    name: Private artifact trust boundary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject untrusted fork execution
+        shell: bash
+        env:
+          TRUSTED_SOURCE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "${TRUSTED_SOURCE}" != "true" ]]; then
+            echo '::error::Private QNN/model checks require a same-repository PR or a protected branch run.'
+            exit 1
+          fi
+          echo 'private_artifact_source=trusted'
+
+  android-private-artifacts:
+    name: Android private QNN/model gate
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, visionforge-private-artifacts]
+    defaults:
+      run:
+        working-directory: android_inference_benchmark
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Require the protected private artifact workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${QNN_SDK_ROOT:-}" || ! -d "${QNN_SDK_ROOT}" ]]; then
+            echo '::error::QNN_SDK_ROOT is missing on the protected private-artifact runner.'
+            exit 1
+          fi
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug \
+            -PqnnSdkRoot="${QNN_SDK_ROOT}"
