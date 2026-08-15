@@ -76,7 +76,9 @@ jobs:
           python -c "from app.main import app; assert app.title == 'VisionForge Platform'; print('platform_import=ok')"
 
       - name: Run read-only retention smoke
-        run: python deploy/purge_log_storage.py --smoke-check
+        run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          python deploy/purge_log_storage.py --smoke-check
 
       - name: Run startup and HTTP smoke
         run: |
