@@ -1,0 +1,48 @@
+#include "streamer_ui_resources.h"
+
+IDI_VF_APP       ICON "@VFDUAL_HOST_ASSET_ROOT@/app.ico"
+IDI_VF_DISPLAY   ICON "@VFDUAL_HOST_ASSET_ROOT@/display.ico"
+IDI_VF_ENCODER   ICON "@VFDUAL_HOST_ASSET_ROOT@/encoder.ico"
+IDI_VF_PHONE     ICON "@VFDUAL_HOST_ASSET_ROOT@/phone.ico"
+IDI_VF_LINK      ICON "@VFDUAL_HOST_ASSET_ROOT@/link.ico"
+IDI_VF_CAPTURE   ICON "@VFDUAL_HOST_ASSET_ROOT@/capture.ico"
+IDI_VF_VIDEO     ICON "@VFDUAL_HOST_ASSET_ROOT@/video.ico"
+IDI_VF_SEND      ICON "@VFDUAL_HOST_ASSET_ROOT@/send.ico"
+IDI_VF_NETWORK   ICON "@VFDUAL_HOST_ASSET_ROOT@/network.ico"
+IDI_VF_PULSE     ICON "@VFDUAL_HOST_ASSET_ROOT@/pulse.ico"
+IDI_VF_ROUTER    ICON "@VFDUAL_HOST_ASSET_ROOT@/router.ico"
+IDI_VF_PLAY      ICON "@VFDUAL_HOST_ASSET_ROOT@/play.ico"
+IDI_VF_SETTINGS  ICON "@VFDUAL_HOST_ASSET_ROOT@/settings.ico"
+IDI_VF_CHEVRON   ICON "@VFDUAL_HOST_ASSET_ROOT@/chevron.ico"
+IDI_VF_CHECK     ICON "@VFDUAL_HOST_ASSET_ROOT@/check.ico"
+IDI_VF_TRASH     ICON "@VFDUAL_HOST_ASSET_ROOT@/trash.ico"
+IDI_VF_LOCK      ICON "@VFDUAL_HOST_ASSET_ROOT@/lock.ico"
+
+1 VERSIONINFO
+ FILEVERSION @VFDUAL_VERSION_MAJOR@,@VFDUAL_VERSION_MINOR@,@VFDUAL_VERSION_PATCH@,0
+ PRODUCTVERSION @VFDUAL_VERSION_MAJOR@,@VFDUAL_VERSION_MINOR@,@VFDUAL_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "VisionForge\0"
+            VALUE "FileDescription", "VF Host\0"
+            VALUE "FileVersion", "@VFDUAL_WINDOWS_FILE_VERSION@\0"
+            VALUE "InternalName", "VFHost\0"
+            VALUE "LegalCopyright", "Copyright (C) VisionForge\0"
+            VALUE "OriginalFilename", "VFHost.exe\0"
+            VALUE "ProductName", "VisionForge Dual Machine\0"
+            VALUE "ProductVersion", "@VFDUAL_WINDOWS_FILE_VERSION@\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END

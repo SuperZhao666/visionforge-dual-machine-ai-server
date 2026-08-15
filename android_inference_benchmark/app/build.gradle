@@ -1,0 +1,2356 @@
+plugins {
+    id 'com.android.application'
+}
+
+import groovy.json.JsonSlurper
+import org.gradle.api.tasks.PathSensitivity
+
+import java.security.KeyFactory
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.interfaces.ECPublicKey
+import java.security.interfaces.RSAPublicKey
+import java.security.spec.X509EncodedKeySpec
+import java.security.cert.X509Certificate
+import java.util.Base64
+import java.util.LinkedHashSet
+import java.util.Locale
+
+def onnxRuntimeAndroidVersion = '1.27.0'
+configurations {
+    onnxRuntimeNative
+}
+dependencies {
+    implementation "com.microsoft.onnxruntime:onnxruntime-android:${onnxRuntimeAndroidVersion}"
+    onnxRuntimeNative "com.microsoft.onnxruntime:onnxruntime-android:${onnxRuntimeAndroidVersion}@aar"
+}
+def onnxRuntimeAndroidAar = configurations.onnxRuntimeNative.singleFile
+
+// The production preflight validates environment inputs. Make those exact
+// values authoritative so a user-level gradle.properties cannot silently
+// replace the certificate after preflight. Gradle properties remain a fallback
+// only for direct local development tasks.
+def releaseStoreFile = System.getenv('VISIONFORGE_ANDROID_RELEASE_STORE_FILE')
+        ?: providers.gradleProperty('visionforgeReleaseStoreFile').getOrElse('')
+def releaseStorePassword = System.getenv('VISIONFORGE_ANDROID_RELEASE_STORE_PASSWORD')
+        ?: providers.gradleProperty('visionforgeReleaseStorePassword').getOrElse('')
+def releaseKeyAlias = System.getenv('VISIONFORGE_ANDROID_RELEASE_KEY_ALIAS')
+        ?: providers.gradleProperty('visionforgeReleaseKeyAlias').getOrElse('')
+def releaseKeyPassword = System.getenv('VISIONFORGE_ANDROID_RELEASE_KEY_PASSWORD')
+        ?: providers.gradleProperty('visionforgeReleaseKeyPassword').getOrElse('')
+def hasProductionReleaseSigning = !releaseStoreFile.isBlank() && !releaseStorePassword.isBlank()
+        && !releaseKeyAlias.isBlank() && !releaseKeyPassword.isBlank()
+def allowDevelopmentReleaseSigning = providers.gradleProperty('visionforgeAllowDevelopmentSigning')
+        .getOrElse(System.getenv('VISIONFORGE_ALLOW_DEVELOPMENT_SIGNING') ?: 'false').toBoolean()
+def dualMachineTlsSpkiPins = providers.gradleProperty('visionforgeDualMachineTlsSpkiPins')
+        .getOrElse(System.getenv('VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS') ?: '')
+def dualMachineTicketPublicKeyFile = providers
+        .gradleProperty('visionforgeDualMachineTicketPublicKeyFile')
+        .getOrElse(System.getenv('VISIONFORGE_DUAL_MACHINE_TICKET_PUBLIC_KEY_FILE') ?: '')
+def dualMachinePreviousTicketPublicKeyFiles = providers
+        .gradleProperty('visionforgeDualMachinePreviousTicketPublicKeyFiles')
+        .getOrElse(System.getenv(
+                'VISIONFORGE_DUAL_MACHINE_PREVIOUS_TICKET_PUBLIC_KEY_FILES') ?: '')
+def deployedDualMachineTicketPublicKeyFile = rootProject.file(
+        '../dual_machine_runtime/production_usage_ticket_v1_public.pem')
+def canonicalDualMachineApiBaseUrl = 'https://www.visionforge.cloud'
+def androidDebugCertSha256 = '179faf0492d0b49d66bdefcc66bc51541602525a25b8af8c4e42345a770c7155'
+def productionVersionCode = 11
+def dualMachineReleaseVersionFile = rootProject.file(
+        '../dual_machine_runtime/release_version.txt')
+if (!dualMachineReleaseVersionFile.isFile()) {
+    throw new GradleException(
+            "Dual-machine release version is missing: ${dualMachineReleaseVersionFile}")
+}
+def productionVersionName = dualMachineReleaseVersionFile.text.trim()
+def previouslyReleasedVersionCode = 10
+// Flip only after the authenticated Host identity/handshake/video/probe/IDR/
+// mouse data plane and mutation/replay evidence are all implemented.
+apply from: 'formal-security-loader.gradle'
+
+def buildConfigString = { String value ->
+    '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+}
+def dualMachineSha256Hex = { byte[] value ->
+    MessageDigest.getInstance('SHA-256')
+            .digest(value)
+            .collect { String.format('%02x', it & 0xff) }
+            .join('')
+}
+def requireDualMachineTlsPins = { String configured ->
+    List<String> pins = configured
+            .split('[,;]')
+            .collect { it.trim() }
+            .findAll { !it.isEmpty() }
+    if (pins.size() < 2 || pins.size() > 4 || pins.toSet().size() != pins.size()) {
+        throw new GradleException(
+                'Release requires 2-4 distinct SHA-256 SPKI pins '
+                        + '(current plus offline backup) via '
+                        + 'VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS.')
+    }
+    pins.each { String pin ->
+        if (!(pin ==~ /sha256\/[A-Za-z0-9+\/]{43}=/)) {
+            throw new GradleException("Dual-machine TLS pin is not canonical: ${pin}")
+        }
+        String encoded = pin.substring('sha256/'.length())
+        byte[] digest
+        try {
+            digest = Base64.decoder.decode(encoded)
+        } catch (IllegalArgumentException invalid) {
+            throw new GradleException("Dual-machine TLS pin is invalid: ${pin}", invalid)
+        }
+        if (digest.length != 32 || Base64.encoder.encodeToString(digest) != encoded) {
+            throw new GradleException("Dual-machine TLS pin is not canonical: ${pin}")
+        }
+    }
+    return pins
+}
+def requireDualMachineTicketPublicKeyId = { File keyFile ->
+    if (!keyFile.isFile()) {
+        throw new GradleException(
+                "Dual-machine ticket public key is missing: ${keyFile}")
+    }
+    byte[] contents = keyFile.bytes
+    if (contents.length < 256 || contents.length > 16 * 1024) {
+        throw new GradleException(
+                "Dual-machine ticket public key PEM size is invalid: ${keyFile}")
+    }
+    String text = new String(contents, java.nio.charset.StandardCharsets.US_ASCII).trim()
+    String begin = '-----BEGIN PUBLIC KEY-----'
+    String end = '-----END PUBLIC KEY-----'
+    if (!text.startsWith(begin)
+            || !text.endsWith(end)
+            || text.contains('PRIVATE KEY')
+            || text.indexOf(begin, 1) >= 0) {
+        throw new GradleException(
+                "Dual-machine ticket key must be exactly one public PEM: ${keyFile}")
+    }
+    byte[] der
+    try {
+        der = Base64.decoder.decode(
+                text.substring(begin.length(), text.length() - end.length())
+                        .replaceAll('\\s', ''))
+    } catch (IllegalArgumentException invalid) {
+        throw new GradleException(
+                "Dual-machine ticket public key PEM body is invalid: ${keyFile}",
+                invalid)
+    }
+    def publicKey = KeyFactory.getInstance('RSA')
+            .generatePublic(new X509EncodedKeySpec(der))
+    if (!(publicKey instanceof RSAPublicKey)
+            || publicKey.modulus.bitLength() < 3072
+            || !MessageDigest.isEqual(publicKey.encoded, der)) {
+        throw new GradleException(
+                "Dual-machine ticket key must be canonical RSA-3072+ SPKI: ${keyFile}")
+    }
+    return dualMachineSha256Hex(der).substring(0, 16)
+}
+def encodedPublicKeyFile = { String path ->
+    if (path == null || path.isBlank()) return ''
+    File keyFile = file(path)
+    if (!keyFile.isFile()) return ''
+    byte[] contents = keyFile.bytes
+    requireDualMachineTicketPublicKeyId(keyFile)
+    return java.util.Base64.encoder.encodeToString(contents)
+}
+def encodedTicketPublicKeys = {
+    List<String> paths = []
+    if (!dualMachineTicketPublicKeyFile.isBlank()) {
+        paths.add(dualMachineTicketPublicKeyFile)
+    }
+    dualMachinePreviousTicketPublicKeyFiles
+            .split(';')
+            .collect { it.trim() }
+            .findAll { !it.isEmpty() }
+            .each { paths.add(it) }
+    return paths.collect(encodedPublicKeyFile).findAll { !it.isEmpty() }.join(';')
+}
+def loadReleaseKeyStore = { File store ->
+    List<String> storeTypes = store.name.toLowerCase(Locale.ROOT).endsWith('.jks')
+            ? ['JKS', 'PKCS12']
+            : ['PKCS12', 'JKS']
+    Exception lastFailure = null
+    for (String storeType in storeTypes) {
+        try {
+            KeyStore keyStore = KeyStore.getInstance(storeType)
+            store.withInputStream { input ->
+                keyStore.load(input, releaseStorePassword.toCharArray())
+            }
+            return keyStore
+        } catch (Exception failure) {
+            lastFailure = failure
+        }
+    }
+    throw new GradleException("Release signing keystore could not be read: ${store}", lastFailure)
+}
+def requireProductionReleaseSigningCertificate = {
+    File store = file(releaseStoreFile)
+    if (!store.isFile()) {
+        throw new GradleException("Release signing keystore is missing: ${store}")
+    }
+    def workspacePath = rootProject.projectDir.parentFile.canonicalFile.toPath()
+    if (store.canonicalFile.toPath().startsWith(workspacePath)) {
+        throw new GradleException(
+                'Release signing keystore must stay outside the repository workspace.')
+    }
+    KeyStore keyStore = loadReleaseKeyStore(store)
+    def certificate = keyStore.getCertificate(releaseKeyAlias)
+    if (!(certificate instanceof X509Certificate)) {
+        throw new GradleException(
+                "Release signing alias does not contain an X.509 certificate: ${releaseKeyAlias}")
+    }
+    try {
+        certificate.checkValidity()
+    } catch (Exception invalidValidity) {
+        throw new GradleException(
+                'Release signing certificate is expired or not yet valid.',
+                invalidValidity)
+    }
+    String certificateSha256 = dualMachineSha256Hex(certificate.encoded)
+    String subject = certificate.subjectX500Principal.name
+    if (certificateSha256 == androidDebugCertSha256
+            || subject.contains('CN=Android Debug')) {
+        throw new GradleException(
+                'Release signing certificate is the Android Debug certificate.')
+    }
+    def signingKey = certificate.publicKey
+    boolean strongSigningKey = signingKey instanceof RSAPublicKey
+            ? signingKey.modulus.bitLength() >= 3072
+            : signingKey instanceof ECPublicKey
+                    && signingKey.params.curve.field.fieldSize >= 256
+    String signatureAlgorithm = certificate.sigAlgName.toUpperCase(Locale.ROOT)
+    if (!strongSigningKey
+            || !(signatureAlgorithm.contains('SHA256')
+            || signatureAlgorithm.contains('SHA384')
+            || signatureAlgorithm.contains('SHA512'))) {
+        throw new GradleException(
+                'Release signing certificate requires RSA-3072+ or EC-256+ with SHA-2.')
+    }
+    return certificateSha256
+}
+
+def productionReleaseSigningCertificateSha256 = hasProductionReleaseSigning
+        ? requireProductionReleaseSigningCertificate()
+        : ''
+
+android {
+    namespace = 'com.visionforge.inferencebenchmark'
+    compileSdk 35
+
+    signingConfigs {
+        release {
+            // minSdk 29 makes the legacy JAR signature unnecessary. Keep only
+            // whole-APK signing schemes that detect content-table tampering.
+            enableV1Signing = false
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = false
+            if (hasProductionReleaseSigning) {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        qa {
+            initWith debug
+            matchingFallbacks = ['debug']
+            // Keep physical-device QA installable beside the production app.
+            applicationIdSuffix '.qa'
+            versionNameSuffix '-qa'
+            resValue 'string', 'app_name', 'VF QA'
+        }
+        release {
+            minifyEnabled true
+            shrinkResources = true
+            proguardFiles(
+                    getDefaultProguardFile('proguard-android-optimize.txt'),
+                    'proguard-rules.pro')
+            buildConfigField(
+                    'boolean',
+                    'APP_SIGNING_INTEGRITY_REQUIRED',
+                    Boolean.toString(hasProductionReleaseSigning))
+            buildConfigField(
+                    'String',
+                    'EXPECTED_APP_SIGNING_CERTIFICATE_SHA256',
+                    buildConfigString(productionReleaseSigningCertificateSha256))
+            if (hasProductionReleaseSigning) {
+                signingConfig signingConfigs.release
+            } else if (allowDevelopmentReleaseSigning) {
+                signingConfig signingConfigs.debug
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId 'com.visionforge.mobile'
+        minSdk 29
+        targetSdk 35
+        versionCode productionVersionCode
+        versionName productionVersionName
+        testInstrumentationRunner(
+                'com.visionforge.inferencebenchmark.PairingIdentityTestInstrumentation')
+        buildConfigField(
+                'String',
+                'DUAL_MACHINE_API_ORIGIN',
+                buildConfigString(canonicalDualMachineApiBaseUrl))
+        buildConfigField(
+                'String',
+                'DUAL_MACHINE_PROTOCOL_CLIENT_VERSION',
+                buildConfigString('1.0.0'))
+        buildConfigField(
+                'String',
+                'DUAL_MACHINE_TLS_SPKI_PINS',
+                buildConfigString(dualMachineTlsSpkiPins))
+        buildConfigField(
+                'String',
+                'DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64',
+                buildConfigString(encodedTicketPublicKeys()))
+        buildConfigField(
+                'boolean',
+                'APP_SIGNING_INTEGRITY_REQUIRED',
+                'false')
+        buildConfigField(
+                'String',
+                'EXPECTED_APP_SIGNING_CERTIFICATE_SHA256',
+                buildConfigString(''))
+
+        externalNativeBuild {
+            cmake {
+                cppFlags '-std=c++20'
+                arguments(
+                        "-DQNN_SDK_ROOT=${providers.gradleProperty('qnnSdkRoot').getOrElse(System.getenv('QNN_SDK_ROOT') ?: '')}",
+                        "-DONNXRUNTIME_ANDROID_AAR=${onnxRuntimeAndroidAar.absolutePath.replace('\\\\', '/')}")
+            }
+        }
+
+        ndk {
+            // x86_64 exists only for the official emulator compatibility
+            // lane. Physical releases continue to use arm64-v8a.
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version = '3.22.1'
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+}
+
+tasks.register('verifyDualMachineReleaseSecurityInputs') {
+    group = 'verification'
+    description = 'Rejects release builds without rotated TLS pins and pinned public lease keys.'
+    doLast {
+        requireDualMachineTlsPins(dualMachineTlsSpkiPins)
+        List<String> keyPaths = []
+        if (!dualMachineTicketPublicKeyFile.isBlank()) {
+            keyPaths.add(dualMachineTicketPublicKeyFile)
+        }
+        keyPaths.addAll(
+                dualMachinePreviousTicketPublicKeyFiles
+                        .split(';')
+                        .collect { it.trim() }
+                        .findAll { !it.isEmpty() })
+        if (keyPaths.isEmpty() || keyPaths.size() > 3) {
+            throw new GradleException(
+                    'Release requires 1-3 pinned RS256 public ticket keys.')
+        }
+        String deployedKeyId = requireDualMachineTicketPublicKeyId(
+                deployedDualMachineTicketPublicKeyFile)
+        String primaryKeyId = requireDualMachineTicketPublicKeyId(file(keyPaths.first()))
+        if (primaryKeyId != deployedKeyId) {
+            throw new GradleException(
+                    "Primary dual-machine ticket key ${primaryKeyId} does not match the deployed production Sidecar key ${deployedKeyId}.")
+        }
+        Set<String> keyIds = new LinkedHashSet<>()
+        keyPaths.each { String keyPath ->
+            String keyId = requireDualMachineTicketPublicKeyId(file(keyPath))
+            if (!keyIds.add(keyId)) {
+                throw new GradleException(
+                        "Dual-machine ticket public key is duplicated: ${keyPath}")
+            }
+        }
+    }
+}
+
+tasks.register('verifyProductionReleaseVersion') {
+    group = 'verification'
+    description = 'Rejects prerelease labels and non-monotonic production APK versions.'
+    inputs.file(dualMachineReleaseVersionFile)
+            .withPathSensitivity(PathSensitivity.RELATIVE)
+    doLast {
+        if (productionVersionCode <= previouslyReleasedVersionCode) {
+            throw new GradleException(
+                    "Production versionCode ${productionVersionCode} must be greater than "
+                            + "the previously released code ${previouslyReleasedVersionCode}.")
+        }
+        if (!(productionVersionName ==~ /\d+\.\d+\.\d+/)) {
+            throw new GradleException(
+                    "Production versionName must be stable SemVer without a prerelease label: "
+                            + productionVersionName)
+        }
+    }
+}
+
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(
+                tasks.named('verifyDualMachineReleaseSecurityInputs'),
+                tasks.named('verifyProductionReleaseVersion'))
+    }
+}
+
+def qnnSdkRoot = providers.gradleProperty('qnnSdkRoot').getOrElse(System.getenv('QNN_SDK_ROOT') ?: '')
+def qnnRuntimeDir = file('src/main/jniLibs/arm64-v8a')
+def qnnAssetDir = file('src/main/assets/qnn')
+def qnnBaselineHtpArchitectures = ['v68', 'v69', 'v73', 'v75', 'v79']
+def readQnnSdkIdentity = { File sdkRoot ->
+    File metadata = new File(sdkRoot, 'sdk.yaml')
+    if (!metadata.isFile() || metadata.length() == 0L || metadata.length() > 128 * 1024L) {
+        throw new GradleException("QNN SDK metadata is missing or invalid: ${metadata}")
+    }
+    byte[] bytes = metadata.bytes
+    if (bytes.length >= 3
+            && (bytes[0] & 0xff) == 0xef
+            && (bytes[1] & 0xff) == 0xbb
+            && (bytes[2] & 0xff) == 0xbf) {
+        throw new GradleException("QNN SDK metadata must be UTF-8 without BOM: ${metadata}")
+    }
+    List<String> versions = []
+    List<String> buildIds = []
+    new String(bytes, java.nio.charset.StandardCharsets.UTF_8).readLines().each { String line ->
+        if (line ==~ /^version\s*:.*$/) {
+            def match = line =~ /^version\s*:\s*([0-9]+\.[0-9]+\.[0-9]+)\s*$/
+            if (!match.matches()) {
+                throw new GradleException("Invalid QNN SDK version metadata: ${metadata}")
+            }
+            versions.add(match.group(1))
+        }
+        if (line ==~ /^build_id\s*:.*$/) {
+            def match = line =~ /^build_id\s*:\s*([0-9]{12}_[0-9]+)\s*$/
+            if (!match.matches()) {
+                throw new GradleException("Invalid QNN SDK build_id metadata: ${metadata}")
+            }
+            buildIds.add(match.group(1))
+        }
+    }
+    if (versions.size() != 1 || buildIds.size() != 1) {
+        throw new GradleException(
+                "QNN SDK metadata must contain one version and one build_id: ${metadata}")
+    }
+    String buildId = buildIds.first()
+    return [
+            version: versions.first(),
+            buildId: buildId,
+            normalized: "${versions.first()}.${buildId.substring(0, 6)}"
+    ]
+}
+def requireQnnSdkIdentity = { File sdkRoot, String approvedIdentity ->
+    if (approvedIdentity == null
+            || !(approvedIdentity ==~ /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]{6}/)) {
+        throw new GradleException(
+                "Approved QNN model SDK identity is invalid: ${approvedIdentity}")
+    }
+    def currentIdentity = readQnnSdkIdentity(sdkRoot)
+    if (currentIdentity.normalized != approvedIdentity) {
+        throw new GradleException(
+                "QNN SDK/model toolchain identity mismatch: current="
+                        + "${currentIdentity.normalized} approved=${approvedIdentity}")
+    }
+    return currentIdentity
+}
+def parseQnnHtpArchitectures = { String configured ->
+    LinkedHashSet<String> parsed = new LinkedHashSet<>()
+    configured.split('[,;]').each { String value ->
+        String architecture = value.trim().toLowerCase(Locale.ROOT)
+        if (architecture.isEmpty()) return
+        if (!(architecture ==~ /v[0-9]{2,3}/) || !parsed.add(architecture)) {
+            throw new GradleException(
+                    "Invalid or duplicate QNN HTP architecture: ${architecture}")
+        }
+    }
+    if (parsed.isEmpty()) {
+        throw new GradleException('At least one QNN HTP architecture is required.')
+    }
+    return parsed.toList()
+}
+def requiredQnnHtpArchitectures = parseQnnHtpArchitectures(
+        providers.gradleProperty('requiredQnnHtpArchitectures').getOrElse(
+                System.getenv('VISIONFORGE_REQUIRED_QNN_HTP_ARCHITECTURES')
+                        ?: qnnBaselineHtpArchitectures.join(',')))
+def discoverQnnHtpArchitectures = { File sdkRoot ->
+    File androidLibraries = new File(sdkRoot, 'lib/aarch64-android')
+    if (!androidLibraries.isDirectory()) return []
+    LinkedHashSet<String> discovered = new LinkedHashSet<>()
+    File[] libraries = androidLibraries.listFiles()
+    if (libraries == null) return []
+    libraries.each { File library ->
+        def match = library.name =~ /^libQnnHtpV([0-9]{2,3})Stub\.so$/
+        if (!library.isFile() || !match.matches()) return
+        int architectureNumber = Integer.parseInt(match.group(1))
+        // QnnDevice's public online platform API supports HTP V68 and newer.
+        if (architectureNumber < 68) return
+        String architecture = "v${architectureNumber}"
+        String upper = architecture.toUpperCase(Locale.ROOT)
+        File skeleton = new File(
+                sdkRoot,
+                "lib/hexagon-${architecture}/unsigned/libQnnHtp${upper}Skel.so")
+        if (skeleton.isFile()) discovered.add(architecture)
+    }
+    return discovered.toList().sort { left, right ->
+        Integer.parseInt(left.substring(1)) <=> Integer.parseInt(right.substring(1))
+    }
+}
+def missingRequiredQnnHtpArchitectures = { List<String> required, List<String> available ->
+    required.findAll { !available.contains(it) }
+}
+def qnnHtpArchitectures = qnnSdkRoot.isBlank()
+        ? qnnBaselineHtpArchitectures
+        : discoverQnnHtpArchitectures(new File(qnnSdkRoot))
+android.defaultConfig.buildConfigField(
+        'String',
+        'QNN_HTP_ARCHITECTURES',
+        buildConfigString(qnnHtpArchitectures.join(',')))
+def ow2QnnCanonicalDir = file('../qnn_workspace/ow2_416_static_decode_w8a16')
+def ow2QnnBuildManifest = new File(ow2QnnCanonicalDir, 'build_manifest.json')
+def ow2QnnNumericContract = new File(ow2QnnCanonicalDir, 'numeric_contract.json')
+def ow2QnnReleaseManifest = new File(ow2QnnCanonicalDir, 'release_manifest.json')
+def ow2QnnCanonicalLibrary = new File(
+        ow2QnnCanonicalDir,
+        'android_model_lib/build/libow2_416_w8a16.so')
+def cs2QnnCanonicalDir = file('../qnn_workspace/cs2_vombit_416_w8a16')
+def cs2QnnBuildManifest = new File(cs2QnnCanonicalDir, 'build_manifest.json')
+def cs2QnnNumericContract = new File(cs2QnnCanonicalDir, 'numeric_contract.json')
+def cs2QnnReleaseManifest = new File(cs2QnnCanonicalDir, 'release_manifest.json')
+def cs2QnnCanonicalLibrary = new File(
+        cs2QnnCanonicalDir,
+        'android_model_lib/build/libcs2_vombit_416_v8s_w8a16.so')
+def valorantQnnCanonicalLibrary = file(
+        '../qnn_workspace/valorant_416_v11s_no_flash/'
+                + 'w8a16_android_model_lib/build/'
+                + 'libvalorant_416_v11s_no_flash_w8a16.so')
+def deltaQnnCanonicalLibrary = file(
+        '../../analysis_output/delta_416_eval_20260726/'
+                + 'qnn_416_sjz_v8s_split_w8a16/final_android_model_lib/build/'
+                + 'libdelta_416_v8s_w8a16.so')
+def packagedQnnModelLibraries = [
+        valorantQnnCanonicalLibrary,
+        ow2QnnCanonicalLibrary,
+        deltaQnnCanonicalLibrary,
+        cs2QnnCanonicalLibrary
+]
+def ow2QnnCanonicalSource = new File(ow2QnnCanonicalDir, 'source/OW2.onnx')
+def ow2QnnCanonicalSplit = new File(
+        ow2QnnCanonicalDir,
+        'model/ow2_416_static_split.onnx')
+def approvedOw2SourceSha256 = '0AE9AB4AAF752B45260345FF1CE492649385B3CC768F81D11E1E658F902AB980'
+def cs2QnnCanonicalSource = new File(
+        cs2QnnCanonicalDir,
+        'source/CS2_Vombit_v8s_416.onnx')
+def cs2QnnCanonicalSplit = new File(
+        cs2QnnCanonicalDir,
+        'model/cs2_vombit_416_split.onnx')
+def approvedCs2SourceSha256 = '4D7E9F0EA790E0A2A1BBEC16D216F2B54B1F840C20F676BFBC32655E1FFDB0A7'
+def portableModelArtifacts = [
+        [
+                asset: 'valorant-yellow-416-v11s-no-flash.onnx',
+                source: file('../../analysis_output/valorant_head_416_rescreen_20260726/'
+                        + 'phone_qnn_v11s_no_flash/valorant_416_v11s_no_flash_split.onnx'),
+                bytes: 44641316L,
+                sha256: '6BF15ED6554667C1FAD4D7240F7E5EB2AD3EE76CCDE121D0B69E8E5963F95669'
+        ],
+        [
+                asset: 'overwatch2-416-yolov5.onnx',
+                source: ow2QnnCanonicalSplit,
+                bytes: 9038527L,
+                sha256: '805C575BBF6FFEE00002BC20D4BFAF362AABD5DB9B839C457C78416C2756FBA3'
+        ],
+        [
+                asset: 'delta-force-416-v8s.onnx',
+                source: file('../../analysis_output/delta_416_eval_20260726/'
+                        + 'qnn_416_sjz_v8s_split_w8a16/sjz_delta_416_v8s_split.onnx'),
+                bytes: 44641532L,
+                sha256: 'AA560084EB4880AA748E4B32FE545C0AA37EC1FA9EBA55F3B986B3E577BD347A'
+        ],
+        [
+                asset: 'counter-strike-2-vombit-416-v8s.onnx',
+                source: cs2QnnCanonicalSplit,
+                bytes: 44653998L,
+                sha256: 'DD70F00F040421EA216C3FC913B35E9BE822F65F4C3354C41F6787F5282E0E7D'
+        ]
+]
+def generatedPortableModelAssets = layout.buildDirectory.dir(
+        'generated/portable-model-assets')
+def preparePortableModelAssetsTask = tasks.register('preparePortableModelAssets', Sync) {
+    group = 'build setup'
+    description = 'Stages hash-pinned ONNX models for NNAPI/CPU mobile fallback.'
+    portableModelArtifacts.each { artifact ->
+        inputs.file(artifact.source)
+                .withPathSensitivity(PathSensitivity.RELATIVE)
+        from(artifact.source) {
+            into('portable_models')
+            rename { artifact.asset }
+        }
+    }
+    into(generatedPortableModelAssets)
+    doFirst {
+        portableModelArtifacts.each { artifact ->
+            if (!artifact.source.isFile()
+                    || artifact.source.length() != artifact.bytes
+                    || dualMachineSha256Hex(artifact.source.bytes)
+                    .toUpperCase(Locale.ROOT) != artifact.sha256) {
+                throw new GradleException(
+                        "Portable ONNX artifact integrity mismatch: ${artifact.source}")
+            }
+        }
+    }
+}
+android.sourceSets.main.assets.srcDir(generatedPortableModelAssets)
+tasks.configureEach { task ->
+    if (task.name ==~ /merge.*Assets/
+            || task.name.contains('Lint')
+            || task.name.startsWith('lint')) {
+        task.dependsOn(preparePortableModelAssetsTask)
+    }
+}
+def expectedOw2NumericChecks = [
+        'static_coordinates_exact',
+        'static_confidences_exact',
+        'static_dynamic_decode_removed',
+        'qnn_control_confidences_not_saturated',
+        'control_top20_overlap',
+        'control_candidate_count_matches',
+        'control_candidate_set_overlap',
+        'control_confidence_error',
+        'control_candidate_coordinate_mean',
+        'control_candidate_coordinate_p95',
+        'control_candidate_coordinate_max',
+        'control_nms_target_count_matches',
+        'control_nms_target_iou',
+        'control_nms_target_center'
+]
+def expectedCs2NumericChecks = [
+        'artifact_hash_closure',
+        'source_split_outputs_exact',
+        'split_mixed_domain_output_removed',
+        'phone_htp_outputs_finite',
+        'qnn_confidences_not_saturated_per_class',
+        'candidate_counts_match',
+        'candidate_sets_match',
+        'candidate_coordinate_error_bounded',
+        'candidate_confidence_error_bounded',
+        'nms_entity_counts_match',
+        'nms_boxes_match',
+        'known_positive_all_four_classes_present',
+        'phone_htp_execution_count_bound'
+]
+def requireCs2DistributionScope = {
+        boolean productionSigning,
+        boolean integrationOnly ->
+    if (productionSigning && integrationOnly) {
+        throw new GradleException(
+                'Production-signed APK cannot package the CS2 integration-only artifact. '
+                        + 'A reviewed manifest with commercial_release_eligible=true is required.')
+    }
+    return integrationOnly ? 'device_test_only' : 'commercial_release'
+}
+def qnnArtifactSha256 = { File artifact ->
+    if (!artifact.isFile() || artifact.length() == 0L) {
+        throw new GradleException("Required QNN artifact is missing: ${artifact}")
+    }
+    dualMachineSha256Hex(artifact.bytes).toUpperCase(Locale.ROOT)
+}
+def readQnnModelSdkIdentity = { File library ->
+    if (!library.isFile() || library.length() == 0L) {
+        throw new GradleException("Required QNN model library is missing: ${library}")
+    }
+    String binary = new String(
+            library.bytes, java.nio.charset.StandardCharsets.ISO_8859_1)
+    def matcher = binary =~ /qaisw-v([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]{12}_[0-9]+)/
+    LinkedHashSet<String> identities = new LinkedHashSet<>()
+    matcher.each { match ->
+        identities.add("${match[1]}.${match[2]}")
+    }
+    if (identities.size() != 1) {
+        throw new GradleException(
+                "QNN model library must embed exactly one SDK identity: ${library}")
+    }
+    return identities.first()
+}
+def requirePackagedQnnModelSdkIdentities = { def currentIdentity ->
+    String expectedFullIdentity =
+            "${currentIdentity.version}.${currentIdentity.buildId}"
+    packagedQnnModelLibraries.each { File library ->
+        String embeddedIdentity = readQnnModelSdkIdentity(library)
+        if (embeddedIdentity != expectedFullIdentity) {
+            throw new GradleException(
+                    "QNN model library SDK identity mismatch: model=${library.name}"
+                            + " embedded=${embeddedIdentity}"
+                            + " current=${expectedFullIdentity}")
+        }
+    }
+}
+def readStrictQnnJson = { File artifact ->
+    if (!artifact.isFile() || artifact.length() == 0L) {
+        throw new GradleException("Required QNN manifest is missing: ${artifact}")
+    }
+    byte[] bytes = artifact.bytes
+    if (bytes.length >= 3
+            && (bytes[0] & 0xff) == 0xef
+            && (bytes[1] & 0xff) == 0xbb
+            && (bytes[2] & 0xff) == 0xbf) {
+        throw new GradleException("QNN manifest must be UTF-8 without BOM: ${artifact}")
+    }
+    try {
+        return new JsonSlurper().parseText(
+                new String(bytes, java.nio.charset.StandardCharsets.UTF_8))
+    } catch (Exception invalid) {
+        throw new GradleException("Invalid QNN JSON manifest: ${artifact}", invalid)
+    }
+}
+def requireApprovedOw2QnnRelease = {
+    def buildManifest = readStrictQnnJson(ow2QnnBuildManifest)
+    def numericContract = readStrictQnnJson(ow2QnnNumericContract)
+    def releaseManifest = readStrictQnnJson(ow2QnnReleaseManifest)
+    String approvedQnnSdkIdentity = buildManifest.toolchain?.qnn_sdk_version
+    if (buildManifest.schema != 'visionforge-ow2-static-w8a16-build-v1'
+            || buildManifest.build_complete != true
+            || buildManifest.release_eligible != false
+            || buildManifest.model?.token != 'overwatch2-416-yolov5'
+            || buildManifest.model?.input != [1, 3, 416, 416]
+            || buildManifest.model?.anchors != 3549
+            || buildManifest.model?.classes != 2
+            || buildManifest.model?.control_class != 0
+            || buildManifest.model?.raw_tensor != '539'
+            || approvedQnnSdkIdentity == null
+            || !(approvedQnnSdkIdentity ==~
+            /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]{6}/)
+            || buildManifest.calibration?.count != 15) {
+        throw new GradleException('OW2 QNN build manifest contract is invalid.')
+    }
+    if (numericContract.schema != 'visionforge-ow2-qnn-numeric-contract-v1'
+            || numericContract.ok != true) {
+        throw new GradleException('OW2 phone HTP numeric contract is not approved.')
+    }
+    expectedOw2NumericChecks.each { String checkName ->
+        if (numericContract.checks?.get(checkName) != true) {
+            throw new GradleException(
+                    "OW2 phone HTP numeric check is missing or false: ${checkName}")
+        }
+    }
+    if (releaseManifest.schema != 'visionforge-ow2-static-w8a16-release-v1'
+            || releaseManifest.complete != true
+            || releaseManifest.phone_htp_numeric_verified != true) {
+        throw new GradleException('OW2 QNN release manifest is incomplete.')
+    }
+
+    String sourceHash = qnnArtifactSha256(ow2QnnCanonicalSource)
+    String splitHash = qnnArtifactSha256(ow2QnnCanonicalSplit)
+    String libraryHash = qnnArtifactSha256(ow2QnnCanonicalLibrary)
+    String buildManifestHash = qnnArtifactSha256(ow2QnnBuildManifest)
+    String numericContractHash = qnnArtifactSha256(ow2QnnNumericContract)
+    if (sourceHash != approvedOw2SourceSha256
+            || buildManifest.artifacts?.source_onnx?.sha256 != sourceHash
+            || numericContract.artifacts?.source_onnx?.sha256 != sourceHash
+            || releaseManifest.source_onnx_sha256 != sourceHash
+            || buildManifest.artifacts?.split_onnx?.sha256 != splitHash
+            || numericContract.artifacts?.rewritten_onnx?.sha256 != splitHash
+            || releaseManifest.split_onnx_sha256 != splitHash
+            || buildManifest.artifacts?.android_library?.sha256 != libraryHash
+            || numericContract.artifacts?.qnn_android_model_library?.sha256 != libraryHash
+            || releaseManifest.android_library_sha256 != libraryHash
+            || releaseManifest.build_manifest_sha256 != buildManifestHash
+            || releaseManifest.numeric_contract_sha256 != numericContractHash) {
+        throw new GradleException('OW2 QNN release artifact hash closure is invalid.')
+    }
+    def currentQnnSdkIdentity = requireQnnSdkIdentity(
+            new File(qnnSdkRoot), approvedQnnSdkIdentity)
+    requirePackagedQnnModelSdkIdentities(currentQnnSdkIdentity)
+    return libraryHash
+}
+
+def requireApprovedCs2QnnIntegration = {
+    def buildManifest = readStrictQnnJson(cs2QnnBuildManifest)
+    def numericContract = readStrictQnnJson(cs2QnnNumericContract)
+    def releaseManifest = readStrictQnnJson(cs2QnnReleaseManifest)
+    String approvedQnnSdkIdentity = buildManifest.toolchain?.qnn_sdk_version
+    if (buildManifest.schema != 'visionforge-cs2-vombit-w8a16-build-v1'
+            || buildManifest.build_complete != true
+            || buildManifest.release_eligible != false
+            || buildManifest.model?.token != 'counter-strike-2-vombit-416-v8s'
+            || buildManifest.model?.input != [1, 3, 416, 416]
+            || buildManifest.model?.anchors != 3549
+            || buildManifest.model?.classes != 4
+            || buildManifest.model?.class_names !=
+            ['ct_body', 'ct_head', 't_body', 't_head']
+            || buildManifest.model?.target_pairs != [[0, 1], [2, 3]]
+            || buildManifest.model?.output_names !=
+            ['output_coordinates', 'output_confidences']
+            || buildManifest.licensing?.source_metadata_declares != 'AGPL-3.0'
+            || buildManifest.licensing?.commercial_distribution_review_required != true
+            || approvedQnnSdkIdentity == null
+            || !(approvedQnnSdkIdentity ==~
+            /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]{6}/)
+            || buildManifest.calibration?.count != 15) {
+        throw new GradleException('CS2 QNN build manifest contract is invalid.')
+    }
+    if (numericContract.schema != 'visionforge-cs2-qnn-numeric-contract-v1'
+            || numericContract.ok != true) {
+        throw new GradleException('CS2 phone HTP numeric contract is not approved.')
+    }
+    expectedCs2NumericChecks.each { String checkName ->
+        if (numericContract.checks?.get(checkName) != true) {
+            throw new GradleException(
+                    "CS2 phone HTP numeric check is missing or false: ${checkName}")
+        }
+    }
+    if (releaseManifest.schema != 'visionforge-cs2-vombit-w8a16-release-v1'
+            || releaseManifest.complete != true
+            || releaseManifest.integration_eligible != true
+            || releaseManifest.phone_htp_numeric_verified != true
+            || releaseManifest.commercial_distribution_review_required != true
+            || releaseManifest.commercial_release_eligible != false) {
+        throw new GradleException('CS2 QNN integration manifest is incomplete.')
+    }
+
+    String sourceHash = qnnArtifactSha256(cs2QnnCanonicalSource)
+    String splitHash = qnnArtifactSha256(cs2QnnCanonicalSplit)
+    String libraryHash = qnnArtifactSha256(cs2QnnCanonicalLibrary)
+    String buildManifestHash = qnnArtifactSha256(cs2QnnBuildManifest)
+    String numericContractHash = qnnArtifactSha256(cs2QnnNumericContract)
+    if (sourceHash != approvedCs2SourceSha256
+            || buildManifest.artifacts?.source_onnx?.sha256 != sourceHash
+            || numericContract.artifacts?.source_onnx?.sha256 != sourceHash
+            || releaseManifest.source_onnx_sha256 != sourceHash
+            || buildManifest.artifacts?.split_onnx?.sha256 != splitHash
+            || numericContract.artifacts?.rewritten_onnx?.sha256 != splitHash
+            || releaseManifest.split_onnx_sha256 != splitHash
+            || buildManifest.artifacts?.android_library?.sha256 != libraryHash
+            || numericContract.artifacts?.qnn_android_model_library?.sha256 != libraryHash
+            || releaseManifest.android_library_sha256 != libraryHash
+            || releaseManifest.build_manifest_sha256 != buildManifestHash
+            || releaseManifest.numeric_contract_sha256 != numericContractHash) {
+        throw new GradleException('CS2 QNN integration artifact hash closure is invalid.')
+    }
+    boolean integrationOnly = buildManifest.release_eligible != true
+            || releaseManifest.commercial_release_eligible != true
+    String distributionScope = requireCs2DistributionScope(
+            hasProductionReleaseSigning, integrationOnly)
+    requireQnnSdkIdentity(new File(qnnSdkRoot), approvedQnnSdkIdentity)
+    logger.lifecycle(
+            "CS2_QNN_DISTRIBUTION_BOUNDARY_OK scope=${distributionScope}")
+    return libraryHash
+}
+
+// A model archive may deduplicate equal files with NTFS hard links. Copying a
+// source onto a hard-linked staging target truncates the shared inode before it
+// can be read. Detach only the staging directory entry; the verified source is
+// left untouched and Sync recreates the target normally.
+def detachHardLinkedSyncTargets = { def syncTask, File destinationDirectory ->
+    syncTask.source.files.findAll { it.isFile() }.each { File sourceFile ->
+        File targetFile = new File(destinationDirectory, sourceFile.name)
+        if (!targetFile.isFile()) return
+        def sourceEntry = sourceFile.toPath().toAbsolutePath().normalize()
+        def targetEntry = targetFile.toPath().toAbsolutePath().normalize()
+        if (sourceEntry == targetEntry) {
+            throw new GradleException(
+                    "Sync source and destination paths must differ: ${sourceFile}")
+        }
+        if (java.nio.file.Files.isSameFile(sourceEntry, targetEntry)) {
+            java.nio.file.Files.delete(targetEntry)
+            logger.lifecycle(
+                    "Detached hard-linked QNN staging target before Sync: ${targetFile.name}")
+        }
+    }
+}
+
+tasks.register('stageQnnHtpRuntime', Sync) {
+    onlyIf { !qnnSdkRoot.isBlank() }
+    doFirst { syncTask ->
+        requireApprovedOw2QnnRelease()
+        requireApprovedCs2QnnIntegration()
+        detachHardLinkedSyncTargets(syncTask, qnnRuntimeDir)
+    }
+    from("${qnnSdkRoot}/lib/aarch64-android") {
+        include 'libQnnHtp.so'
+        include 'libQnnHtpPrepare.so'
+        qnnHtpArchitectures.each { architecture ->
+            include "libQnnHtp${architecture.toUpperCase()}Stub.so"
+        }
+    }
+    // Per-game W8A16 HTP graphs with independent FP32 coordinate/confidence outputs.
+    from('../qnn_workspace/valorant_416_v11s_no_flash/w8a16_android_model_lib/build') {
+        include 'libvalorant_416_v11s_no_flash_w8a16.so'
+    }
+    from(new File(ow2QnnCanonicalDir, 'android_model_lib/build')) {
+        include 'libow2_416_w8a16.so'
+    }
+    from('../../analysis_output/delta_416_eval_20260726/qnn_416_sjz_v8s_split_w8a16/final_android_model_lib/build') {
+        include 'libdelta_416_v8s_w8a16.so'
+    }
+    from(new File(cs2QnnCanonicalDir, 'android_model_lib/build')) {
+        include 'libcs2_vombit_416_v8s_w8a16.so'
+    }
+    into qnnRuntimeDir
+}
+
+tasks.register('verifyOw2QnnReleaseArtifact') {
+    group = 'verification'
+    description = 'Verifies the promoted phone-HTP OW2 model and staged library hashes.'
+    dependsOn(tasks.named('stageQnnHtpRuntime'))
+    doLast {
+        String approvedHash = requireApprovedOw2QnnRelease()
+        File stagedLibrary = new File(qnnRuntimeDir, 'libow2_416_w8a16.so')
+        String stagedHash = qnnArtifactSha256(stagedLibrary)
+        if (stagedHash != approvedHash) {
+            throw new GradleException(
+                    "Staged OW2 QNN library hash mismatch: expected=${approvedHash} actual=${stagedHash}")
+        }
+        logger.lifecycle("OW2_QNN_RELEASE_ARTIFACT_OK sha256=${approvedHash}")
+    }
+}
+
+tasks.register('verifyCs2QnnIntegrationArtifact') {
+    group = 'verification'
+    description = 'Verifies the promoted phone-HTP CS2 model and staged library hashes.'
+    dependsOn(tasks.named('stageQnnHtpRuntime'))
+    doLast {
+        String approvedHash = requireApprovedCs2QnnIntegration()
+        File stagedLibrary = new File(
+                qnnRuntimeDir,
+                'libcs2_vombit_416_v8s_w8a16.so')
+        String stagedHash = qnnArtifactSha256(stagedLibrary)
+        if (stagedHash != approvedHash) {
+            throw new GradleException(
+                    "Staged CS2 QNN library hash mismatch: expected=${approvedHash} actual=${stagedHash}")
+        }
+        logger.lifecycle("CS2_QNN_INTEGRATION_ARTIFACT_OK sha256=${approvedHash}")
+    }
+}
+
+tasks.register('verifyCs2DistributionBoundaryPolicy') {
+    group = 'verification'
+    description = 'Prevents an integration-only CS2 artifact from entering a production-signed APK.'
+    doLast {
+        if (requireCs2DistributionScope(false, true) != 'device_test_only') {
+            throw new GradleException('CS2 device-test distribution scope is invalid.')
+        }
+        if (requireCs2DistributionScope(true, false) != 'commercial_release') {
+            throw new GradleException('CS2 commercial distribution scope is invalid.')
+        }
+        try {
+            requireCs2DistributionScope(true, true)
+            throw new GradleException(
+                    'Production signing accepted an integration-only CS2 artifact.')
+        } catch (GradleException expected) {
+            if (expected.message
+                    == 'Production signing accepted an integration-only CS2 artifact.') {
+                throw expected
+            }
+            if (!expected.message.contains(
+                    'Production-signed APK cannot package the CS2 integration-only artifact.')) {
+                throw expected
+            }
+        }
+    }
+}
+
+tasks.register('stageQnnHtpSkeleton', Sync) {
+    onlyIf { !qnnSdkRoot.isBlank() }
+    doFirst { syncTask ->
+        detachHardLinkedSyncTargets(syncTask, qnnAssetDir)
+    }
+    from("${qnnSdkRoot}/lib/aarch64-android") {
+        include 'libQnnHtp.so'
+    }
+    qnnHtpArchitectures.each { architecture ->
+        from("${qnnSdkRoot}/lib/hexagon-${architecture}/unsigned") {
+            include "libQnnHtp${architecture.toUpperCase()}Skel.so"
+        }
+    }
+    into qnnAssetDir
+}
+
+tasks.register('verifyQnnHtpArchitectureClosure') {
+    group = 'verification'
+    description = 'Verifies the packaged QNN HTP runtime closure for every supported architecture.'
+    dependsOn(
+            tasks.named('stageQnnHtpRuntime'),
+            tasks.named('stageQnnHtpSkeleton'),
+            tasks.named('verifyOw2QnnReleaseArtifact'),
+            tasks.named('verifyCs2QnnIntegrationArtifact'))
+    doLast {
+        if (qnnSdkRoot.isBlank()) {
+            throw new GradleException('QNN SDK root is required for HTP architecture verification.')
+        }
+        def unavailableRequiredArchitectures = missingRequiredQnnHtpArchitectures(
+                requiredQnnHtpArchitectures, qnnHtpArchitectures)
+        if (!unavailableRequiredArchitectures.isEmpty()) {
+            throw new GradleException(
+                    'QNN SDK does not provide the required HTP stub/skeleton pairs: '
+                            + unavailableRequiredArchitectures.join(', ')
+                            + ". SDK root=${qnnSdkRoot}")
+        }
+        def requiredRuntimeFiles = [
+                'libQnnHtp.so',
+                'libQnnHtpPrepare.so',
+                'libvalorant_416_v11s_no_flash_w8a16.so',
+                'libow2_416_w8a16.so',
+                'libdelta_416_v8s_w8a16.so',
+                'libcs2_vombit_416_v8s_w8a16.so'
+        ] + qnnHtpArchitectures.collect { architecture ->
+            "libQnnHtp${architecture.toUpperCase()}Stub.so"
+        }
+        def requiredAssetFiles = ['libQnnHtp.so'] + qnnHtpArchitectures.collect { architecture ->
+            "libQnnHtp${architecture.toUpperCase()}Skel.so"
+        }
+        def missing = []
+        requiredRuntimeFiles.each { name ->
+            def candidate = new File(qnnRuntimeDir, name)
+            if (!candidate.isFile() || candidate.length() == 0L) missing.add(candidate.path)
+        }
+        requiredAssetFiles.each { name ->
+            def candidate = new File(qnnAssetDir, name)
+            if (!candidate.isFile() || candidate.length() == 0L) missing.add(candidate.path)
+        }
+        if (!missing.isEmpty()) {
+            throw new GradleException('Incomplete QNN HTP architecture closure: ' + missing.join(', '))
+        }
+        logger.lifecycle(
+                "QNN_HTP_ARCHITECTURE_CLOSURE_OK architectures=${qnnHtpArchitectures.join(',')}"
+                        + " required=${requiredQnnHtpArchitectures.join(',')}")
+    }
+}
+
+tasks.register('verifyQnnHtpArchitectureDiscoveryPolicy') {
+    group = 'verification'
+    description = 'Verifies future-safe stub/skeleton discovery and strict required architecture parsing.'
+    doLast {
+        File syntheticSdk = layout.buildDirectory.dir(
+                'qnn-architecture-discovery-contract/sdk').get().asFile
+        project.delete(syntheticSdk)
+        File androidLibraries = new File(syntheticSdk, 'lib/aarch64-android')
+        if (!androidLibraries.mkdirs()) {
+            throw new GradleException("Unable to create synthetic QNN SDK: ${androidLibraries}")
+        }
+        def addStub = { String architecture ->
+            new File(androidLibraries,
+                    "libQnnHtp${architecture.toUpperCase(Locale.ROOT)}Stub.so").bytes = [1] as byte[]
+        }
+        def addSkeleton = { String architecture ->
+            File directory = new File(
+                    syntheticSdk, "lib/hexagon-${architecture}/unsigned")
+            if (!directory.isDirectory() && !directory.mkdirs()) {
+                throw new GradleException("Unable to create synthetic skeleton directory: ${directory}")
+            }
+            new File(directory,
+                    "libQnnHtp${architecture.toUpperCase(Locale.ROOT)}Skel.so").bytes = [1] as byte[]
+        }
+        ['v68', 'v69', 'v73', 'v75', 'v79', 'v81', 'v83'].each {
+            addStub(it)
+            addSkeleton(it)
+        }
+        addStub('v85')
+        addSkeleton('v87')
+        List<String> discovered = discoverQnnHtpArchitectures(syntheticSdk)
+        if (discovered != ['v68', 'v69', 'v73', 'v75', 'v79', 'v81', 'v83']) {
+            throw new GradleException("Unexpected QNN architecture discovery: ${discovered}")
+        }
+        if (parseQnnHtpArchitectures('v68;v83') != ['v68', 'v83']
+                || missingRequiredQnnHtpArchitectures(['v68', 'v85'], discovered) != ['v85']) {
+            throw new GradleException('QNN required architecture policy contract failed.')
+        }
+        for (String invalid : ['v68,v68', 'V', 'v8', 'v1234', '../v81']) {
+            try {
+                parseQnnHtpArchitectures(invalid)
+                throw new GradleException("Invalid QNN architecture was accepted: ${invalid}")
+            } catch (GradleException expected) {
+                if (expected.message.startsWith('Invalid QNN architecture was accepted:')) throw expected
+            }
+        }
+    }
+}
+
+tasks.register('verifyQnnSdkModelToolchainIdentityPolicy') {
+    group = 'verification'
+    description = 'Rejects a newer QNN runtime paired with models approved for another SDK.'
+    doLast {
+        File syntheticSdk = layout.buildDirectory.dir(
+                'qnn-sdk-model-identity-contract/sdk').get().asFile
+        project.delete(syntheticSdk)
+        File androidLibraries = new File(syntheticSdk, 'lib/aarch64-android')
+        File v81Skeletons = new File(syntheticSdk, 'lib/hexagon-v81/unsigned')
+        if (!androidLibraries.mkdirs() || !v81Skeletons.mkdirs()) {
+            throw new GradleException(
+                    "Unable to create synthetic QNN SDK identity fixture: ${syntheticSdk}")
+        }
+        new File(syntheticSdk, 'sdk.yaml').setText(
+                'product: QAIRT\n'
+                        + 'version: 2.40.0\n'
+                        + 'build_id: 260101123456_654321\n',
+                'UTF-8')
+        new File(androidLibraries, 'libQnnHtpV81Stub.so').bytes = [1] as byte[]
+        new File(v81Skeletons, 'libQnnHtpV81Skel.so').bytes = [1] as byte[]
+        if (discoverQnnHtpArchitectures(syntheticSdk) != ['v81']) {
+            throw new GradleException(
+                    'Synthetic V81 QNN SDK architecture discovery failed.')
+        }
+        def syntheticIdentity = readQnnSdkIdentity(syntheticSdk)
+        if (syntheticIdentity.normalized != '2.40.0.260101') {
+            throw new GradleException(
+                    "Unexpected synthetic QNN SDK identity: ${syntheticIdentity.normalized}")
+        }
+        try {
+            requireQnnSdkIdentity(syntheticSdk, '2.37.1.250807')
+            throw new GradleException(
+                    'Mismatched V81 QNN SDK/model identity was accepted.')
+        } catch (GradleException expected) {
+            if (expected.message == 'Mismatched V81 QNN SDK/model identity was accepted.') {
+                throw expected
+            }
+            if (!expected.message.startsWith(
+                    'QNN SDK/model toolchain identity mismatch:')) {
+                throw expected
+            }
+        }
+    }
+}
+
+tasks.configureEach { task ->
+    // CMake compiles the shared wire/protocol sources from the sibling runtime
+    // project.  They are outside this Android module, so declare them as task
+    // inputs explicitly; otherwise Gradle can package an old native library
+    // after a shared-source change.
+    if (task.name.startsWith('buildCMake')) {
+        task.inputs.dir(project.rootProject.file('../dual_machine_runtime/shared'))
+                .withPathSensitivity(PathSensitivity.RELATIVE)
+    }
+    if (task.name.startsWith('merge') && (task.name.endsWith('NativeLibs') || task.name.endsWith('JniLibFolders'))) {
+        task.dependsOn(tasks.named('stageQnnHtpRuntime'))
+    }
+    if (task.name.startsWith('merge') && task.name.endsWith('Assets')) {
+        task.dependsOn(tasks.named('stageQnnHtpSkeleton'))
+    }
+    // Release lint also snapshots source assets.  Declare the generated HTP
+    // skeleton as an input producer so Gradle 9 cannot race lint with staging.
+    if (task.name.toLowerCase().contains('lint')) {
+        task.dependsOn(tasks.named('stageQnnHtpSkeleton'))
+    }
+}
+
+// This module keeps dependency-free contract checks under src/test and runs
+// them through the explicit verify* JavaExec tasks below. They are not JUnit
+// tests, so Gradle 9's empty-test-suite failure must not mask those real gates.
+tasks.withType(Test).configureEach {
+    failOnNoDiscoveredTests = false
+}
+
+// Production output must never silently fall back to a known debug key. An
+// explicit local-only switch permits device development before the offline
+// release identity is supplied, while keeping its non-production status clear.
+tasks.register('verifyReleaseSigningIdentity') {
+    group = 'verification'
+    doLast {
+        if (hasProductionReleaseSigning) {
+            requireProductionReleaseSigningCertificate()
+            return
+        }
+        if (!allowDevelopmentReleaseSigning) {
+            throw new GradleException('Release signing key is required. For local device validation only, pass -PvisionforgeAllowDevelopmentSigning=true.')
+        }
+    }
+}
+tasks.configureEach { task ->
+    if (task.name == 'packageRelease') task.dependsOn(tasks.named('verifyReleaseSigningIdentity'))
+}
+
+// The runtime-status model deliberately has no Android framework dependency.
+// Compile and execute its regression contract with the build JDK so this gate
+// remains available when Gradle is used offline and JUnit is unavailable.
+def runtimeSnapshotSelfTestClasses = layout.buildDirectory.dir('runtime-snapshot-self-test/classes')
+tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/MobileRuntimeSnapshot.java',
+            'src/main/java/com/visionforge/inferencebenchmark/AutomaticFormalUsageSessionGuard.java',
+            'src/main/java/com/visionforge/inferencebenchmark/AutomaticUsageGuardCheckpointPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/AutomaticFormalStartRetryPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/HostVideoPreflightLogPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/FormalUsageStopRetryPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/AutomaticUsageReservationLogPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileThroughputTracker.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileRuntimeMetricsSampler.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileExternalHealthSnapshotPolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileExternalHealthSnapshotFormatter.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileExternalHealthSnapshotWriter.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobilePreviousExitPolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileRuntimeEventSink.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileServiceDestroyCleanup.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileRuntimeFailureMessagePolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileRuntimePresentationUpdatePolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/AuthorizationFailureMessagePolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileDiagnosticFieldParser.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileControlHealthSummary.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileLogSanitizer.java',
+             'src/main/java/com/visionforge/inferencebenchmark/InferencePolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/DecoderOutputStallPolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/DecoderOutputProgressTracker.java',
+             'src/main/java/com/visionforge/inferencebenchmark/DecoderFallbackPolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/DecoderAccessUnitQueue.java',
+              'src/main/java/com/visionforge/inferencebenchmark/MobilePipelineRetryGate.java',
+                'src/main/java/com/visionforge/inferencebenchmark/QnnAssetBundleInstaller.java',
+                'src/main/java/com/visionforge/inferencebenchmark/MobileSocCompatibilityPolicy.java',
+                'src/main/java/com/visionforge/inferencebenchmark/MobileInferenceBackend.java',
+                'src/main/java/com/visionforge/inferencebenchmark/MobileInferenceBackendPolicy.java',
+                'src/main/java/com/visionforge/inferencebenchmark/MobileInferenceFailurePolicy.java',
+                'src/main/java/com/visionforge/inferencebenchmark/PortableModelAssetInstaller.java',
+                'src/main/java/com/visionforge/inferencebenchmark/QnnHtpCompatibilityPolicy.java',
+              'src/main/java/com/visionforge/inferencebenchmark/MobileEthernetRecoveryCoordinator.java',
+              'src/main/java/com/visionforge/inferencebenchmark/MobileRuntimeHealthLogPolicy.java',
+               'src/main/java/com/visionforge/inferencebenchmark/MobileEthernetDiagnosticsLogPolicy.java',
+               'src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyAgentLogPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/NativeDetectionTracePort.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileDetectionTraceCoordinator.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlOutputTransport.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveSink.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveDispatcher.java',
+            'src/main/java/com/visionforge/inferencebenchmark/BluetoothHidOutputFailClosedPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/BluetoothHidPendingOperationPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCore.java',
+            'src/main/java/com/visionforge/inferencebenchmark/BluetoothHidDebugMoveProbePolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlOutputRoute.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlOutputRoutePolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlButtonInput.java',
+             'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocol.java',
+             'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonEndpointPolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonLeaseState.java',
+             'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonNotificationDispatcher.java',
+             'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonWorkerRecoveryPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MakcuConnection.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MakcuDeviceIdentityPolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MakcuProtocolNegotiator.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MakcuConnectionAttemptTracker.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MakcuUsbInterfaceSelector.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MakcuCdcLineCoding.java',
+              'src/main/java/com/visionforge/inferencebenchmark/MakcuDeliveryCircuit.java',
+              'src/main/java/com/visionforge/inferencebenchmark/MakcuPendingMoveSlot.java',
+              'src/main/java/com/visionforge/inferencebenchmark/MakcuDeliveryGate.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MakcuResponseStreamParser.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MakcuButtonInput.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlTrigger.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlProfilePort.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ControlOutputCoordinator.java',
+            'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileTransportEndpoint.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileTransportCatalog.java',
+            'src/main/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbe.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileThrowableDiagnostics.java',
+            'src/main/java/com/visionforge/inferencebenchmark/NativeVideoInferencePipeline.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileAimTarget.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileModelCatalog.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileControlTuning.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileProfileStorageKeys.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobilePipelineCoordinator.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/ControlPreset.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/DualMachineAuthorizationUiState.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/MobileUiState.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/MobileUiStateMapper.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/UiPreviewState.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/FxParticleEngine.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/FxTransitionPolicy.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeSnapshotSelfTest.java',
+            'src/test/java/android/net/Network.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileTransportEndpointTestFixtures.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileModelCatalogSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileControlTuningSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileProfileStorageKeysSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobilePipelineCoordinatorSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileTransportCatalogSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbeSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/AutomaticFormalUsageSessionGuardSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/AutomaticUsageGuardCheckpointPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/AutomaticFormalStartRetryPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/HostVideoPreflightLogPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/FormalUsageStopRetryPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobilePipelineRetryGateSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/ControlOutputCoordinatorSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidOutputFailClosedPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/ControlOutputRoutePolicySelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocolSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonEndpointPolicySelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonLeaseStateSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonNotificationDispatcherSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonWorkerRecoveryPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCoreSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidPendingOperationPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidDebugMoveProbePolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidFailureModeSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidDeviceAdapterSourceContractSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MakcuDeviceIdentityPolicySelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MakcuProtocolNegotiatorSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MakcuConnectionAttemptTrackerSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MakcuUsbInterfaceSelectorSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MakcuCdcLineCodingSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MakcuDeliveryCircuitSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MakcuDeliveryGateSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MakcuResponseStreamParserSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/ControlTriggerSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MakcuJniContractSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileThroughputTrackerSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeMetricsSamplerSelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/MobileExternalHealthSnapshotPolicySelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/MobileExternalHealthSnapshotFormatterSelfTest.java',
+               'src/test/java/com/visionforge/inferencebenchmark/MobileExternalHealthSnapshotWriterSelfTest.java',
+               'src/test/java/com/visionforge/inferencebenchmark/MobilePreviousExitPolicySelfTest.java',
+               'src/test/java/com/visionforge/inferencebenchmark/MobileServiceDestroyCleanupSelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeFailureMessagePolicySelfTest.java',
+               'src/test/java/com/visionforge/inferencebenchmark/MobileRuntimePresentationUpdatePolicySelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/AuthorizationFailureMessagePolicySelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MobileDetectionTraceCoordinatorSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/InferencePolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DecoderOutputStallPolicySelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/DecoderAccessUnitQueueSelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/QnnAssetBundleInstallerSelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/MobileSocCompatibilityPolicySelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/MobileInferenceBackendPolicySelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/MobileInferenceFailurePolicySelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/PortableModelAssetInstallerSelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/QnnHtpCompatibilityPolicySelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/MobileInstallCompatibilityManifestSelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/MobileReleaseElfPageAlignmentSelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/MobileEthernetRecoveryCoordinatorSelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/DualMachineAuthorizationCardModeContractSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeServiceCommandContractSelfTest.java',
+               'src/test/java/com/visionforge/inferencebenchmark/FlexibleYuvMediaCodecDecoderContractSelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeHealthLogPolicySelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/MobileControlHealthSummarySelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/MobileEthernetDiagnosticsLogPolicySelfTest.java',
+                'src/test/java/com/visionforge/inferencebenchmark/Cat6ReadyAgentLogPolicySelfTest.java',
+               'src/test/java/com/visionforge/inferencebenchmark/AutomaticUsageReservationLogPolicySelfTest.java',
+               'src/test/java/com/visionforge/inferencebenchmark/MobileLogSanitizerSelfTest.java',
+               'src/test/java/com/visionforge/inferencebenchmark/MobileProcessLoggingSourceContractSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/ui/MobileUiStateMapperSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/ui/UiPreviewStateSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/ui/FxParticleEngineSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/ui/FxTransitionPolicySelfTest.java')
+    classpath = files()
+    destinationDirectory = runtimeSnapshotSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyMobileRuntimeSnapshot', JavaExec) {
+    group = 'verification'
+    description = 'Runs the dependency-free mobile runtime status parsing contract.'
+    dependsOn(tasks.named('compileMobileRuntimeSnapshotSelfTest'))
+    classpath = files(runtimeSnapshotSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.MobileRuntimeSnapshotSelfTest'
+    systemProperty 'visionforge.android.project.dir', projectDir.absolutePath
+}
+
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyMobileRuntimeSnapshot'))
+}
+
+// The authenticated data-plane wire format is Android-framework independent.
+// Run its cross-language AES-GCM, nonce-lifetime and replay contracts in every
+// Gradle check instead of relying on a manually invoked main() self-test.
+def authenticatedDataPlaneV2SelfTestClasses =
+        layout.buildDirectory.dir('authenticated-data-plane-v2-self-test/classes')
+tasks.register('compileAuthenticatedDataPlaneV2SelfTest', JavaCompile) {
+    source = files(
+            fileTree('src/main/java/com/visionforge/inferencebenchmark/dataplane') {
+                include '*.java'
+            },
+            'src/test/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedDataPlaneV2SelfTest.java')
+    classpath = files()
+    destinationDirectory = authenticatedDataPlaneV2SelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+    options.compilerArgs.addAll(['-Xlint:all', '-Werror'])
+}
+tasks.register('verifyAuthenticatedDataPlaneV2', JavaExec) {
+    group = 'verification'
+    description = 'Runs the VFA2 AES-GCM, nonce lifetime, replay and interop contract.'
+    dependsOn(tasks.named('compileAuthenticatedDataPlaneV2SelfTest'))
+    classpath = files(authenticatedDataPlaneV2SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.dataplane.AuthenticatedDataPlaneV2SelfTest'
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyAuthenticatedDataPlaneV2'))
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyAuthenticatedDataPlaneV2'))
+    }
+}
+
+// The peer-handshake foundation is framework independent.  Compile only its
+// production package plus the bounded fixture so deterministic scalars and
+// test-only curve arithmetic never enter the main source set or release DEX.
+def authenticatedPeerHandshakeV1SelfTestClasses =
+        layout.buildDirectory.dir(
+                'authenticated-peer-handshake-v1-self-test/classes')
+tasks.register('compileAuthenticatedPeerHandshakeV1SelfTest', JavaCompile) {
+    source = files(
+            fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
+                include '*.java'
+            },
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedPeerHandshakeV1SelfTest.java')
+    classpath = files()
+    destinationDirectory = authenticatedPeerHandshakeV1SelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_1_8.toString()
+    targetCompatibility = JavaVersion.VERSION_1_8.toString()
+    options.release.set(8)
+    options.compilerArgs.addAll(['-Xlint:all,-options', '-Werror'])
+}
+tasks.register('verifyAuthenticatedPeerHandshakeV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs canonical transcript, fresh P-256 ECDH, HKDF, Finished and channel-binding contracts.'
+    dependsOn(tasks.named('compileAuthenticatedPeerHandshakeV1SelfTest'))
+    classpath = files(authenticatedPeerHandshakeV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.AuthenticatedPeerHandshakeV1SelfTest'
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyAuthenticatedPeerHandshakeV1'))
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyAuthenticatedPeerHandshakeV1'))
+    }
+}
+
+// The pre-generation proposal is a separate Java 8 cryptographic foundation.
+// Its test freezes the 17-field Python/C++/Java vector and proves that the only
+// transition to the final transcript inserts a positive signed-64 generation.
+def pairGenerationProposalV1SelfTestClasses =
+        layout.buildDirectory.dir(
+                'pair-generation-proposal-v1-self-test/classes')
+tasks.register('compilePairGenerationProposalV1SelfTest', JavaCompile) {
+    source = files(
+            fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
+                include '*.java'
+            },
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/PairGenerationProposalV1SelfTest.java')
+    classpath = files()
+    destinationDirectory = pairGenerationProposalV1SelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_1_8.toString()
+    targetCompatibility = JavaVersion.VERSION_1_8.toString()
+    options.release.set(8)
+    options.compilerArgs.addAll(['-Xlint:all,-options', '-Werror'])
+}
+tasks.register('verifyPairGenerationProposalV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs strict proposal TLV, P-256, signed64 and final-transcript mapping contracts.'
+    dependsOn(tasks.named('compilePairGenerationProposalV1SelfTest'))
+    classpath = files(pairGenerationProposalV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.PairGenerationProposalV1SelfTest'
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyPairGenerationProposalV1'))
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyPairGenerationProposalV1'))
+    }
+}
+
+// The server-authoritative generation credential is a separate JCA boundary.
+// Keep the verifier independent from Android framework state and exercise its
+// strict RS256/keyring/canonical-JWT contract on the build JVM. This gate does
+// not enable or wire the still-incomplete formal secure data plane.
+def pairGenerationCredentialV1SelfTestClasses =
+        layout.buildDirectory.dir(
+                'pair-generation-credential-v1-self-test/classes')
+tasks.register('compilePairGenerationCredentialV1SelfTest', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/handshake/PairGenerationCredentialV1Verifier.java',
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/PairGenerationCredentialV1VerifierSelfTest.java')
+    classpath = files()
+    destinationDirectory = pairGenerationCredentialV1SelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+    options.compilerArgs.addAll(['-Xlint:all', '-Werror'])
+}
+tasks.register('verifyPairGenerationCredentialV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs strict RS256, canonical JWT, keyring, freshness and expected-generation contracts.'
+    dependsOn(tasks.named('compilePairGenerationCredentialV1SelfTest'))
+    classpath = files(pairGenerationCredentialV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.PairGenerationCredentialV1VerifierSelfTest'
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyPairGenerationCredentialV1'))
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyPairGenerationCredentialV1'))
+    }
+}
+
+// The Android-bound layer depends on the concrete AndroidKeyStore store in its
+// public API, while its cryptographic/state-machine contract is still runnable
+// on the JVM through a private, transcript-typed identity boundary. Compile the
+// real debug main output first so this gate tests the production wrapper rather
+// than a copied implementation.
+def androidBoundPeerHandshakeSelfTestClasses =
+        layout.buildDirectory.dir(
+                'android-bound-peer-handshake-self-test/classes')
+def debugMainJavaClasses = layout.buildDirectory.dir(
+        'intermediates/javac/debug/compileDebugJavaWithJavac/classes')
+tasks.register('compileAndroidBoundPeerHandshakeSessionSelfTest', JavaCompile) {
+    dependsOn('compileDebugJavaWithJavac')
+    source = files(
+            'src/test/java/com/visionforge/inferencebenchmark/AndroidBoundPeerHandshakeSessionSelfTest.java')
+    classpath = files(
+            debugMainJavaClasses,
+            android.bootClasspath)
+    destinationDirectory = androidBoundPeerHandshakeSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_1_8.toString()
+    targetCompatibility = JavaVersion.VERSION_1_8.toString()
+    options.release.set(8)
+    options.compilerArgs.addAll(['-Xlint:all,-options', '-Werror'])
+}
+tasks.register('verifyAndroidBoundPeerHandshakeSession', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs entitlement, identity-signature, Finished and close gates for the Android peer owner.'
+    dependsOn(tasks.named('compileAndroidBoundPeerHandshakeSessionSelfTest'))
+    classpath = files(
+            androidBoundPeerHandshakeSelfTestClasses,
+            debugMainJavaClasses,
+            android.bootClasspath)
+    mainClass =
+            'com.visionforge.inferencebenchmark.AndroidBoundPeerHandshakeSessionSelfTest'
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyAndroidBoundPeerHandshakeSession'))
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyAndroidBoundPeerHandshakeSession'))
+    }
+}
+
+def usageAuthorizationContractSelfTestClasses =
+        layout.buildDirectory.dir('usage-authorization-contract-self-test/classes')
+tasks.register('compileDualMachineUsageAuthorizationContractSelfTest', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContractSelfTest.java')
+    classpath = files()
+    destinationDirectory = usageAuthorizationContractSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyDualMachineUsageAuthorizationContract', JavaExec) {
+    group = 'verification'
+    description = 'Runs dependency-free card activation and usage signature payload contracts.'
+    dependsOn(tasks.named('compileDualMachineUsageAuthorizationContractSelfTest'))
+    classpath = files(usageAuthorizationContractSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineUsageAuthorizationContractSelfTest'
+}
+
+def dualMachineAuthorizationPresentationSelfTestClasses =
+        layout.buildDirectory.dir('dual-machine-authorization-presentation-self-test/classes')
+tasks.register('compileDualMachineAuthorizationPresentationSelfTest', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineCardCode.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineEntitlementRecord.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineFormalUsageStateMachine.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/DualMachineAuthorizationUiState.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ui/DualMachineAuthorizationUiMapper.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineAuthorizationPresentationSelfTest.java')
+    classpath = files()
+    destinationDirectory = dualMachineAuthorizationPresentationSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyDualMachineAuthorizationPresentation', JavaExec) {
+    group = 'verification'
+    description = 'Runs card normalization and fail-closed authorization UI capability checks.'
+    dependsOn(tasks.named('compileDualMachineAuthorizationPresentationSelfTest'))
+    classpath = files(dualMachineAuthorizationPresentationSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineAuthorizationPresentationSelfTest'
+}
+
+def usageLeaseSelfTestClasses =
+        layout.buildDirectory.dir('usage-lease-self-test/classes')
+tasks.register('compileDualMachineUsageLeaseSelfTests', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseVerifier.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseKeyring.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseGate.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseSelfTestSupport.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseVerifierSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseKeyringSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseGateSelfTest.java')
+    classpath = files()
+    destinationDirectory = usageLeaseSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyDualMachineUsageLeaseVerifier', JavaExec) {
+    group = 'verification'
+    description = 'Runs strict JCA-only RS256 short-lease verification contracts.'
+    dependsOn(tasks.named('compileDualMachineUsageLeaseSelfTests'))
+    classpath = files(usageLeaseSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineUsageLeaseVerifierSelfTest'
+}
+tasks.register('verifyDualMachineUsageLeaseGate', JavaExec) {
+    group = 'verification'
+    description = 'Runs monotonic current/future short-lease gate contracts.'
+    dependsOn(tasks.named('compileDualMachineUsageLeaseSelfTests'))
+    classpath = files(usageLeaseSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineUsageLeaseGateSelfTest'
+}
+tasks.register('verifyDualMachineUsageLeaseKeyring', JavaExec) {
+    group = 'verification'
+    description = 'Runs bounded current/previous RS256 public-key rotation contracts.'
+    dependsOn(tasks.named('compileDualMachineUsageLeaseSelfTests'))
+    classpath = files(usageLeaseSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineUsageLeaseKeyringSelfTest'
+}
+tasks.register('verifyDualMachineUsageLease') {
+    group = 'verification'
+    dependsOn(
+            tasks.named('verifyDualMachineUsageLeaseVerifier'),
+            tasks.named('verifyDualMachineUsageLeaseKeyring'),
+            tasks.named('verifyDualMachineUsageLeaseGate'))
+}
+def cardAuthorizationFoundationSelfTestClasses =
+        layout.buildDirectory.dir('card-authorization-foundation-self-test/classes')
+tasks.register('compileDualMachineCardAuthorizationFoundationSelfTests', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineEntitlementRecord.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineFormalUsageStateMachine.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineInternetRoutePolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineTlsPinPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineHttpsJsonTransport.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineEntitlementRecordSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineFormalUsageStateMachineSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineInternetRoutePolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineTlsPinPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineHttpsJsonTransportSelfTest.java')
+    classpath = files()
+    destinationDirectory = cardAuthorizationFoundationSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyDualMachineEntitlementRecord', JavaExec) {
+    group = 'verification'
+    description = 'Rejects secret-bearing or malformed persisted card bindings.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationFoundationSelfTests'))
+    classpath = files(cardAuthorizationFoundationSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineEntitlementRecordSelfTest'
+}
+tasks.register('verifyDualMachineFormalUsageStateMachine', JavaExec) {
+    group = 'verification'
+    description = 'Proves activation and restore are zero-cost and formal start is explicit.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationFoundationSelfTests'))
+    classpath = files(cardAuthorizationFoundationSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineFormalUsageStateMachineSelfTest'
+}
+tasks.register('verifyDualMachineInternetRoutePolicy', JavaExec) {
+    group = 'verification'
+    description = 'Keeps public card authentication off the isolated CAT6 Ethernet route.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationFoundationSelfTests'))
+    classpath = files(cardAuthorizationFoundationSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineInternetRoutePolicySelfTest'
+}
+tasks.register('verifyDualMachineTlsPinPolicy', JavaExec) {
+    group = 'verification'
+    description = 'Runs current/backup SPKI pin rotation and mismatch contracts.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationFoundationSelfTests'))
+    classpath = files(cardAuthorizationFoundationSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineTlsPinPolicySelfTest'
+}
+tasks.register('verifyDualMachineHttpsJsonTransport', JavaExec) {
+    group = 'verification'
+    description = 'Runs pinned HTTPS transport ordering, redirect and size-bound contracts.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationFoundationSelfTests'))
+    classpath = files(cardAuthorizationFoundationSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineHttpsJsonTransportSelfTest'
+}
+tasks.register('verifyDualMachineCardAuthorizationFoundation') {
+    group = 'verification'
+    dependsOn(
+            tasks.named('verifyDualMachineEntitlementRecord'),
+            tasks.named('verifyDualMachineFormalUsageStateMachine'),
+            tasks.named('verifyDualMachineInternetRoutePolicy'),
+            tasks.named('verifyDualMachineTlsPinPolicy'),
+            tasks.named('verifyDualMachineHttpsJsonTransport'))
+}
+
+def cardAuthorizationCoordinatorSelfTestClasses =
+        layout.buildDirectory.dir('card-authorization-coordinator-self-test/classes')
+tasks.register('compileDualMachineCardAuthorizationCoordinatorSelfTests', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineDeviceProofs.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineEntitlementRecord.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineEntitlementStore.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineFormalUsageStateMachine.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineSessionProgressCounter.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseVerifier.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseKeyring.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseGate.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineCardCode.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineAndroidDeviceProfile.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineSidecarPort.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineCardAuthorizationCoordinator.java',
+            'src/main/java/com/visionforge/inferencebenchmark/FormalUsageStopRetryPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineFormalUsageCoordinator.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineAuthorizationRuntime.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineDeviceProofsSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineSessionProgressCounterSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineCardAuthorizationCoordinatorSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineUsageLeaseSelfTestSupport.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineFormalUsageCoordinatorSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineAuthorizationRuntimeSelfTest.java')
+    classpath = files()
+    destinationDirectory = cardAuthorizationCoordinatorSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyDualMachineDeviceProofs', JavaExec) {
+    group = 'verification'
+    description = 'Proves both device signatures are reconstructed and locally verified.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationCoordinatorSelfTests'))
+    classpath = files(cardAuthorizationCoordinatorSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineDeviceProofsSelfTest'
+}
+tasks.register('verifyDualMachineSessionProgressCounter', JavaExec) {
+    group = 'verification'
+    description = 'Runs monotonic, reset-safe formal-session progress contracts.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationCoordinatorSelfTests'))
+    classpath = files(cardAuthorizationCoordinatorSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineSessionProgressCounterSelfTest'
+}
+tasks.register('verifyDualMachineCardAuthorizationCoordinator', JavaExec) {
+    group = 'verification'
+    description = 'Proves card activation and status remain explicit and zero-cost.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationCoordinatorSelfTests'))
+    classpath = files(cardAuthorizationCoordinatorSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineCardAuthorizationCoordinatorSelfTest'
+}
+tasks.register('verifyDualMachineFormalUsageCoordinator', JavaExec) {
+    group = 'verification'
+    description = 'Proves explicit paid start, progress renewal and local-first stop.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationCoordinatorSelfTests'))
+    classpath = files(cardAuthorizationCoordinatorSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineFormalUsageCoordinatorSelfTest'
+}
+tasks.register('verifyDualMachineAuthorizationRuntime', JavaExec) {
+    group = 'verification'
+    description = 'Proves service-owned Host attachment, zero-cost activation and local detach.'
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationCoordinatorSelfTests'))
+    classpath = files(cardAuthorizationCoordinatorSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineAuthorizationRuntimeSelfTest'
+}
+def monotonicDeadlineSchedulerSelfTestClasses =
+        layout.buildDirectory.dir('monotonic-deadline-scheduler-self-test/classes')
+tasks.register('compileDualMachineMonotonicDeadlineSchedulerSelfTest', JavaCompile) {
+    dependsOn(tasks.named('compileDualMachineCardAuthorizationCoordinatorSelfTests'))
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineMonotonicDeadlineScheduler.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineMonotonicDeadlineSchedulerSelfTest.java')
+    classpath = files(cardAuthorizationCoordinatorSelfTestClasses)
+    destinationDirectory = monotonicDeadlineSchedulerSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyDualMachineMonotonicDeadlineScheduler', JavaExec) {
+    group = 'verification'
+    description = 'Proves monotonic lease deadlines are one-shot, cancellable and fail closed.'
+    dependsOn(tasks.named('compileDualMachineMonotonicDeadlineSchedulerSelfTest'))
+    classpath = files(
+            monotonicDeadlineSchedulerSelfTestClasses,
+            cardAuthorizationCoordinatorSelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.DualMachineMonotonicDeadlineSchedulerSelfTest'
+}
+tasks.register('verifyDualMachineCardAuthorizationCoordinators') {
+    group = 'verification'
+    dependsOn(
+            tasks.named('verifyDualMachineDeviceProofs'),
+            tasks.named('verifyDualMachineSessionProgressCounter'),
+            tasks.named('verifyDualMachineCardAuthorizationCoordinator'),
+            tasks.named('verifyDualMachineFormalUsageCoordinator'),
+            tasks.named('verifyDualMachineAuthorizationRuntime'),
+            tasks.named('verifyDualMachineMonotonicDeadlineScheduler'))
+}
+
+def sidecarHttpClientSelfTestClasses =
+        layout.buildDirectory.dir('sidecar-http-client-self-test/classes')
+tasks.register('compileDualMachineSidecarHttpClientSelfTest', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineTlsPinPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineHttpsJsonTransport.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineStrictJson.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineCardCode.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineAndroidDeviceProfile.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineSidecarPort.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineSidecarHttpClient.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachineSidecarHttpClientSelfTest.java')
+    classpath = files()
+    destinationDirectory = sidecarHttpClientSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyDualMachineSidecarHttpClient', JavaExec) {
+    group = 'verification'
+    description = 'Runs strict bounded sidecar request and malicious-response contracts.'
+    dependsOn(tasks.named('compileDualMachineSidecarHttpClientSelfTest'))
+    classpath = files(sidecarHttpClientSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachineSidecarHttpClientSelfTest'
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyMobileRuntimeSnapshot'))
+    }
+}
+
+// The pairing identity codec is deliberately Android-framework independent so
+// the build JDK can enforce the shared P-256 wire contract. AndroidKeyStore
+// behavior has a separate on-device instrumentation contract below.
+def pairingIdentityCodecSelfTestClasses = layout.buildDirectory.dir('pairing-identity-codec-self-test/classes')
+tasks.register('compileDualMachinePairingIdentityCodecSelfTest', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+            'src/test/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodecSelfTest.java')
+    classpath = files()
+    destinationDirectory = pairingIdentityCodecSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyDualMachinePairingIdentityCodec', JavaExec) {
+    group = 'verification'
+    description = 'Runs dependency-free P-256 pairing identity codec contracts.'
+    dependsOn(tasks.named('compileDualMachinePairingIdentityCodecSelfTest'))
+    classpath = files(pairingIdentityCodecSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.DualMachinePairingIdentityCodecSelfTest'
+}
+
+def ethernetContractSelfTestClasses = layout.buildDirectory.dir('ethernet-contract-self-test/classes')
+tasks.register('compileEthernetTransportContractSelfTest', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
+            'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocol.java',
+            'src/test/java/com/visionforge/inferencebenchmark/EthernetTransportContractSelfTest.java')
+    classpath = files()
+    destinationDirectory = ethernetContractSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+tasks.register('verifyEthernetTransportContract', JavaExec) {
+    group = 'verification'
+    description = 'Runs the dependency-free fixed CAT6 Ethernet contract.'
+    dependsOn(tasks.named('compileEthernetTransportContractSelfTest'))
+    classpath = files(ethernetContractSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.EthernetTransportContractSelfTest'
+}
+
+def cat6ReadySelfTestClasses = layout.buildDirectory.dir('cat6-ready-self-test/classes')
+tasks.register('compileCat6ReadySelfTests', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
+            'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocol.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileTransportEndpoint.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MobileTransportCatalog.java',
+            'src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyContract.java',
+            'src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyAgentPort.java',
+            'src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyAgentRecoveryPolicy.java',
+            'src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyLifecycleCoordinator.java',
+            'src/test/java/android/net/Network.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileTransportEndpointTestFixtures.java',
+            'src/test/java/com/visionforge/inferencebenchmark/Cat6ReadyContractSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/Cat6ReadyAgentRecoveryPolicySelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/Cat6ReadyLifecycleCoordinatorSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/MobileTransportCatalogSelfTest.java')
+    classpath = files()
+    destinationDirectory = cat6ReadySelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+}
+
+tasks.register('verifyCat6ReadyContract', JavaExec) {
+    group = 'verification'
+    description = 'Runs the dependency-free fixed CAT6 readiness wire contract.'
+    dependsOn(tasks.named('compileCat6ReadySelfTests'))
+    classpath = files(cat6ReadySelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.Cat6ReadyContractSelfTest'
+}
+
+tasks.register('verifyCat6ReadyLifecycle', JavaExec) {
+    group = 'verification'
+    description = 'Runs the dependency-free CAT6 readiness lifecycle contract.'
+    dependsOn(tasks.named('compileCat6ReadySelfTests'))
+    classpath = files(cat6ReadySelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.Cat6ReadyLifecycleCoordinatorSelfTest'
+}
+
+tasks.register('verifyMobileTransportCatalog', JavaExec) {
+    group = 'verification'
+    description = 'Runs CAT6-first wireless-LAN fallback selection contracts.'
+    dependsOn(tasks.named('compileCat6ReadySelfTests'))
+    classpath = files(cat6ReadySelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.MobileTransportCatalogSelfTest'
+}
+
+tasks.named('check').configure {
+    dependsOn(
+            tasks.named('verifyCat6ReadyLifecycle'),
+            tasks.named('verifyMobileTransportCatalog'))
+}
+
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(
+                tasks.named('verifyCat6ReadyLifecycle'),
+                tasks.named('verifyMobileTransportCatalog'))
+    }
+}
+
+// The motion/control core is deliberately Android-framework independent.
+// Compile and execute it on the build host so edge-case behavior is exercised,
+// not merely cross-compiled into the APK.
+def hostCxx = System.getenv('CXX') ?: 'g++'
+def nativeControlSelfTestDir = layout.buildDirectory.dir('native-control-self-test')
+def nativeExecutableSuffix = System.getProperty('os.name')
+        .toLowerCase(Locale.ROOT).contains('windows') ? '.exe' : ''
+def motionPlannerSelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "mobile-motion-planner-tests${nativeExecutableSuffix}")
+}
+def controlCoreSelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "mobile-control-core-tests${nativeExecutableSuffix}")
+}
+def controlAllocationSelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "mobile-control-allocation-tests${nativeExecutableSuffix}")
+}
+def yoloPostprocessorSelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "yolo-postprocessor-tests${nativeExecutableSuffix}")
+}
+def fixedMetricRingSelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "fixed-metric-ring-tests${nativeExecutableSuffix}")
+}
+def inferenceGenerationPolicySelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "inference-generation-policy-tests${nativeExecutableSuffix}")
+}
+def portableInferenceFailurePolicySelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "portable-inference-failure-policy-tests${nativeExecutableSuffix}")
+}
+def receiverReferenceSyncPolicySelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "receiver-reference-sync-policy-tests${nativeExecutableSuffix}")
+}
+def targetTrackerSelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "mobile-target-tracker-tests${nativeExecutableSuffix}")
+}
+def makcuOutputGateSelfTest = nativeControlSelfTestDir.map {
+    new File(it.asFile, "makcu-output-gate-tests${nativeExecutableSuffix}")
+}
+
+tasks.register('compileMobileMotionPlannerSelfTest', Exec) {
+    inputs.files(
+            'src/main/cpp/MobileMotionPlanner.hpp',
+            'src/main/cpp/MobileMotionPlanner.cpp',
+            'src/main/cpp/MobileMotionPlannerTests.cpp')
+    outputs.file(motionPlannerSelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/MobileMotionPlanner.cpp',
+            'src/main/cpp/MobileMotionPlannerTests.cpp',
+            '-Isrc/main/cpp',
+            '-o', motionPlannerSelfTest.get().absolutePath)
+}
+
+tasks.register('verifyMobileMotionPlannerNative', Exec) {
+    group = 'verification'
+    description = 'Runs deterministic native motion planning contracts without USB output.'
+    dependsOn(tasks.named('compileMobileMotionPlannerSelfTest'))
+    commandLine(motionPlannerSelfTest.get().absolutePath)
+}
+
+tasks.register('compileMobileControlCoreSelfTest', Exec) {
+    inputs.files(
+            '../../dual_machine_runtime/shared/include/vfdual/model_contract.hpp',
+            'src/main/cpp/YoloPostprocessor.hpp',
+            'src/main/cpp/YoloPostprocessor.cpp',
+            'src/main/cpp/MobileTargetTracker.hpp',
+            'src/main/cpp/MobileTargetTracker.cpp',
+            'src/main/cpp/MobileMotionPlanner.hpp',
+            'src/main/cpp/MobileMotionPlanner.cpp',
+            'src/main/cpp/MobileControlCore.hpp',
+            'src/main/cpp/MobileControlCore.cpp',
+            'src/main/cpp/MobileControlCoreTests.cpp')
+    outputs.file(controlCoreSelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/YoloPostprocessor.cpp',
+            'src/main/cpp/MobileTargetTracker.cpp',
+            'src/main/cpp/MobileMotionPlanner.cpp',
+            'src/main/cpp/MobileControlCore.cpp',
+            'src/main/cpp/MobileControlCoreTests.cpp',
+            '-Isrc/main/cpp',
+            '-I../../dual_machine_runtime/shared/include',
+            '-o', controlCoreSelfTest.get().absolutePath)
+}
+
+tasks.register('verifyMobileControlCoreNative', Exec) {
+    group = 'verification'
+    description = 'Runs target-selection through motion-planning native contracts without USB output.'
+    dependsOn(tasks.named('compileMobileControlCoreSelfTest'))
+    commandLine(controlCoreSelfTest.get().absolutePath)
+}
+
+tasks.register('compileMobileControlAllocationSelfTest', Exec) {
+    inputs.files(
+            '../../dual_machine_runtime/shared/include/vfdual/model_contract.hpp',
+            'src/main/cpp/YoloPostprocessor.hpp',
+            'src/main/cpp/YoloPostprocessor.cpp',
+            'src/main/cpp/MobileTargetTracker.hpp',
+            'src/main/cpp/MobileTargetTracker.cpp',
+            'src/main/cpp/MobileMotionPlanner.hpp',
+            'src/main/cpp/MobileMotionPlanner.cpp',
+            'src/main/cpp/MobileControlCore.hpp',
+            'src/main/cpp/MobileControlCore.cpp',
+            'src/main/cpp/MobileControlAllocationTests.cpp')
+    outputs.file(controlAllocationSelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/YoloPostprocessor.cpp',
+            'src/main/cpp/MobileTargetTracker.cpp',
+            'src/main/cpp/MobileMotionPlanner.cpp',
+            'src/main/cpp/MobileControlCore.cpp',
+            'src/main/cpp/MobileControlAllocationTests.cpp',
+            '-Isrc/main/cpp',
+            '-I../../dual_machine_runtime/shared/include',
+            '-o', controlAllocationSelfTest.get().absolutePath)
+}
+
+tasks.register('verifyMobileControlAllocationNative', Exec) {
+    group = 'verification'
+    description = 'Proves the warmed stable mobile control hot path performs no heap allocation.'
+    dependsOn(tasks.named('compileMobileControlAllocationSelfTest'))
+    commandLine(controlAllocationSelfTest.get().absolutePath)
+}
+
+tasks.register('compileYoloPostprocessorSelfTest', Exec) {
+    inputs.files(
+            'src/main/cpp/YoloPostprocessor.hpp',
+            'src/main/cpp/YoloPostprocessor.cpp',
+            'src/main/cpp/YoloPostprocessorTests.cpp',
+            '../../dual_machine_runtime/shared/include/vfdual/model_contract.hpp')
+    outputs.file(yoloPostprocessorSelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/YoloPostprocessor.cpp',
+            'src/main/cpp/YoloPostprocessorTests.cpp',
+            '-Isrc/main/cpp',
+            '-I../../dual_machine_runtime/shared/include',
+            '-o', yoloPostprocessorSelfTest.get().absolutePath)
+}
+
+tasks.register('verifyYoloPostprocessorNative', Exec) {
+    group = 'verification'
+    description = 'Runs split-output decode and NMS contracts on the build host.'
+    dependsOn(tasks.named('compileYoloPostprocessorSelfTest'))
+    commandLine(yoloPostprocessorSelfTest.get().absolutePath)
+}
+
+tasks.register('compileFixedMetricRingSelfTest', Exec) {
+    inputs.files(
+            'src/main/cpp/FixedMetricRing.hpp',
+            'src/main/cpp/FixedMetricRingTests.cpp')
+    outputs.file(fixedMetricRingSelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/FixedMetricRingTests.cpp',
+            '-Isrc/main/cpp',
+            '-o', fixedMetricRingSelfTest.get().absolutePath)
+}
+
+tasks.register('verifyFixedMetricRingNative', Exec) {
+    group = 'verification'
+    description = 'Proves bounded decoder metric history wraps in order without allocation.'
+    dependsOn(tasks.named('compileFixedMetricRingSelfTest'))
+    commandLine(fixedMetricRingSelfTest.get().absolutePath)
+}
+
+tasks.register('compileInferenceGenerationPolicySelfTest', Exec) {
+    inputs.files(
+            'src/main/cpp/InferenceGenerationPolicy.hpp',
+            'src/main/cpp/InferenceGenerationPolicyTests.cpp')
+    outputs.file(inferenceGenerationPolicySelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/InferenceGenerationPolicyTests.cpp',
+            '-Isrc/main/cpp',
+            '-o', inferenceGenerationPolicySelfTest.get().absolutePath)
+}
+
+tasks.register('verifyInferenceGenerationPolicyNative', Exec) {
+    group = 'verification'
+    description = 'Rejects late QNN success/failure commits from obsolete decoder generations.'
+    dependsOn(tasks.named('compileInferenceGenerationPolicySelfTest'))
+    commandLine(inferenceGenerationPolicySelfTest.get().absolutePath)
+}
+
+tasks.register('compilePortableInferenceFailurePolicySelfTest', Exec) {
+    inputs.files(
+            'src/main/cpp/PortableInferenceFailurePolicy.hpp',
+            'src/main/cpp/PortableInferenceFailurePolicyTests.cpp')
+    outputs.file(portableInferenceFailurePolicySelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/PortableInferenceFailurePolicyTests.cpp',
+            '-Isrc/main/cpp',
+            '-o', portableInferenceFailurePolicySelfTest.get().absolutePath)
+}
+
+tasks.register('verifyPortableInferenceFailurePolicyNative', Exec) {
+    group = 'verification'
+    description = 'Separates immutable portable model/backend failures from recoverable runtime failures.'
+    dependsOn(tasks.named('compilePortableInferenceFailurePolicySelfTest'))
+    commandLine(portableInferenceFailurePolicySelfTest.get().absolutePath)
+}
+
+tasks.register('compileReceiverReferenceSyncPolicySelfTest', Exec) {
+    inputs.files(
+            '../../dual_machine_runtime/shared/include/vfdual/protocol.hpp',
+            'src/main/cpp/ReceiverReferenceSyncPolicy.hpp',
+            'src/main/cpp/ReceiverReferenceSyncPolicyTests.cpp')
+    outputs.file(receiverReferenceSyncPolicySelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/ReceiverReferenceSyncPolicyTests.cpp',
+            '-Isrc/main/cpp',
+            '-I../../dual_machine_runtime/shared/include',
+            '-o', receiverReferenceSyncPolicySelfTest.get().absolutePath)
+}
+
+tasks.register('verifyReceiverReferenceSyncPolicyNative', Exec) {
+    group = 'verification'
+    description = 'Guards H.264 IDR recovery, sequence continuity and wraparound without rate limiting.'
+    dependsOn(tasks.named('compileReceiverReferenceSyncPolicySelfTest'))
+    commandLine(receiverReferenceSyncPolicySelfTest.get().absolutePath)
+}
+
+tasks.register('compileMobileTargetTrackerSelfTest', Exec) {
+    inputs.files(
+            'src/main/cpp/YoloPostprocessor.hpp',
+            'src/main/cpp/MobileTargetTracker.hpp',
+            'src/main/cpp/MobileTargetTracker.cpp',
+            'src/main/cpp/MobileTargetTrackerTests.cpp')
+    outputs.file(targetTrackerSelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/MobileTargetTracker.cpp',
+            'src/main/cpp/MobileTargetTrackerTests.cpp',
+            '-Isrc/main/cpp',
+            '-o', targetTrackerSelfTest.get().absolutePath)
+}
+
+tasks.register('verifyMobileTargetTrackerNative', Exec) {
+    group = 'verification'
+    description = 'Runs deterministic multi-target tracking contracts on the build host.'
+    dependsOn(tasks.named('compileMobileTargetTrackerSelfTest'))
+    commandLine(targetTrackerSelfTest.get().absolutePath)
+}
+
+tasks.register('compileMakcuOutputGateSelfTest', Exec) {
+    inputs.files(
+            'src/main/cpp/MakcuOutputGate.hpp',
+            'src/main/cpp/MakcuOutputGateTests.cpp')
+    outputs.file(makcuOutputGateSelfTest)
+    doFirst {
+        nativeControlSelfTestDir.get().asFile.mkdirs()
+    }
+    commandLine(
+            hostCxx,
+            '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pedantic',
+            'src/main/cpp/MakcuOutputGateTests.cpp',
+            '-Isrc/main/cpp',
+            '-o', makcuOutputGateSelfTest.get().absolutePath)
+}
+
+tasks.register('verifyMakcuOutputGateNative', Exec) {
+    group = 'verification'
+    description = 'Runs concurrent fail-close and recovery-generation gate contracts.'
+    dependsOn(tasks.named('compileMakcuOutputGateSelfTest'))
+    commandLine(makcuOutputGateSelfTest.get().absolutePath)
+}
+
+tasks.named('check').configure {
+    dependsOn(
+            tasks.named('verifyMobileMotionPlannerNative'),
+            tasks.named('verifyMobileControlCoreNative'),
+            tasks.named('verifyMobileControlAllocationNative'),
+            tasks.named('verifyYoloPostprocessorNative'),
+            tasks.named('verifyFixedMetricRingNative'),
+            tasks.named('verifyInferenceGenerationPolicyNative'),
+            tasks.named('verifyPortableInferenceFailurePolicyNative'),
+            tasks.named('verifyReceiverReferenceSyncPolicyNative'),
+            tasks.named('verifyMobileTargetTrackerNative'),
+            tasks.named('verifyMakcuOutputGateNative'))
+}
+
+tasks.register('verifyMobileReleaseContracts') {
+    group = 'verification'
+    description = 'Runs every QNN, CAT6, runtime and move-only control release contract.'
+    dependsOn(
+            tasks.named('verifyCs2DistributionBoundaryPolicy'),
+            tasks.named('verifyQnnHtpArchitectureClosure'),
+            tasks.named('verifyQnnHtpArchitectureDiscoveryPolicy'),
+            tasks.named('verifyQnnSdkModelToolchainIdentityPolicy'),
+            tasks.named('verifyEthernetTransportContract'),
+            tasks.named('verifyCat6ReadyContract'),
+            tasks.named('verifyCat6ReadyLifecycle'),
+            tasks.named('verifyMobileRuntimeSnapshot'),
+            tasks.named('verifyAuthenticatedDataPlaneV2'),
+            tasks.named('verifyAuthenticatedPeerHandshakeV1'),
+            tasks.named('verifyPairGenerationProposalV1'),
+            tasks.named('verifyPairGenerationCredentialV1'),
+            tasks.named('verifyAndroidBoundPeerHandshakeSession'),
+            tasks.named('verifyDualMachineUsageAuthorizationContract'),
+            tasks.named('verifyDualMachineUsageLease'),
+            tasks.named('verifyDualMachineAuthorizationPresentation'),
+            tasks.named('verifyDualMachineCardAuthorizationFoundation'),
+            tasks.named('verifyDualMachineCardAuthorizationCoordinators'),
+            tasks.named('verifyDualMachineSidecarHttpClient'),
+            tasks.named('verifyDualMachinePairingIdentityCodec'),
+            tasks.named('verifyMobileMotionPlannerNative'),
+            tasks.named('verifyMobileControlCoreNative'),
+            tasks.named('verifyMobileControlAllocationNative'),
+            tasks.named('verifyYoloPostprocessorNative'),
+            tasks.named('verifyFixedMetricRingNative'),
+            tasks.named('verifyInferenceGenerationPolicyNative'),
+            tasks.named('verifyPortableInferenceFailurePolicyNative'),
+            tasks.named('verifyReceiverReferenceSyncPolicyNative'),
+            tasks.named('verifyMobileTargetTrackerNative'),
+            tasks.named('verifyMakcuOutputGateNative'))
+}
+
+def releaseApkArtifact = layout.buildDirectory.file(
+        'outputs/apk/release/app-release.apk')
+def verifyMobileReleaseElfPageAlignmentTask = tasks.register(
+        'verifyMobileReleaseElfPageAlignment', JavaExec) {
+    group = 'verification'
+    description = 'Rejects arm64 release libraries whose ELF LOAD segments cannot use 16 KB pages.'
+    dependsOn(
+            tasks.named('compileMobileRuntimeSnapshotSelfTest'),
+            tasks.named('packageRelease'))
+    classpath = files(runtimeSnapshotSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.MobileReleaseElfPageAlignmentSelfTest'
+    doFirst {
+        File apk = releaseApkArtifact.get().asFile
+        if (!apk.isFile()) {
+            throw new GradleException("Release APK is missing: ${apk}")
+        }
+        systemProperty 'visionforge.release.apk', apk.absolutePath
+    }
+}
+def verifyMobileReleaseZipAlignmentTask = tasks.register(
+        'verifyMobileReleaseZipAlignment16Kb', Exec) {
+    group = 'verification'
+    description = 'Rejects release APK native entries that are not 16 KB ZIP aligned.'
+    dependsOn(tasks.named('packageRelease'))
+    doFirst {
+        String executableName = System.getProperty('os.name')
+                .toLowerCase(Locale.ROOT).contains('windows')
+                ? 'zipalign.exe' : 'zipalign'
+        File executable = new File(
+                android.sdkDirectory,
+                "build-tools/${android.buildToolsVersion}/${executableName}")
+        File apk = releaseApkArtifact.get().asFile
+        if (!executable.isFile()) {
+            throw new GradleException("zipalign is missing: ${executable}")
+        }
+        if (!apk.isFile()) {
+            throw new GradleException("Release APK is missing: ${apk}")
+        }
+        commandLine(
+                executable.absolutePath,
+                '-c', '-P', '16', '4', apk.absolutePath)
+    }
+}
+def verifyMobileReleasePageCompatibilityTask = tasks.register(
+        'verifyMobileReleasePageCompatibility') {
+    group = 'verification'
+    description = 'Verifies 16 KB ZIP and arm64 ELF alignment for modern Android devices.'
+    dependsOn(
+            verifyMobileReleaseElfPageAlignmentTask,
+            verifyMobileReleaseZipAlignmentTask)
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyMobileReleaseContracts'))
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyMobileReleaseContracts'))
+    }
+    if (task.name == 'assembleRelease') {
+        task.dependsOn(verifyMobileReleasePageCompatibilityTask)
+    }
+}

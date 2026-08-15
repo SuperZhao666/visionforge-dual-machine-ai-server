@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#06070c">
+<title>购买时长 - VisionForge</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/css/style.css?v=5">
+<style>
+/* 购买页专属组件（通用设计令牌与 shop 组件见 style.css §21.7） */
+#shop-cosmos { position: fixed; inset: 0; z-index: -1; width: 100%; height: 100%; }
+.purchase-wrap { position: relative; z-index: 1; max-width: 1120px; margin: 0 auto; padding: 2.2rem 1.25rem 4rem; }
+.purchase-top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.8rem; }
+.purchase-brand {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    font-size: 1.05rem; font-weight: 750; letter-spacing: -0.01em;
+    background: var(--grad-brand); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.purchase-hero { margin-bottom: 1.7rem; }
+.purchase-hero h1 { font-size: clamp(1.75rem, 4vw, 2.6rem); font-weight: 800; letter-spacing: -0.035em; line-height: 1.15; margin-bottom: 0.5rem; }
+.purchase-hero p { color: var(--text-secondary); font-size: 0.92rem; }
+.purchase-notice { margin-bottom: 1.2rem; padding: 0.8rem 1rem; border: 1px solid var(--border-light); border-radius: var(--radius); background: var(--surface); color: var(--text-secondary); font-size: 0.85rem; backdrop-filter: blur(10px); }
+
+/* 套餐卡支付按钮区 */
+.purchase-plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); gap: 1.1rem; }
+.plan-form-card { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.pay-buttons { display: flex; gap: 0.45rem; width: 100%; margin-top: auto; }
+.payment-button {
+    flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem;
+    padding: 0.55rem 0.6rem; border-radius: var(--radius-sm);
+    border: 1px solid var(--border-light); background: var(--surface-hover);
+    color: var(--text); font-size: 0.82rem; font-weight: 700; cursor: pointer;
+    white-space: nowrap; font-family: inherit;
+    transition: transform var(--transition), box-shadow var(--transition), background var(--transition);
+}
+.payment-wechat { border-color: rgba(52, 211, 153, 0.35); color: #6ee7b7; background: rgba(52, 211, 153, 0.08); }
+.payment-wechat:hover { background: rgba(52, 211, 153, 0.16); box-shadow: 0 6px 20px rgba(52, 211, 153, 0.2); transform: translateY(-1.5px); }
+.payment-alipay { border-color: rgba(103, 232, 249, 0.35); color: #67e8f9; background: rgba(103, 232, 249, 0.08); }
+.payment-alipay:hover { background: rgba(103, 232, 249, 0.16); box-shadow: 0 6px 20px rgba(103, 232, 249, 0.18); transform: translateY(-1.5px); }
+.payment-busy {
+    flex: 1; border: 1px dashed var(--border-light); background: transparent; color: var(--text-muted);
+    cursor: not-allowed; font-size: 0.78rem; padding: 0.55rem 0.6rem; border-radius: var(--radius-sm);
+    white-space: normal; text-align: center; font-family: inherit;
+}
+.payment-unavailable { font-size: 0.78rem; color: var(--text-muted); }
+
+/* 支付台布局 */
+.pay-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 1rem; align-items: start; }
+.pay-main, .order-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl);
+    padding: 1.6rem; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.section-title { font-size: 0.78rem; color: var(--text-muted); font-weight: 700; letter-spacing: 0.1em; margin-bottom: 0.9rem; }
+.scanner-banner {
+    display: flex; align-items: center; justify-content: center; gap: 0.55rem; flex-wrap: wrap;
+    padding: 0.85rem 1rem; border-radius: var(--radius);
+    font-size: 1.05rem; font-weight: 800; text-align: center; margin-bottom: 1.3rem;
+}
+.scanner-banner span { display: block; width: 100%; font-size: 0.72rem; font-weight: 500; opacity: 0.85; }
+.scanner-wechat { background: rgba(7, 193, 96, 0.12); border: 1px solid rgba(7, 193, 96, 0.35); color: #4ade80; }
+.scanner-alipay { background: rgba(22, 119, 255, 0.12); border: 1px solid rgba(22, 119, 255, 0.4); color: #60a5fa; }
+.pay-qr-row { display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+.qr-fallback {
+    display: none; position: absolute; inset: 12px;
+    border: 1px dashed #9aa8c7; border-radius: var(--radius-sm);
+    color: #45516b; background: #f6f8fc; text-align: center; line-height: 1.7; align-content: center;
+}
+.countdown-text { font-size: 0.8rem; color: var(--text-muted); line-height: 1.65; text-align: center; max-width: 400px; }
+.countdown-text strong { color: var(--warning); font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
+
+/* 订单信息面板 */
+.order-panel dl { display: grid; gap: 0.7rem; margin: 0; }
+.order-panel dl > div { padding-bottom: 0.7rem; border-bottom: 1px solid var(--border); }
+.order-panel dt { color: var(--text-muted); font-size: 0.72rem; margin-bottom: 0.2rem; }
+.order-panel dd { margin: 0; font-weight: 700; font-size: 0.9rem; word-break: break-all; }
+.order-panel .price { font-size: 1.5rem; font-weight: 800; color: var(--success); font-variant-numeric: tabular-nums; }
+.order-hint { margin-top: 1rem; padding: 0.75rem 0.85rem; border-radius: var(--radius-sm); background: rgba(6, 8, 13, 0.5); color: var(--text-secondary); font-size: 0.76rem; line-height: 1.6; }
+.cancel-form { margin-top: 1rem; }
+.cancel-form .secondary-button { width: 100%; }
+
+/* 状态面板（成功 / 关闭 / 无效） */
+.state-panel { padding: 2rem 1.6rem; border-radius: var(--radius-lg); text-align: center; border: 1px solid rgba(52, 211, 153, 0.3); background: rgba(52, 211, 153, 0.07); }
+.state-panel.closed { border-color: rgba(251, 191, 36, 0.3); background: rgba(251, 191, 36, 0.06); }
+.state-panel strong { display: block; font-size: 1.25rem; color: var(--success); margin-bottom: 0.4rem; }
+.state-panel.closed strong { color: var(--warning); }
+.state-panel span { color: var(--text-secondary); font-size: 0.86rem; }
+.empty-panel { max-width: 560px; margin: 2.5rem auto; text-align: center; padding: 2.6rem 2rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); backdrop-filter: blur(14px); }
+.empty-panel h2 { font-size: 1.3rem; margin-bottom: 0.6rem; }
+.empty-panel p { color: var(--text-secondary); font-size: 0.9rem; }
+.success-check { width: 64px; height: 64px; color: var(--success); margin-bottom: 0.6rem; filter: drop-shadow(0 0 16px rgba(52, 211, 153, 0.45)); }
+.success-check .check-ring { stroke-dasharray: 176; stroke-dashoffset: 176; animation: draw 0.7s var(--ease-out) 0.1s forwards; }
+.success-check .check-mark { stroke-dasharray: 40; stroke-dashoffset: 40; animation: draw 0.45s var(--ease-out) 0.65s forwards; }
+
+@media (max-width: 820px) {
+    .pay-layout { grid-template-columns: 1fr; }
+    .purchase-wrap { padding: 1.5rem 1rem 3rem; }
+}
+</style>
+</head>
+<body>
+<canvas id="shop-cosmos" aria-hidden="true"></canvas>
+<div class="purchase-wrap">
+    <div class="purchase-top">
+        <span class="purchase-brand">VisionForge</span>
+        <span class="badge badge-info">{{ status_text }}</span>
+    </div>
+    {% if message %}
+    <div class="purchase-notice">{% if error_code %}<span data-error-code="{{ error_code }}" hidden>{{ error_code }}</span>{% endif %}{{ message }}</div>
+    {% endif %}
+    <section class="purchase-hero">
+        <h1>购买<span class="gradient-text">时长</span></h1>
+        <p>当前页面由客户端创建，只用于本次购买会话。</p>
+    </section>
+
+{% if view == 'order' and order %}
+    <section class="pay-layout">
+        <div class="pay-main border-beam">
+            <div class="section-title">订单支付 · #{{ order.oid }}</div>
+            {% if order.order_status == 'delivered' %}
+            <div class="state-panel">
+                <svg class="success-check" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+                    <circle class="check-ring" cx="32" cy="32" r="28" stroke="currentColor" stroke-width="3"/>
+                    <path class="check-mark" d="M20 33.5 28.5 42 45 24" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <strong>支付已完成</strong>
+                <span>客户端会自动刷新余额。</span>
+            </div>
+            {% elif order.order_status in ('cancelled', 'expired', 'refund_required') %}
+            <div class="state-panel closed">
+                <strong>{{ order.closed_title }}</strong>
+                <span>{{ order.closed_detail }}</span>
+            </div>
+            {% else %}
+            <div class="scanner-banner scanner-{{ order.payment_method }}">请使用{{ '支付宝' if order.payment_method == 'alipay' else '微信' }}扫一扫付款<span>使用其他应用扫描不会进入付款页面</span></div>
+            <div class="pay-qr-row">
+                <div class="qr-frame">
+                    <span class="qr-corner tl"></span><span class="qr-corner tr"></span><span class="qr-corner bl"></span><span class="qr-corner br"></span>
+                    <img src="{{ order.qr }}" alt="payment qr" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+                    <div class="qr-fallback">二维码图片未配置<br>请联系管理员补齐支付码</div>
+                    <span class="qr-scanline" aria-hidden="true"></span>
+                </div>
+                <p class="countdown-text">请在 <strong id="vfRemainingSeconds" data-seconds="{{ order.remaining_seconds }}">{{ order.remaining_seconds }}秒</strong> 内严格按页面固定金额支付。二维码金额已预设，请勿自行修改。</p>
+            </div>
+            {% endif %}
+        </div>
+        <aside class="order-panel">
+            <div class="section-title">订单信息</div>
+            <dl>
+                <div><dt>订单号</dt><dd><code>{{ order.merchant_order_no }}</code></dd></div>
+                <div><dt>套餐</dt><dd>{{ order.plan_name }}</dd></div>
+                <div><dt>支付金额</dt><dd class="price">¥{{ "%.2f"|format(order.amount) }}</dd></div>
+                <div><dt>支付方式</dt><dd>{{ order.payment_label }}</dd></div>
+                <div><dt>订单状态</dt><dd><span class="badge {% if order.order_status == 'delivered' %}badge-success{% elif order.order_status == 'pending' %}badge-pending{% else %}badge-neutral{% endif %}">{{ order.order_status_text }}</span></dd></div>
+            </dl>
+            <div class="order-hint">关闭或重新打开本页不会取消订单。若已支付，请等待监听回调；可信的迟到支付通知仍会安全到账且只入账一次。</div>
+            {% if order.can_cancel %}
+            <form method="post" action="/client/purchase/{{ token }}/cancel" class="cancel-form">
+                <button class="btn btn-secondary secondary-button">取消本次支付</button>
+            </form>
+            {% endif %}
+        </aside>
+    </section>
+{% elif view == 'plans' %}
+    <section class="plans-shell">
+        <div class="section-title">选择套餐</div>
+        <p style="color:var(--text-muted);font-size:0.83rem;margin-bottom:1.1rem;">关闭本页不会产生订单。请选择套餐和支付方式，并严格支付页面显示的固定金额。</p>
+        {% set badges = {'1h': '新客试用', '5h': '轻量之选', '10h': '人气推荐', '50h': '重度续航', '100h': '最超值'} %}
+        <div class="purchase-plans">
+        {% for p in plans %}
+            <form method="post" action="/client/purchase/{{ token }}/order" class="plan-card plan-form-card {% if p.key == '100h' %}featured{% endif %}" data-tilt>
+                {% if p.key == '100h' %}<span class="plan-ribbon">最超值</span>{% elif p.key == '10h' %}<span class="plan-ribbon ribbon-alt">人气推荐</span>{% endif %}
+                <input type="hidden" name="plan" value="{{ p.key }}">
+                <div class="plan-tag">{{ badges.get(p.key, p.desc) }}</div>
+                <div class="plan-hours">{{ p.key[:-1] }}<span class="plan-hours-unit">小时</span></div>
+                <div class="plan-price"><span class="plan-currency">¥</span>{{ "%.2f"|format(p.price) }}</div>
+                <div class="plan-unit">≈ ¥{{ "%.3f"|format(p.price / (p.key[:-1] | int)) }} / 小时</div>
+                <p class="plan-desc">{{ p.desc }}</p>
+                <div class="pay-buttons">
+                    {% for b in p.buttons %}
+                        {% if b.available %}
+                    <button name="payment_method" value="{{ b.key }}" class="payment-button payment-{{ b.key }}">{{ b.label }}</button>
+                        {% else %}
+                    <button type="button" class="payment-busy" disabled>{{ b.busy_text }}</button>
+                        {% endif %}
+                    {% endfor %}
+                    {% if not p.buttons %}<span class="payment-unavailable">支付码未配置</span>{% endif %}
+                </div>
+            </form>
+        {% endfor %}
+        </div>
+    </section>
+{% else %}
+    <section class="empty-panel">
+        <h2>购买会话无效</h2>
+        <p>请回到 VisionForge 客户端，重新点击“购买时长”打开页面。</p>
+    </section>
+{% endif %}
+</div>
+
+{% if view == 'order' and order %}
+<canvas id="pay-confetti" aria-hidden="true"></canvas>
+{% endif %}
+<script defer src="/static/js/shop_fx.js?v=2"></script>
+{% if poll_mode == 'order' %}
+<script>
+let vfStatusTimer = null;
+async function vfPollPurchaseStatus() {
+  try {
+    const response = await fetch('/client/purchase/{{ token }}/status', {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: {'Accept': 'application/json'}
+    });
+    if (!response.ok && response.status !== 404) {
+      return;
+    }
+    const payload = await response.json();
+    if (payload.terminal) {
+      if (vfStatusTimer !== null) {
+        window.clearInterval(vfStatusTimer);
+      }
+      window.location.replace('/client/purchase/{{ token }}');
+    }
+  } catch (err) {}
+}
+vfStatusTimer = window.setInterval(vfPollPurchaseStatus, 2000);
+window.setTimeout(vfPollPurchaseStatus, 300);
+const vfDeadlineNode = document.getElementById('vfRemainingSeconds');
+function vfUpdateDeadline() {
+  if (!vfDeadlineNode) return;
+  const seconds = Math.max(0, Number(vfDeadlineNode.dataset.seconds || 0));
+  const elapsed = Math.floor((Date.now() - Number(vfDeadlineNode.dataset.started || Date.now())) / 1000);
+  const left = Math.max(0, seconds - elapsed);
+  vfDeadlineNode.textContent = Math.floor(left / 60) + '分' + String(left % 60).padStart(2, '0') + '秒';
+}
+if (vfDeadlineNode) { vfDeadlineNode.dataset.started = String(Date.now()); vfUpdateDeadline(); window.setInterval(vfUpdateDeadline, 1000); }
+</script>
+{% elif poll_mode == 'plans' %}
+<script>
+let vfStatusTimer = null;
+async function vfPollPurchaseStatus() {
+  try {
+    const response = await fetch('/client/purchase/{{ token }}/status', {cache: 'no-store', credentials: 'same-origin', headers: {'Accept': 'application/json'}});
+    if (!response.ok && response.status !== 404) return;
+    const payload = await response.json();
+    if (payload.terminal || Number(payload.order_id || 0) > 0) {
+      if (vfStatusTimer !== null) window.clearInterval(vfStatusTimer);
+      window.location.replace('/client/purchase/{{ token }}');
+    }
+  } catch (err) {}
+}
+vfStatusTimer = window.setInterval(vfPollPurchaseStatus, 2000);
+window.setTimeout(vfPollPurchaseStatus, 300);
+</script>
+{% endif %}
+{% if view == 'plans' %}
+<script>
+/* 防重复提交：提交后锁定该卡片其余按钮并给出反馈（不禁用按钮，保证表单字段完整） */
+document.querySelectorAll('.plan-form-card').forEach(function (form) {
+  form.addEventListener('submit', function (e) {
+    if (form.dataset.busy) { e.preventDefault(); return; }
+    form.dataset.busy = '1';
+    var active = document.activeElement;
+    form.querySelectorAll('.payment-button').forEach(function (b) {
+      if (b === active) { b.textContent = '正在创建…'; }
+      else { b.style.opacity = '0.45'; b.style.pointerEvents = 'none'; }
+    });
+  });
+});
+</script>
+{% endif %}
+{% if celebrate %}
+<script>
+(function () {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  var canvas = document.getElementById('pay-confetti');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var cw = canvas.width = window.innerWidth, ch = canvas.height = window.innerHeight;
+  var palette = ['#8b7ff5', '#67e8f9', '#34d399', '#fbbf24', '#c4b5fd', '#a5f3fc'];
+  var parts = [];
+  for (var i = 0; i < 150; i++) {
+    var ang = Math.random() * Math.PI * 2, speed = 3 + Math.random() * 7;
+    parts.push({x: cw / 2, y: ch * 0.32, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed - 3.5,
+      w: 4 + Math.random() * 5, h: 3 + Math.random() * 4, rot: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 0.25, color: palette[i % palette.length]});
+  }
+  var frames = 0;
+  var tick = function () {
+    ctx.clearRect(0, 0, cw, ch); frames++;
+    for (var j = 0; j < parts.length; j++) {
+      var p = parts[j];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.16; p.vx *= 0.985; p.rot += p.vr;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      ctx.globalAlpha = Math.max(0, 1 - frames / 150);
+      ctx.fillStyle = p.color; ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); ctx.restore();
+    }
+    if (frames < 170) requestAnimationFrame(tick); else ctx.clearRect(0, 0, cw, ch);
+  };
+  requestAnimationFrame(tick);
+})();
+</script>
+{% endif %}
+</body>
+</html>

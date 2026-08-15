@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="section_output_route">鼠标输出路线</string>
+    <string name="output_route_makcu">MAKCU 有线盒子</string>
+    <string name="output_route_bluetooth_hid">蓝牙 HID 无线</string>
+    <string name="output_route_status_makcu">MAKCU 有线盒子</string>
+    <string name="output_route_status_bluetooth_hid">蓝牙 HID 无线</string>
+    <string name="output_route_detail_makcu">当前使用 MAKCU 盒子输出，原有有线路线保持不变。</string>
+    <string name="output_route_detail_bluetooth_selected">当前使用蓝牙 HID 无线输出。请在电脑蓝牙设置中完成配对，断线后应用会自动重连。</string>
+    <string name="output_route_detail_bluetooth_connected">蓝牙 HID 已连接电脑，物理按键链路已就绪。</string>
+    <string name="output_route_detail_bluetooth_waiting_buttons">蓝牙 HID 已连接，正在等待电脑端物理按键状态链路。</string>
+    <string name="output_route_detail_bluetooth_permission">蓝牙 HID 需要“附近的设备”权限，点击后授权并开始配对。</string>
+    <string name="output_route_detail_bluetooth_unavailable">此手机系统未提供蓝牙 HID 设备能力，请使用 MAKCU 路线。</string>
+    <string name="status_output_route_makcu_selected">已切换到 MAKCU 有线盒子。</string>
+    <string name="status_output_route_bluetooth_permission_requested">请允许“附近的设备”权限，以启用蓝牙 HID。</string>
+    <string name="status_output_route_bluetooth_permission_denied">未获得“附近的设备”权限，蓝牙 HID 暂时无法连接。</string>
+    <string name="status_output_route_bluetooth_requested">已切换到蓝牙 HID 无线输出；配对和连接完成前不会发送鼠标移动。</string>
+    <string name="status_output_route_bluetooth_unavailable">此手机不支持蓝牙 HID 设备模式。</string>
+    <string name="status_output_route_bluetooth_enabling">请开启手机蓝牙，开启后将继续进入配对。</string>
+    <string name="status_output_route_bluetooth_pairing">手机已进入可发现状态，请在电脑蓝牙设置中选择“VF 无线鼠标”完成配对。</string>
+    <string name="status_output_route_bluetooth_pairing_cancelled">未进入可发现状态。蓝牙路线已保留，可再次点击“蓝牙 HID 无线”重新配对。</string>
+</resources>

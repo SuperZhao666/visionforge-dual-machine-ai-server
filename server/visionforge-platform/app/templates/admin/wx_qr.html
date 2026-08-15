@@ -1,0 +1,24 @@
+{% extends "admin/base.html" %}
+{% block title %}微信扫码登录 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>微信小号登录</h2>
+        <p>内部运维工具：扫码后微信小号保持在线，用于接收通知。</p>
+    </div>
+</div>
+<div class="card" style="text-align:center;max-width:560px;" data-reveal>
+    <p style="color:var(--text-secondary);margin-bottom:1rem;">每30秒自动刷新，请用微信小号扫码</p>
+    <div class="qr-thumb" style="display:inline-block;">
+        <img id="qr-img" src="/static/img/wx_login_qr.png?t={{ ts }}" style="max-width:300px;" alt="微信登录二维码" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22300%22 height=%22300%22><rect fill=%22%23131620%22 width=%22300%22 height=%22300%22 rx=%228%22/><text x=%22150%22 y=%22150%22 text-anchor=%22middle%22 fill=%22%23888%22 font-size=%2214%22>二维码已过期，请稍候刷新</text></svg>'">
+    </div>
+    <p style="margin-top:1rem;font-size:0.8rem;color:var(--text-muted);" id="status">等待二维码...</p>
+</div>
+<script>
+setInterval(function(){
+    var img = document.getElementById('qr-img');
+    img.src = '/static/img/wx_login_qr.png?t=' + Date.now();
+    document.getElementById('status').textContent = '已刷新 ' + new Date().toLocaleTimeString();
+}, 30000);
+</script>
+{% endblock %}

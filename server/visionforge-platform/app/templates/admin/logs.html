@@ -1,0 +1,183 @@
+{% extends "admin/base.html" %}
+{% import "admin/_icons.html" as ic %}
+{% block title %}日志管理 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>日志管理</h2>
+        <p>客户端按周期上传“导出错误报告”ZIP 包，支持按会话查看、下载与清理。</p>
+    </div>
+</div>
+
+{% if stats %}
+<div class="stats-grid" data-reveal>
+    <div class="stat-card"><div class="stat-icon">{{ ic.svg('activity', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ stats.total_sessions }}" data-decimals="0">{{ stats.total_sessions }}</div><div class="stat-label">会话数</div></div></div>
+    <div class="stat-card"><div class="stat-icon">{{ ic.svg('file', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ stats.total_files }}" data-decimals="0">{{ stats.total_files }}</div><div class="stat-label">文件数</div></div></div>
+    <div class="stat-card tone-info"><div class="stat-icon">{{ ic.svg('layers', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ stats.total_bytes / 1024 / 1024 }}" data-suffix=" MB" data-decimals="1">{{ "%.1f"|format(stats.total_bytes / 1024 / 1024) }} MB</div><div class="stat-label">总数据量</div></div></div>
+</div>
+{% endif %}
+
+{% if policy %}
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>客户端日志上传策略</h3>
+            <p class="card-desc">新版客户端只按周期上传“导出错误报告”ZIP 包，细粒度日志保留在 ZIP 内，减少服务器小文件和频繁上传。</p>
+        </div>
+    </div>
+    <form method="post" action="/admin/logs/settings">
+        <div class="form-grid form-grid-tight">
+            <div class="form-group">
+                <label>启用上传</label>
+                <select name="enabled">
+                    <option value="1" {% if policy.enabled %}selected{% endif %}>启用</option>
+                    <option value="0" {% if not policy.enabled %}selected{% endif %}>关闭</option>
+                </select>
+            </div>
+            <div class="form-group"><label>上传周期（秒）</label><input name="interval_seconds" type="number" min="300" max="86400" value="{{ policy.interval_seconds }}"></div>
+            <div class="form-group"><label>单包上限（MB）</label><input name="max_bundle_mb" type="number" min="5" max="512" value="{{ policy.max_bundle_mb }}"></div>
+            <div class="form-group"><label>保留天数</label><input name="retention_days" type="number" min="1" max="365" value="{{ policy.retention_days }}"></div>
+        </div>
+        <div class="form-actions"><button class="btn btn-primary btn-sm">保存策略</button></div>
+    </form>
+</div>
+{% endif %}
+
+{% if current_session and files %}
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>会话 <code>{{ current_session.session_id }}</code></h3>
+            <p class="card-desc">{{ current_session.started_at }} ~ {{ current_session.ended_at or '进行中' }}</p>
+        </div>
+        <div class="card-actions">
+            <form method="post" action="/admin/logs/delete-session" style="margin:0;">
+                <input type="hidden" name="session_db_id" value="{{ current_session.id }}">
+                <input type="hidden" name="reason" value="admin delete log session">
+                <button class="btn btn-danger btn-sm" onclick="return confirm('确认删除整个日志会话？')">删除整个会话</button>
+            </form>
+        </div>
+    </div>
+</div>
+<form id="bulk-file-delete-form" method="post" action="/admin/logs/files/delete-bulk">
+    <input type="hidden" name="session_db_id" value="{{ current_session.id }}">
+    <input type="hidden" name="reason" value="admin bulk delete log files">
+</form>
+<form id="bulk-file-download-form" method="post" action="/admin/logs/files/download-bulk">
+    <input type="hidden" name="session_db_id" value="{{ current_session.id }}">
+</form>
+<div class="table-toolbar">
+    <div class="btn-group">
+        <a class="btn btn-primary btn-sm" href="/admin/logs/{{ current_session.id }}/download-zip">一键下载本会话 ZIP</a>
+        <button class="btn btn-secondary btn-sm" form="bulk-file-download-form">下载选中文件 ZIP</button>
+        <button class="btn btn-danger btn-sm" form="bulk-file-delete-form" onclick="return confirm('确认批量删除选中的日志文件？')">批量删除选中文件</button>
+    </div>
+    <span class="toolbar-note">勾选文件后执行批量删除，磁盘文件和数据库记录会一起删除。</span>
+</div>
+<div class="table-wrap" data-reveal><table>
+    <thead><tr><th><input type="checkbox" data-check-all="log-file"></th><th>类型</th><th>文件名</th><th class="num">大小</th><th>SHA256</th><th>上传时间</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for f in files %}
+    <tr>
+        <td><input type="checkbox" name="file_ids" value="{{ f.id }}" data-check-item="log-file"></td>
+        <td><code>{{ f.file_type }}</code></td>
+        <td>{{ f.original_name }}</td>
+        <td class="num">{{ "%.1f"|format(f.file_size / 1024) }} KB</td>
+        <td><code class="text-mono" style="font-size:0.7rem;">{{ f.sha256[:12] if f.sha256 else '-' }}</code></td>
+        <td style="font-size:0.8rem;">{{ f.uploaded_at[:19] }}</td>
+        <td>
+            <div class="btn-group">
+            <a class="btn btn-sm btn-secondary" href="/admin/logs/files/{{ f.id }}/download">下载</a>
+            <form method="post" action="/admin/logs/files/delete">
+                <input type="hidden" name="file_id" value="{{ f.id }}">
+                <input type="hidden" name="session_db_id" value="{{ current_session.id }}">
+                <input type="hidden" name="reason" value="admin delete log file">
+                <button class="btn btn-sm btn-danger" onclick="return confirm('确认删除日志文件？')">删除</button>
+            </form>
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+<a href="/admin/logs" class="btn btn-secondary btn-sm" style="margin-top:0.75rem;">返回列表</a>
+
+{% elif sessions %}
+<form id="bulk-session-delete-form" method="post" action="/admin/logs/delete-sessions">
+    <input type="hidden" name="reason" value="admin bulk delete log sessions">
+</form>
+<form id="bulk-session-download-form" method="post" action="/admin/logs/download-sessions"></form>
+<div class="table-toolbar">
+    <div class="btn-group">
+        <button class="btn btn-primary btn-sm" form="bulk-session-download-form">下载选中会话 ZIP</button>
+        <button class="btn btn-danger btn-sm" form="bulk-session-delete-form" onclick="return confirm('确认批量删除选中的日志会话？该操作会删除会话下全部日志文件。')">批量删除选中会话</button>
+    </div>
+    <span class="toolbar-note">批量操作用于清理服务器磁盘，删除后不可恢复。</span>
+</div>
+<div class="table-wrap" data-reveal><table>
+    <thead><tr><th><input type="checkbox" data-check-all="log-session"></th><th>会话ID</th><th>用户</th><th>设备码</th><th>客户端</th><th>IP</th><th class="num">上传次数</th><th>最近上传</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for s in sessions %}
+    <tr>
+        <td><input type="checkbox" name="session_ids" value="{{ s.id }}" data-check-item="log-session"></td>
+        <td><code style="font-size:0.78rem;">{{ s.session_id }}</code></td>
+        <td>{% if s.username %}{{ s.username }}{% else %}{{ s.user_id or '-' }}{% endif %}</td>
+        <td><code class="text-mono" style="font-size:0.7rem;">{{ s.device_code[:18] if s.device_code else '-' }}</code></td>
+        <td style="font-size:0.75rem;">{{ s.client_version or '-' }}</td>
+        <td style="font-size:0.75rem;">{{ s.ip_address or '-' }}</td>
+        <td class="num">{{ s.upload_count or 0 }}</td>
+        <td style="font-size:0.8rem;">{{ (s.latest_upload_at or s.started_at)[:19] }}</td>
+        <td><a href="/admin/logs/{{ s.id }}" class="btn btn-sm btn-secondary">查看文件</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+
+{% else %}
+<div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 6h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/></svg></div><p>暂无日志会话</p></div>
+{% endif %}
+<script>
+document.querySelectorAll('[data-check-all]').forEach(function(master) {
+  master.addEventListener('change', function() {
+    var group = master.getAttribute('data-check-all');
+    document.querySelectorAll('[data-check-item="' + group + '"]').forEach(function(item) {
+      item.checked = master.checked;
+    });
+  });
+});
+function fillBulkForm(form, group, fieldName) {
+  if (!form) return true;
+  form.querySelectorAll('input[data-bulk-clone="1"]').forEach(function(node) { node.remove(); });
+  var checked = Array.from(document.querySelectorAll('[data-check-item="' + group + '"]:checked'));
+  if (!checked.length) {
+    alert('请先勾选要操作的项目。');
+    return false;
+  }
+  checked.forEach(function(item) {
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = fieldName;
+    input.value = item.value;
+    input.setAttribute('data-bulk-clone', '1');
+    form.appendChild(input);
+  });
+  return true;
+}
+var bulkFileDelete = document.getElementById('bulk-file-delete-form');
+if (bulkFileDelete) bulkFileDelete.addEventListener('submit', function(e) {
+  if (!fillBulkForm(bulkFileDelete, 'log-file', 'file_ids')) e.preventDefault();
+});
+var bulkFileDownload = document.getElementById('bulk-file-download-form');
+if (bulkFileDownload) bulkFileDownload.addEventListener('submit', function(e) {
+  if (!fillBulkForm(bulkFileDownload, 'log-file', 'file_ids')) e.preventDefault();
+});
+var bulkSessionDelete = document.getElementById('bulk-session-delete-form');
+if (bulkSessionDelete) bulkSessionDelete.addEventListener('submit', function(e) {
+  if (!fillBulkForm(bulkSessionDelete, 'log-session', 'session_ids')) e.preventDefault();
+});
+var bulkSessionDownload = document.getElementById('bulk-session-download-form');
+if (bulkSessionDownload) bulkSessionDownload.addEventListener('submit', function(e) {
+  if (!fillBulkForm(bulkSessionDownload, 'log-session', 'session_ids')) e.preventDefault();
+});
+</script>
+{% endblock %}

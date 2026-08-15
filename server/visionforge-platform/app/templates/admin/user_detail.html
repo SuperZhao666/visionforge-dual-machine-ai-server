@@ -1,0 +1,255 @@
+{% set crumb_extra = '用户详情' %}
+{% extends "admin/base.html" %}
+{% import "admin/_icons.html" as ic %}
+{% block title %}用户详情 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>用户画像：{{ target.username }}</h2>
+        <p>
+            {% if target.status == 'banned' %}<span class="badge badge-critical">封禁</span>
+            {% elif target.status == 'disabled' %}<span class="badge badge-warning">停用</span>
+            {% else %}<span class="badge badge-active">正常</span>{% endif %}
+            {% if target.is_admin %}<span class="badge badge-info">管理员</span>{% endif %}
+        </p>
+    </div>
+    <div class="page-actions"><a href="/admin/users" class="btn btn-secondary btn-sm">返回用户列表</a></div>
+</div>
+
+<div class="card" data-reveal>
+    <dl class="desc-list">
+        <div><dt>邮箱</dt><dd>{{ target.email or '未绑定' }}</dd></div>
+        <div><dt>角色</dt><dd>{% if target.is_admin %}管理员{% else %}用户{% endif %}</dd></div>
+        <div><dt>状态</dt><dd>{{ target.status }}</dd></div>
+        <div><dt>注册时间</dt><dd>{{ target.created_at[:19] }}</dd></div>
+    </dl>
+</div>
+
+{% if balance %}
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>时长信息</h3>
+            <p class="card-desc">最后心跳：{{ balance.last_heartbeat_at or '从未' }}</p>
+        </div>
+    </div>
+    <div class="stats-grid">
+        <div class="stat-card tone-success"><div class="stat-icon">{{ ic.svg('clock', '') }}</div><div class="stat-body"><div class="stat-value" style="color:var(--success);">{{ "%.1f"|format(balance.balance_seconds / 3600) }}h</div><div class="stat-label">剩余时长</div></div></div>
+        <div class="stat-card"><div class="stat-icon">{{ ic.svg('activity', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ balance.total_consumed_seconds / 3600 }}" data-suffix="h" data-decimals="1">{{ "%.1f"|format(balance.total_consumed_seconds / 3600) }}h</div><div class="stat-label">累计消费</div></div></div>
+        <div class="stat-card tone-info"><div class="stat-icon">{{ ic.svg('yuan', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ balance.total_recharged_seconds / 3600 }}" data-suffix="h" data-decimals="1">{{ "%.1f"|format(balance.total_recharged_seconds / 3600) }}h</div><div class="stat-label">累计充值</div></div></div>
+    </div>
+</div>
+{% endif %}
+
+<div class="card-grid" data-reveal-group="70">
+    <div class="card">
+        <div class="card-header"><div><h3>基础资料</h3></div></div>
+        <form method="post" action="/admin/users/update">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="user_id" value="{{ target.id }}">
+            <div class="form-group"><label>用户名</label><input name="username" value="{{ target.username }}" required></div>
+            <div class="form-group"><label>邮箱</label><input name="email" value="{{ target.email or '' }}"></div>
+            <div class="form-actions"><button class="btn btn-secondary btn-sm">保存资料</button></div>
+        </form>
+    </div>
+
+    <div class="card card-highlight">
+        <div class="card-header">
+            <div>
+                <h3>调整剩余时长</h3>
+                <p class="card-desc">单位是小时。输入正数加时，输入负数扣时。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/users/adjust-time">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="user_id" value="{{ target.id }}">
+            <div class="form-group"><label>增减小时</label><input name="delta_hours" type="number" step="1" value="1" required></div>
+            <div class="form-group"><label>调整原因</label><input name="reason" value="manual adjustment" required></div>
+            <div class="form-actions"><button class="btn btn-primary btn-sm">调整时长</button></div>
+        </form>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <h3>账号状态</h3>
+                <p class="card-desc">封禁或停用会立即阻止客户端登录和启动会话。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/users/set-status">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="user_id" value="{{ target.id }}">
+            <div class="form-group"><label>账户状态</label>
+                <select name="status">
+                    <option value="active" {% if target.status == 'active' %}selected{% endif %}>正常</option>
+                    <option value="disabled" {% if target.status == 'disabled' %}selected{% endif %}>停用</option>
+                    <option value="banned" {% if target.status == 'banned' %}selected{% endif %}>封禁</option>
+                </select>
+            </div>
+            <div class="form-group"><label>封禁/停用原因</label><input name="ban_reason" value="{{ target.ban_reason or '' }}"></div>
+            <div class="form-actions"><button class="btn btn-danger btn-sm">更新状态</button></div>
+        </form>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <h3>日志上传策略</h3>
+                <p class="card-desc">0 秒表示继承全局周期。全局当前：{% if global_log_policy.enabled %}启用{% else %}关闭{% endif %}，{{ global_log_policy.interval_seconds }} 秒。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/users/log-policy">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="user_id" value="{{ target.id }}">
+            <div class="form-group"><label>上传开关</label>
+                <select name="log_upload_enabled">
+                    <option value="-1" {% if target.log_upload_enabled == -1 %}selected{% endif %}>继承全局</option>
+                    <option value="1" {% if target.log_upload_enabled == 1 %}selected{% endif %}>强制启用</option>
+                    <option value="0" {% if target.log_upload_enabled == 0 %}selected{% endif %}>强制关闭</option>
+                </select>
+            </div>
+            <div class="form-group"><label>覆盖周期（秒）</label><input name="log_upload_interval_seconds" type="number" min="0" max="86400" value="{{ target.log_upload_interval_seconds or 0 }}"></div>
+            <div class="form-actions"><button class="btn btn-secondary btn-sm">保存日志策略</button></div>
+        </form>
+    </div>
+</div>
+
+<div class="card card-danger" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>重置密码</h3>
+            <p class="card-desc">系统只保存密码哈希，不能查看原始密码；管理员可设置新密码并立即使旧登录失效。</p>
+        </div>
+    </div>
+    <form method="post" action="/admin/users/reset-password">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="user_id" value="{{ target.id }}">
+        <div class="form-grid">
+            <div class="form-group"><label>新密码</label><input name="new_password" type="password" minlength="8" maxlength="128" required autocomplete="new-password"></div>
+            <div class="form-group"><label>原因</label><input name="reason" value="admin password reset" required></div>
+        </div>
+        <div class="form-actions"><button class="btn btn-danger btn-sm" onclick="return confirm('确认重置该用户密码并踢下线？')">重置密码</button></div>
+    </form>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>绑定设备 / 硬件画像</h3>
+            {% if not devices %}<p class="card-desc">暂无设备画像。用户登录新版客户端后会自动上报并绑定。</p>{% endif %}
+        </div>
+        {% if devices %}<div class="card-actions"><span class="badge badge-neutral">{{ devices|length }} 台</span></div>{% endif %}
+    </div>
+{% if devices %}
+    <div class="table-wrap"><table>
+        <thead><tr><th>设备码</th><th>系统</th><th>CPU</th><th>显卡</th><th>内存</th><th>依赖</th><th>客户端</th><th>最近 IP / 归属地</th><th>最近活跃</th><th>心跳</th></tr></thead>
+        <tbody>{% for d in devices %}<tr>
+            <td><code class="text-mono" style="font-size:0.72rem;">{{ d.device_code[:24] }}{% if d.device_code|length > 24 %}...{% endif %}</code></td>
+            <td style="font-size:0.78rem;">{{ d.os_summary }}</td>
+            <td style="font-size:0.78rem;">{{ d.cpu_summary }}</td>
+            <td style="font-size:0.78rem;">{{ d.gpu_summary }}</td>
+            <td style="font-size:0.78rem;">{{ d.memory_summary }}</td>
+            <td style="font-size:0.72rem;">{{ d.dependency_summary }}</td>
+            <td style="font-size:0.78rem;">{{ d.client_version or '-' }}</td>
+            <td style="font-size:0.78rem;"><code>{{ d.last_ip or '-' }}</code><br>{{ d.last_ip_location or '-' }}</td>
+            <td style="font-size:0.78rem;">{{ d.last_seen_at[:19] }}</td>
+            <td>{{ d.heartbeat_count }}</td>
+        </tr>{% endfor %}</tbody>
+    </table></div>
+{% endif %}
+</div>
+
+{% if recharges %}
+<div class="card" data-reveal>
+    <div class="card-header"><div><h3>充值/调整记录</h3></div><div class="card-actions"><span class="badge badge-neutral">{{ recharges|length }} 条</span></div></div>
+    <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>时长</th><th class="num">金额</th><th>时间</th></tr></thead>
+        <tbody>{% for r in recharges %}<tr>
+            <td>{{ r.id }}</td><td>{{ "%.1f"|format(r.hours) }} 小时</td>
+            <td class="num">¥{{ "%.2f"|format(r.amount) }}</td>
+            <td style="font-size:0.8rem;">{{ r.created_at[:19] }}</td>
+        </tr>{% endfor %}</tbody>
+    </table></div>
+</div>
+{% endif %}
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>日志压缩包上传</h3>
+            {% if not log_sessions %}<p class="card-desc">暂无日志压缩包。新版客户端登录并运行到上传周期后会自动上传。</p>{% endif %}
+        </div>
+    </div>
+{% if log_sessions %}
+    <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>设备码</th><th>客户端</th><th>IP / 归属地</th><th>上传次数</th><th>最近上传</th><th>原因</th><th>操作</th></tr></thead>
+        <tbody>{% for ls in log_sessions %}<tr>
+            <td><code class="text-mono" style="font-size:0.72rem;">{{ ls.session_id[:24] }}{% if ls.session_id|length > 24 %}...{% endif %}</code></td>
+            <td><code class="text-mono" style="font-size:0.7rem;">{{ ls.device_code[:18] if ls.device_code else '-' }}</code></td>
+            <td style="font-size:0.75rem;">{{ ls.client_version or '-' }}</td>
+            <td style="font-size:0.75rem;"><code>{{ ls.ip_address or '-' }}</code><br>{{ ls.ip_location or '-' }}</td>
+            <td>{{ ls.upload_count or 0 }}</td>
+            <td style="font-size:0.75rem;">{{ (ls.latest_upload_at or ls.started_at)[:19] }}</td>
+            <td style="font-size:0.75rem;">{{ ls.latest_bundle_reason or '-' }}</td>
+            <td>
+                <div class="btn-group">
+                    <a class="btn btn-sm btn-secondary" href="/admin/logs/{{ ls.id }}">查看</a>
+                    <a class="btn btn-sm btn-primary" href="/admin/logs/{{ ls.id }}/download-zip">下载 ZIP</a>
+                </div>
+            </td>
+        </tr>{% endfor %}</tbody>
+    </table></div>
+{% endif %}
+</div>
+
+{% if sessions %}
+<div class="card" data-reveal>
+    <div class="card-header"><div><h3>使用会话</h3></div><div class="card-actions"><span class="badge badge-neutral">{{ sessions|length }} 条</span></div></div>
+    <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>机器码</th><th>环境</th><th>客户端</th><th>完整性</th><th>租约到期</th><th>使用/扣费</th><th>状态</th><th>结束原因</th><th>IP / 归属地</th><th>开始</th><th>结束/心跳</th><th>操作</th></tr></thead>
+        <tbody>{% for s in sessions %}<tr>
+            <td>{{ s.id }}</td>
+            <td><code class="text-mono" style="font-size:0.7rem;">{{ s.machine_code[:12] }}...</code></td>
+            <td style="font-size:0.72rem;">
+                {{ s.os_summary }}<br>{{ s.cpu_summary }}<br>{{ s.gpu_summary }}<br>{{ s.dependency_summary }}
+            </td>
+            <td style="font-size:0.75rem;">{{ s.client_version or '-' }}</td>
+            <td style="font-size:0.72rem;">{{ s.integrity_status or '-' }}<br><code class="text-mono">{{ s.integrity_manifest_hash[:12] if s.integrity_manifest_hash else '-' }}</code></td>
+            <td style="font-size:0.75rem;">{{ (s.lease_expires_at or '')[:19] }}</td>
+            <td>{{ ((s.duration_seconds or 0) / 60)|int }}min<br><span style="font-size:0.72rem;color:var(--text-muted);">扣费 {{ (s.seconds_consumed / 60)|int }}min</span></td>
+            <td>{% if s.status == 'active' %}<span class="badge badge-active">运行中</span>{% else %}<span class="badge badge-neutral">{{ s.status }}</span>{% endif %}</td>
+            <td style="font-size:0.75rem;">{{ s.ended_reason or '-' }}</td>
+            <td style="font-size:0.75rem;"><code>{{ s.ip_address }}</code><br>{{ s.ip_location or '-' }}</td>
+            <td style="font-size:0.75rem;">{{ s.started_at[:16] }}</td>
+            <td style="font-size:0.75rem;">{{ (s.ended_at or s.last_heartbeat_at or '')[:16] }}</td>
+            <td>{% if s.status == 'active' %}
+                <form method="post" action="/admin/users/kick-session" style="margin:0;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="user_id" value="{{ target.id }}">
+                    <input type="hidden" name="session_id" value="{{ s.id }}">
+                    <input type="hidden" name="reason" value="admin_kick">
+                    <button class="btn btn-danger btn-sm">踢下线</button>
+                </form>
+            {% endif %}</td>
+        </tr>{% endfor %}</tbody>
+    </table></div>
+</div>
+{% endif %}
+
+<div class="card" data-reveal>
+    <div class="card-header"><div><h3>订单记录</h3></div><div class="card-actions"><span class="badge badge-neutral">{{ orders|length }} 笔</span></div></div>
+{% if orders %}
+    <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>套餐</th><th class="num">金额</th><th>状态</th><th>IP / 归属地</th><th>时间</th></tr></thead>
+        <tbody>{% for o in orders %}<tr>
+            <td>#{{ o.id }}</td><td>{{ o.plan }}</td><td class="num">¥{{ "%.2f"|format(o.amount) }}</td>
+            <td>{% if o.status == 'delivered' %}<span class="badge badge-delivered">已到账</span>{% elif o.status == 'pending' %}<span class="badge badge-pending">待支付</span>{% else %}<span class="badge badge-neutral">{{ o.status }}</span>{% endif %}</td>
+            <td><code style="font-size:0.75rem;">{{ o.ip_address or '-' }}</code><br><span style="font-size:0.75rem;">{{ o.ip_location or '-' }}</span></td>
+            <td style="font-size:0.8rem;">{{ o.created_at[:16] }}</td>
+        </tr>{% endfor %}</tbody>
+    </table></div>
+{% else %}
+    <p style="color:var(--text-muted);">暂无</p>
+{% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,13 @@
+{
+  "url": "http://fulfillment-bridge:8080/issue",
+  "method": "GET",
+  "timeout": 15,
+  "headers": {
+    "Authorization": "Bearer REPLACE_WITH_BRIDGE_INTERNAL_TOKEN"
+  },
+  "params": {
+    "order_id": "{order_id}",
+    "product_key": "10h",
+    "unit_index": "1"
+  }
+}

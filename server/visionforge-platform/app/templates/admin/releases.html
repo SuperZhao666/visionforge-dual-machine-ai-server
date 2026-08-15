@@ -1,0 +1,102 @@
+{% extends "admin/base.html" %}
+{% block title %}版本更新 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>版本更新</h2>
+        <p>客户端读取 /update/stable.json。签名更新文件只允许放在本站 /static/releases/ 下；不接入第三方存储或 CDN。</p>
+    </div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>发布规则</h3>
+            <p class="card-desc">线下签名、站内分发、逐字节验哈希。</p>
+        </div>
+    </div>
+    <div style="color:var(--text-secondary);font-size:0.86rem;line-height:1.75;">
+        <p><strong>单服务器：</strong>EXE、完整回退包和差分包均由当前 VisionForge 服务器提供，不依赖第三方存储或 CDN。</p>
+        <p><strong>推荐方式：</strong>正式发布请使用离线签名的 v2 管理 API。此页面保留给旧版本兼容发布，文件必须预先放到本站并命名为 <code>&lt;SHA256&gt;.exe</code>；服务器会逐字节验哈希。</p>
+        <p><strong>SHA256：</strong>PowerShell 执行 <code>Get-FileHash -Algorithm SHA256 .\VisionForge.exe | Select-Object -ExpandProperty Hash</code>。</p>
+    </div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>兼容方式发布版本</h3>
+            <p class="card-desc">旧版本客户端读取的兼容通道；新版本请走 v2 签名发布。</p>
+        </div>
+    </div>
+    <form method="post" action="/admin/releases/create">
+        <div class="form-grid">
+            <div class="form-group"><label>版本号</label><input name="version" placeholder="v17.8.80" required></div>
+            <div class="form-group"><label>最低支持版本</label><input name="min_supported_version" placeholder="v17.8.70"></div>
+            <div class="form-group"><label>通道</label><input name="channel" value="stable"></div>
+            <div class="form-group"><label>单体 EXE URL</label><input name="url" placeholder="/static/releases/&lt;64位SHA256&gt;.exe"></div>
+            <div class="form-group"><label>单体 EXE SHA256</label><input name="sha256" maxlength="64" placeholder="64 位 SHA256"></div>
+            <div class="form-group"><label>旧安装器 URL（可选）</label><input name="installer_url" placeholder="/static/releases/&lt;64位SHA256&gt;.exe"></div>
+            <div class="form-group"><label>旧安装器 SHA256</label><input name="installer_sha256" maxlength="64"></div>
+            <div class="form-group"><label>强制更新</label><select name="mandatory"><option value="0">否</option><option value="1">是</option></select></div>
+            <div class="form-group"><label>状态</label><select name="published"><option value="1">发布</option><option value="0">草稿</option></select></div>
+        </div>
+        <div class="form-group"><label>发布说明</label><textarea name="notes" rows="5"></textarea></div>
+        <div class="form-actions"><button class="btn btn-primary btn-sm">保存</button></div>
+    </form>
+</div>
+
+{% for r in releases %}
+<div class="card" data-reveal>
+    {% if r.payload_b64 %}
+    <div class="card-header">
+        <div><h3>{{ r.version }} · {{ r.channel }}</h3></div>
+        <div class="card-actions">
+            <span class="badge badge-info">签名发布</span>
+            {% if r.published %}<span class="badge badge-active">已发布</span>{% else %}<span class="badge badge-neutral">历史</span>{% endif %}
+        </div>
+    </div>
+    <div style="color:var(--text-secondary);font-size:0.86rem;line-height:1.75;word-break:break-all;">
+        <p><strong>签名发布（不可变）</strong>：必须通过新的 v2 签名清单发布后续版本，旧签名记录不能在兼容表单中修改、回滚或删除。</p>
+        <p>目标：{{ r.url }}</p>
+        <p>SHA256：{{ r.sha256 }} · 大小：{{ r.target_size }} 字节</p>
+        <p>签名时间：{{ r.manifest_published_at }} · 状态：{{ '已发布' if r.published else '历史' }}</p>
+    </div>
+    {% else %}
+    <div class="card-header">
+        <div><h3>{{ r.version }} · {{ r.channel }}</h3></div>
+        <div class="card-actions">
+            <span class="badge badge-neutral">兼容发布</span>
+            {% if r.mandatory %}<span class="badge badge-warning">强制更新</span>{% endif %}
+            {% if r.published %}<span class="badge badge-active">发布中</span>{% else %}<span class="badge badge-neutral">草稿</span>{% endif %}
+        </div>
+    </div>
+    <form method="post" action="/admin/releases/update">
+        <input type="hidden" name="release_id" value="{{ r.id }}">
+        <div class="form-grid">
+            <div class="form-group"><label>版本号</label><input name="version" value="{{ r.version }}" required></div>
+            <div class="form-group"><label>最低支持版本</label><input name="min_supported_version" value="{{ r.min_supported_version }}"></div>
+            <div class="form-group"><label>通道</label><input name="channel" value="{{ r.channel }}"></div>
+            <div class="form-group"><label>单体 EXE URL</label><input name="url" value="{{ r.url }}"></div>
+            <div class="form-group"><label>单体 EXE SHA256</label><input name="sha256" value="{{ r.sha256 }}" maxlength="64"></div>
+            <div class="form-group"><label>旧安装器 URL</label><input name="installer_url" value="{{ r.installer_url }}"></div>
+            <div class="form-group"><label>旧安装器 SHA256</label><input name="installer_sha256" value="{{ r.installer_sha256 }}" maxlength="64"></div>
+            <div class="form-group"><label>强制</label><select name="mandatory"><option value="0" {% if not r.mandatory %}selected{% endif %}>否</option><option value="1" {% if r.mandatory %}selected{% endif %}>是</option></select></div>
+            <div class="form-group"><label>状态</label><select name="published"><option value="1" {% if r.published %}selected{% endif %}>发布</option><option value="0" {% if not r.published %}selected{% endif %}>草稿</option></select></div>
+        </div>
+        <div class="form-group"><label>发布说明</label><textarea name="notes" rows="4">{{ r.notes }}</textarea></div>
+        <div class="form-actions">
+            <button class="btn btn-secondary btn-sm">保存</button>
+        </div>
+    </form>
+    <form method="post" action="/admin/releases/delete" class="form-actions">
+        <input type="hidden" name="release_id" value="{{ r.id }}">
+        <button class="btn btn-danger btn-sm" onclick="return confirm('确认删除版本？')">删除</button>
+    </form>
+    {% endif %}
+    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:0.75rem;">签名：{{ r.algorithm or '旧兼容发布' }} | 创建：{{ r.created_at[:19] }} | 更新：{{ r.updated_at[:19] }}</p>
+</div>
+{% else %}
+<div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 6h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/></svg></div><p>暂无发布版本</p></div>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,14 @@
+{
+  "schema": "visionforge-qnn-htp-soc-architectures-v1",
+  "soc_architectures": {
+    "SM8350": "v68",
+    "QCM6490": "v68",
+    "SM8450": "v69",
+    "SM8475": "v69",
+    "SM8550": "v73",
+    "SM8650": "v75",
+    "SM8750": "v79",
+    "SM8845": "v81",
+    "SM8850": "v81"
+  }
+}

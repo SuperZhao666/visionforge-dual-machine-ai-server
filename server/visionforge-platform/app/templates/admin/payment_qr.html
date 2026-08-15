@@ -1,0 +1,93 @@
+{% extends "admin/base.html" %}
+{% block title %}支付二维码 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>支付二维码</h2>
+        <p>上传支付宝或微信的定额收款码。每张二维码的预设金额必须与套餐金额完全一致。</p>
+    </div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>接入说明</h3>
+            <p class="card-desc">
+                支付宝自动到账使用 V免签协议 <code>type=2</code>；微信继续使用 <code>type=1</code>。
+                服务端按“支付渠道 + 固定金额”隔离匹配，上传完成后对应支付按钮会自动出现在购买页面。
+            </p>
+        </div>
+        <div class="card-actions">
+            {% if monitor_config_ready %}
+            <form method="post" action="/admin/payment-qr/monitor-config" style="margin:0;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="btn btn-secondary btn-sm">查看监听端一次性配置</button>
+            </form>
+            {% else %}
+            <span class="badge badge-warning">监听端地址或通讯密钥尚未配置，支付宝自动到账暂不可用</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>最近异常支付事件</h3>
+            <p class="card-desc">仅展示无法自动匹配或渠道不一致的只读摘要，不展示通讯密钥和原始回调载荷。</p>
+        </div>
+        <div class="card-actions"><span class="badge badge-neutral">{{ payment_exceptions|length }} 条</span></div>
+    </div>
+    {% if payment_exceptions %}
+    <div class="table-wrap"><table style="min-width:760px;">
+        <thead><tr><th>时间</th><th>状态</th><th>渠道</th><th class="num">金额</th><th>订单 ID</th><th>来源</th><th class="num">尝试次数</th></tr></thead>
+        <tbody>
+        {% for event in payment_exceptions %}
+        <tr>
+            <td style="white-space:nowrap;">{{ event.created_at }}</td>
+            <td><code>{{ event.status }}</code></td>
+            <td>{{ event.payment_method or '-' }}</td>
+            <td class="num">¥{{ "%.2f"|format(event.amount) }}</td>
+            <td>{{ event.order_id or '-' }}</td>
+            <td>{{ event.source }}</td>
+            <td class="num">{{ event.attempt_count }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+    {% else %}
+    <p style="color:var(--text-muted);">当前没有异常支付事件。</p>
+    {% endif %}
+</div>
+
+<div class="qr-grid">
+{% for row in rows %}
+    <div class="card" style="margin:0;" data-reveal>
+        <div class="card-header">
+            <div>
+                <h3>{{ row.plan_name }} · {{ row.payment_label }}</h3>
+                <p class="card-desc">固定金额 ¥{{ "%.2f"|format(row.price) }}</p>
+            </div>
+            <div class="card-actions">
+                {% if row.ready %}<span class="badge badge-success">已配置</span>{% else %}<span class="badge badge-neutral">未配置</span>{% endif %}
+            </div>
+        </div>
+        {% if row.ready %}
+        <div class="qr-thumb">
+            <img src="/static/img/{{ row.filename }}?v={{ row.version }}" alt="{{ row.payment_label }} {{ row.plan_name }} 二维码">
+        </div>
+        {% endif %}
+        <form method="post" action="/admin/payment-qr/upload" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="plan" value="{{ row.plan_key }}">
+            <input type="hidden" name="payment_method" value="{{ row.payment_method }}">
+            <div class="form-group">
+                <label>PNG 二维码（128-4096 像素，最大 3 MB）</label>
+                <input type="file" name="qr_file" accept="image/png,.png" required>
+            </div>
+            <div class="form-actions"><button class="btn btn-primary btn-sm">{% if row.ready %}替换二维码{% else %}上传二维码{% endif %}</button></div>
+        </form>
+    </div>
+{% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,2 @@
+# Production hosts keep crash details in application/system logs and do not persist process memory dumps.
+enabled=0

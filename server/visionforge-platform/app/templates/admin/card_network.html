@@ -1,0 +1,172 @@
+{% extends "admin/base.html" %}
+{% import "admin/_icons.html" as ic %}
+{% block title %}卡网总览 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>卡网总览</h2>
+        <p>集中查看卡密库存、激活状态、设备授权与最近审计；底层继续使用隔离的双机卡密侧车。</p>
+    </div>
+    <div class="page-header-actions">
+        <a class="btn btn-primary" href="/admin/dual-machine-cards">进入完整卡密管理</a>
+    </div>
+</div>
+
+{% if not bridge_ready %}
+<div class="alert alert-error">双机卡密管理桥尚未配置，当前页面将保持只读失败状态。</div>
+{% endif %}
+
+<div class="stats-grid" data-reveal>
+    <a class="stat-card stat-link" href="/admin/dual-machine-cards#dm-batch-list">
+        <div class="stat-icon">{{ ic.svg('layers', '') }}</div>
+        <div class="stat-body"><div class="stat-value">{{ stats.batches }}</div><div class="stat-label">有效批次</div></div>
+    </a>
+    <a class="stat-card stat-link tone-info" href="/admin/dual-machine-cards?code_status=issued#dm-code-list">
+        <div class="stat-icon">{{ ic.svg('gift', '') }}</div>
+        <div class="stat-body"><div class="stat-value">{{ stats.issued }}</div><div class="stat-label">待激活卡密</div></div>
+    </a>
+    <a class="stat-card stat-link tone-success" href="/admin/dual-machine-cards?code_status=activated#dm-code-list">
+        <div class="stat-icon">{{ ic.svg('activity', '') }}</div>
+        <div class="stat-body"><div class="stat-value">{{ stats.activated }}</div><div class="stat-label">已激活卡密</div></div>
+    </a>
+    <a class="stat-card stat-link tone-error" href="/admin/dual-machine-cards?code_status=revoked#dm-code-list">
+        <div class="stat-icon">{{ ic.svg('ban', '') }}</div>
+        <div class="stat-body"><div class="stat-value">{{ stats.revoked }}</div><div class="stat-label">已停用卡密</div></div>
+    </a>
+    <a class="stat-card stat-link tone-warning" href="/admin/dual-machine-cards?code_status=expired#dm-code-list">
+        <div class="stat-icon">{{ ic.svg('clock', '') }}</div>
+        <div class="stat-body"><div class="stat-value">{{ stats.expired }}</div><div class="stat-label">已过期卡密</div></div>
+    </a>
+    <a class="stat-card stat-link" href="/admin/dual-machine-cards?code_deleted=deleted#dm-code-list">
+        <div class="stat-icon">{{ ic.svg('scroll', '') }}</div>
+        <div class="stat-body"><div class="stat-value">{{ stats.archived }}</div><div class="stat-label">归档记录</div></div>
+    </a>
+</div>
+
+<div class="chart-grid" data-reveal>
+    <section class="card border-beam" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>快捷发卡</h3>
+                <p class="card-desc">明文卡密只在签发成功页显示；服务端数据库不保存卡密正文。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/dual-machine-cards/issue">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="network-product">卡类型</label>
+                    <select id="network-product" name="product_key" required>
+                        {% for product in product_options %}
+                        <option value="{{ product.product_key }}">{{ product.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="network-quantity">数量</label>
+                    <input id="network-quantity" type="number" name="quantity" min="1" max="500" value="1" required>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="network-note">批次备注</label>
+                <input id="network-note" name="note" maxlength="500" placeholder="例如：渠道、订单或活动名称">
+            </div>
+            <input type="hidden" name="expires_at_epoch" value="">
+            <button class="btn btn-primary" type="submit">签发卡密</button>
+        </form>
+    </section>
+
+    <section class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>检索与授权处理</h3>
+                <p class="card-desc">卡密正文不可反查；使用记录 ID、末四位、授权 ID 或设备标识定位。</p>
+            </div>
+        </div>
+        <form method="get" action="/admin/dual-machine-cards">
+            <div class="form-group">
+                <label for="network-code-query">全局卡密查询</label>
+                <input id="network-code-query" name="code_query" maxlength="128" placeholder="记录 ID / 末四位 / 授权或设备标识">
+            </div>
+            <button class="btn btn-secondary" type="submit">查询卡密</button>
+        </form>
+        <form method="get" action="/admin/dual-machine-cards" style="margin-top:18px;">
+            <div class="form-group">
+                <label for="network-entitlement">授权 ID</label>
+                <input id="network-entitlement" class="dm-mono" name="entitlement_id" maxlength="32" pattern="[0-9a-f]{32}" placeholder="32 位小写十六进制授权 ID">
+            </div>
+            <button class="btn btn-secondary" type="submit">查看设备绑定</button>
+        </form>
+    </section>
+</div>
+
+<div class="chart-grid" data-reveal>
+    <section class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div><h3>最近批次</h3><p class="card-desc">最近签发的卡密批次。</p></div>
+            <div class="card-actions"><a class="btn btn-secondary btn-sm" href="/admin/dual-machine-cards#dm-batch-list">全部批次</a></div>
+        </div>
+        {% if recent_batches %}
+        <div class="table-wrap"><table>
+            <thead><tr><th>批次</th><th>卡类型</th><th>数量</th><th>状态</th><th>创建时间</th></tr></thead>
+            <tbody>
+            {% for batch in recent_batches %}
+            <tr>
+                <td><a href="/admin/dual-machine-cards?batch_id={{ batch.id }}#dm-code-list">#{{ batch.id }}</a></td>
+                <td>{{ batch.display_name or batch.product_key }}</td>
+                <td>{{ batch.quantity }}</td>
+                <td><span class="badge {% if batch.status == 'active' %}badge-delivered{% else %}badge-expired{% endif %}">{{ batch.status }}</span></td>
+                <td>{{ (batch.created_at or '-')[:19] }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table></div>
+        {% else %}<p style="color:var(--text-muted);">暂无批次。</p>{% endif %}
+    </section>
+
+    <section class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div><h3>最近卡密状态</h3><p class="card-desc">仅显示安全元数据，不展示或回传卡密正文。</p></div>
+            <div class="card-actions"><a class="btn btn-secondary btn-sm" href="/admin/dual-machine-cards#dm-code-list">全部卡密</a></div>
+        </div>
+        {% if recent_codes %}
+        <div class="table-wrap"><table>
+            <thead><tr><th>记录</th><th>末四位</th><th>卡类型</th><th>状态</th></tr></thead>
+            <tbody>
+            {% for code in recent_codes %}
+            <tr>
+                <td>#{{ code.id }}</td>
+                <td class="dm-mono">{{ code.code_suffix or '-' }}</td>
+                <td>{{ code.display_name or code.product_key }}</td>
+                <td><span class="badge {% if code.status == 'activated' %}badge-delivered{% elif code.status == 'issued' %}badge-paid{% else %}badge-expired{% endif %}">{{ code.status }}</span></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table></div>
+        {% else %}<p style="color:var(--text-muted);">暂无卡密记录。</p>{% endif %}
+    </section>
+</div>
+
+<section class="card" data-reveal>
+    <div class="card-header">
+        <div><h3>最近审计</h3><p class="card-desc">签发、激活、撤销、恢复、归档和解绑操作均可追溯。</p></div>
+        <div class="card-actions"><a class="btn btn-secondary btn-sm" href="/admin/dual-machine-cards#dm-audit">完整审计</a></div>
+    </div>
+    {% if recent_audit %}
+    <div class="table-wrap"><table>
+        <thead><tr><th>时间</th><th>事件</th><th>对象</th><th>结果</th><th>TraceId</th></tr></thead>
+        <tbody>
+        {% for event in recent_audit %}
+        <tr>
+            <td>{{ (event.created_at or '-')[:19] }}</td>
+            <td>{{ event.event_type }}</td>
+            <td>{{ event.subject_type }} / {{ event.subject_id }}</td>
+            <td>{{ event.result }}</td>
+            <td class="dm-mono">{{ event.trace_id or '-' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+    {% else %}<p style="color:var(--text-muted);">暂无审计记录。</p>{% endif %}
+</section>
+{% endblock %}

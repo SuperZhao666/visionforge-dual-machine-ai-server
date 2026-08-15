@@ -1,0 +1,42 @@
+[Unit]
+Description=VisionForge Dual-Machine Card and Usage Sidecar
+After=network.target
+
+[Service]
+Type=simple
+User=vf-dual-machine
+Group=vf-dual-machine
+WorkingDirectory=/home/ubuntu/vf-platform
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/etc/visionforge-dual-machine/service.env
+ExecStart=/home/ubuntu/vf-platform/venv/bin/python -m dual_machine_service.run
+Restart=always
+RestartSec=5
+UMask=0077
+
+StateDirectory=visionforge-dual-machine
+StateDirectoryMode=0700
+ConfigurationDirectory=visionforge-dual-machine
+ConfigurationDirectoryMode=0700
+RuntimeDirectory=visionforge-dual-machine
+RuntimeDirectoryMode=0700
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/home/ubuntu/vf-platform
+ReadWritePaths=/var/lib/visionforge-dual-machine
+
+[Install]
+WantedBy=multi-user.target

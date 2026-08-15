@@ -1,0 +1,28 @@
+# Include only inside the existing visionforge.cloud HTTPS server {} block.
+# This channel is isolated from the Windows desktop release channel.
+location = /static/dual-machine-mobile/latest.json {
+    alias /home/ubuntu/vf-platform/app/static/dual-machine-mobile/latest.json;
+    default_type application/json;
+    etag on;
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    limit_except GET { deny all; }
+}
+
+# ^~ prevents unrelated regex locations in the parent server from exposing
+# mutable names or unexpected files from this directory.
+location ^~ /static/dual-machine-mobile/ {
+    if ($uri !~ "^/static/dual-machine-mobile/[0-9a-f]{64}\.apk$") {
+        return 404;
+    }
+
+    alias /home/ubuntu/vf-platform/app/static/dual-machine-mobile/;
+    default_type application/vnd.android.package-archive;
+    etag on;
+    sendfile on;
+    gzip off;
+    max_ranges 1;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    limit_except GET { deny all; }
+}

@@ -1,0 +1,135 @@
+{% extends "admin/base.html" %}
+{% import "admin/_icons.html" as ic %}
+{% block title %}管理后台 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>总览</h2>
+        <p>{{ user.username }}，当前后台按时长付费模式运行。</p>
+    </div>
+</div>
+
+<div class="stats-grid" data-reveal>
+    <a href="/admin/users" class="stat-card stat-link" data-tilt><div class="stat-icon">{{ ic.svg('users', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ total_users }}" data-decimals="0">{{ total_users }}</div><div class="stat-label">注册用户</div></div></a>
+    <a href="/admin/users" class="stat-card stat-link tone-error" data-tilt><div class="stat-icon">{{ ic.svg('ban', '') }}</div><div class="stat-body"><div class="stat-value" style="color:var(--error);">{{ banned_users }}</div><div class="stat-label">封禁用户</div></div></a>
+    <a href="/admin/orders" class="stat-card stat-link" data-tilt><div class="stat-icon">{{ ic.svg('receipt', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ total_orders }}" data-decimals="0">{{ total_orders }}</div><div class="stat-label">总订单</div></div></a>
+    <a href="/admin/usage-records" class="stat-card stat-link tone-info" data-tilt><div class="stat-icon">{{ ic.svg('clock', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ total_hours }}" data-suffix="h" data-decimals="0">{{ "%.0f"|format(total_hours) }}h</div><div class="stat-label">已售时长</div></div></a>
+    <a href="/admin/usage-records" class="stat-card stat-link tone-success" data-tilt><div class="stat-icon">{{ ic.svg('activity', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ active_sessions }}" data-decimals="0">{{ active_sessions }}</div><div class="stat-label">活跃会话{% if active_sessions %}<span class="live-dot" title="当前有活跃会话"></span>{% endif %}</div></div></a>
+    <a href="/admin/orders" class="stat-card stat-link tone-success" data-tilt><div class="stat-icon">{{ ic.svg('yuan', '') }}</div><div class="stat-body"><div class="stat-value" style="color:var(--success);">¥{{ "%.0f"|format(revenue) }}</div><div class="stat-label">总收入</div></div></a>
+    <a href="/admin/announcements" class="stat-card stat-link tone-warning" data-tilt><div class="stat-icon">{{ ic.svg('megaphone', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ announcements }}" data-decimals="0">{{ announcements }}</div><div class="stat-label">启用公告</div></div></a>
+    <a href="/admin/releases" class="stat-card stat-link" data-tilt><div class="stat-icon">{{ ic.svg('rocket', '') }}</div><div class="stat-body"><div class="stat-value" data-countup="{{ published_releases }}" data-decimals="0">{{ published_releases }}</div><div class="stat-label">已发布版本</div></div></a>
+</div>
+
+<div class="chart-grid" data-reveal>
+    <div class="card border-beam" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>经营趋势</h3>
+                <p class="card-desc">近 30 天收入与订单量走势（UTC 按天聚合）。</p>
+            </div>
+            <div class="card-actions"><span class="badge badge-neutral">近 30 天</span></div>
+        </div>
+        <div class="chart-box chart-box-lg"><canvas data-chart="trend" role="img" aria-label="近 30 天收入与订单趋势图"></canvas></div>
+        <div class="chart-legend" data-legend="trend"></div>
+    </div>
+    <div class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>订单状态构成</h3>
+                <p class="card-desc">全部订单按状态分布。</p>
+            </div>
+        </div>
+        <div class="chart-box"><canvas data-chart="status" role="img" aria-label="订单状态构成环形图"></canvas></div>
+        <div class="chart-legend" data-legend="status"></div>
+    </div>
+</div>
+
+<div class="chart-grid-3" data-reveal>
+    <div class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>新增用户</h3>
+                <p class="card-desc">近 30 天每日注册。</p>
+            </div>
+        </div>
+        <div class="chart-box"><canvas data-chart="users" role="img" aria-label="近 30 天新增用户柱状图"></canvas></div>
+    </div>
+    <div class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>使用时长</h3>
+                <p class="card-desc">近 30 天每日消耗小时。</p>
+            </div>
+        </div>
+        <div class="chart-box"><canvas data-chart="hours" role="img" aria-label="近 30 天使用时长柱状图"></canvas></div>
+    </div>
+    <div class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>套餐收入</h3>
+                <p class="card-desc">按套餐统计已发货收入 TOP6。</p>
+            </div>
+        </div>
+        <div class="chart-box"><canvas data-chart="plans" role="img" aria-label="套餐收入横向条形图"></canvas></div>
+    </div>
+</div>
+
+<div class="chart-grid" data-reveal>
+    <div class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>最新订单动态</h3>
+                <p class="card-desc">最近 8 笔官网订单，实时反映成单情况。</p>
+            </div>
+            <div class="card-actions"><a href="/admin/orders" class="btn btn-secondary btn-sm">全部订单</a></div>
+        </div>
+        {% if recent_orders %}
+        <div class="table-wrap"><table>
+            <thead><tr><th>ID</th><th>用户</th><th>套餐</th><th class="num">金额</th><th>状态</th><th>时间</th></tr></thead>
+            <tbody>
+            {% for o in recent_orders %}
+            <tr>
+                <td style="color:var(--text-muted);">#{{ o.id }}</td>
+                <td>{{ o.username or '-' }}</td>
+                <td>{{ o.plan }}</td>
+                <td class="num">¥{{ "%.2f"|format(o.amount) }}</td>
+                <td>
+                    {% if o.status == 'delivered' %}<span class="badge badge-delivered">已发货</span>
+                    {% elif o.status == 'paid' %}<span class="badge badge-paid">已支付</span>
+                    {% elif o.status == 'pending' %}<span class="badge badge-pending">待支付</span>
+                    {% elif o.status == 'cancelled' %}<span class="badge badge-expired">已取消</span>
+                    {% elif o.status == 'failed' %}<span class="badge badge-expired">已失败</span>
+                    {% elif o.status == 'refund_required' %}<span class="badge badge-pending">待退款</span>
+                    {% elif o.status == 'refunding' %}<span class="badge badge-warning">退款中</span>
+                    {% elif o.status == 'refunded' %}<span class="badge badge-expired">已退款</span>
+                    {% else %}<span class="badge badge-neutral">{{ o.status }}</span>{% endif %}
+                </td>
+                <td style="font-size:0.8rem;">{{ o.created_at[:16] }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table></div>
+        {% else %}
+        <p style="color:var(--text-muted);">暂无订单。第一笔官网订单成交后会显示在这里。</p>
+        {% endif %}
+    </div>
+    <div class="card" style="margin-bottom:0;">
+        <div class="card-header">
+            <div>
+                <h3>快捷操作</h3>
+                <p class="card-desc">高频管理任务一键直达。</p>
+            </div>
+        </div>
+        <div class="btn-group">
+            <a href="/admin/users" class="btn btn-primary btn-sm">用户管理</a>
+            <a href="/admin/orders" class="btn btn-secondary btn-sm">订单管理</a>
+            <a href="/admin/announcements" class="btn btn-secondary btn-sm">发布公告</a>
+            <a href="/admin/releases" class="btn btn-secondary btn-sm">发布新版本</a>
+            <a href="/admin/logs" class="btn btn-secondary btn-sm">查看日志</a>
+        </div>
+    </div>
+</div>
+
+<script>window.__VF_ADMIN_CHARTS__ = {{ charts | tojson }};</script>
+<script defer src="/static/js/admin_charts.js?v=2"></script>
+{% endblock %}

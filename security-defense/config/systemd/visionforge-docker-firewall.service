@@ -1,0 +1,16 @@
+[Unit]
+Description=VisionForge Docker ingress firewall
+After=docker.service ufw.service
+Wants=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/visionforge-docker-firewall apply
+ExecStop=/usr/local/sbin/visionforge-docker-firewall remove
+RemainAfterExit=yes
+TimeoutStartSec=60s
+TimeoutStopSec=60s
+
+[Install]
+WantedBy=docker.service

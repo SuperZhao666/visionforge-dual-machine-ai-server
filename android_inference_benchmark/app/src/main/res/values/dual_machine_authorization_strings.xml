@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nav_authorization">卡密</string>
+    <string name="section_authorization_balance">卡密剩余时间</string>
+    <string name="authorization_balance_pending">待同步</string>
+    <string name="authorization_permanent_balance">永久</string>
+    <string name="section_card_activation">激活卡密</string>
+    <string name="authorization_card_hint">VFD2-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX</string>
+    <string name="authorization_card_invalid">卡密格式不正确，请核对后重新输入。</string>
+    <string name="action_activate_card">激活卡密</string>
+    <string name="action_resume_activation">恢复未完成的激活确认</string>
+    <string name="authorization_zero_cost_notice">请使用在闲鱼购买的卡密进行激活。激活和查看剩余时间都不扣费；APP 会自动保持布防，只有检测到电脑端真实视频、手机推理就绪且服务器签发计时租约后，才按实际运行消耗时间。电脑停止推流、断开连接或余额用完都会自动停止计费。</string>
+
+    <string name="authorization_ready">可以激活卡密</string>
+    <string name="authorization_ready_detail">输入在闲鱼购买的卡密进行激活，不会立刻扣费。Host 只负责推送屏幕画面，授权和保护由安卓端完成。</string>
+    <string name="authorization_activating">正在激活卡密</string>
+    <string name="authorization_activating_detail">正在向服务器确认卡密；完成前不会扣费。</string>
+    <string name="authorization_activation_pending">激活确认待恢复</string>
+    <string name="authorization_activation_pending_detail">服务器确认结果暂时不明确。这里只会恢复同一次激活确认，不会重复消耗卡密。</string>
+    <string name="authorization_active_idle">卡密已激活</string>
+    <string name="authorization_active_idle_detail">已自动布防；电脑端尚未发送有效画面时不会计费，开始推流后会自动连接并按实际运行消耗时间。</string>
+    <string name="authorization_refreshing">正在查看剩余时间</string>
+    <string name="authorization_refreshing_detail">正在确认当前剩余时间；查询不会扣费。</string>
+    <string name="authorization_starting">正在启动推理</string>
+    <string name="authorization_starting_detail">正在确认双端就绪并申请推理计时租约；租约签发前不会消耗时间。</string>
+    <string name="authorization_in_use">推理运行中</string>
+    <string name="authorization_in_use_detail">正在按实际运行消耗剩余时间。电脑停止推流、断开连接或余额用完都会自动结束本次计费。</string>
+    <string name="authorization_stopping">正在安全结束本次运行</string>
+    <string name="authorization_stopping_detail">已先关闭本机推理，正在同步剩余时间。</string>
+    <string name="authorization_exhausted">卡密剩余时间已用完</string>
+    <string name="authorization_exhausted_detail">当前卡密已到期，推理已停止。</string>
+    <string name="authorization_revoked">卡密已失效</string>
+    <string name="authorization_revoked_detail">推理已停止。请联系软件提供方核对卡密状态。</string>
+    <string name="authorization_error">卡密或网络检查失败</string>
+    <string name="authorization_error_detail">连接或卡密检查未通过，请检查网络和系统时间后重试。</string>
+    <string name="authorization_security_configuration_failed">当前安装包缺少必要的授权材料，卡密与推理启动已保护性关闭。请安装由软件提供方签名的正式版本。</string>
+    <string name="authorization_device_rebind_required">检测到这张卡密仍绑定在另一设备身份（也可能是卸载重装前的旧身份）。卡密和剩余时间没有丢失；请联系管理员解绑旧设备后，再用原卡密重新绑定。</string>
+    <string name="authorization_device_binding_inconsistent">服务端的设备绑定记录不完整，已保护性阻止重新绑定。卡密和剩余时间不会被重复扣除，请联系管理员核对并解绑旧设备。</string>
+    <string name="authorization_operation_failed">本次操作未完成；不会重复消耗卡密。请按当前状态重试。</string>
+    <string name="authorization_host_video_not_ready">未检测到电脑端正在发送画面。手机仍保持自动布防；电脑端开始传输后会自动连接，本次未开始计费。</string>
+    <string name="authorization_operation_in_progress">已有一项卡密操作正在执行，请等待完成后再操作。</string>
+</resources>

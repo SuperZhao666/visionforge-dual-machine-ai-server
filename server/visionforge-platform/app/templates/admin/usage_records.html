@@ -1,0 +1,70 @@
+{% extends "admin/base.html" %}
+{% block title %}使用记录 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>使用过程记录</h2>
+        <p>按运行会话记录用户、机器环境、IP 归属地、开始时间、结束时间和消耗时长。</p>
+    </div>
+    {% if records %}<div class="page-actions"><span class="badge badge-neutral">共 {{ records|length }} 条</span></div>{% endif %}
+</div>
+
+<div class="card" data-reveal>
+    <form method="get" action="/admin/usage-records" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap;">
+        <div class="form-group" style="min-width:180px;margin-bottom:0;">
+            <label>显示条数</label>
+            <input name="limit" type="number" min="20" max="500" value="{{ limit }}">
+        </div>
+        <button class="btn btn-secondary btn-sm">刷新</button>
+    </form>
+</div>
+
+{% if records %}
+<div class="table-wrap" data-reveal><table>
+    <thead>
+        <tr>
+            <th>用户</th><th>状态</th><th>开始</th><th>结束/最后心跳</th><th>使用时长</th>
+            <th>IP / 归属地</th><th>系统</th><th>CPU</th><th>GPU</th><th>依赖</th><th>客户端</th><th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for r in records %}
+    <tr>
+        <td>
+            <a href="/admin/users/{{ r.user_id }}">{{ r.username or r.user_id }}</a>
+            <div style="color:var(--text-muted);font-size:0.72rem;">{{ r.email or '-' }}</div>
+        </td>
+        <td>
+            {% if r.status == 'active' %}<span class="badge badge-active">运行中</span>
+            {% else %}<span class="badge badge-neutral">{{ r.status }}</span>{% endif %}
+            {% if r.ended_reason %}<div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.3rem;">{{ r.ended_reason }}</div>{% endif %}
+        </td>
+        <td style="font-size:0.76rem;">{{ r.started_at[:19] }}</td>
+        <td style="font-size:0.76rem;">{{ (r.ended_at or r.last_heartbeat_at or '进行中')[:19] }}</td>
+        <td>{{ ((r.duration_seconds or r.seconds_consumed or 0) / 60)|int }} min<br><span style="font-size:0.72rem;color:var(--text-muted);">扣费 {{ ((r.seconds_consumed or 0) / 60)|int }} min</span></td>
+        <td style="font-size:0.76rem;"><code>{{ r.ip_address or '-' }}</code><br>{{ r.ip_location or '-' }}</td>
+        <td style="font-size:0.76rem;">{{ r.os_summary }}</td>
+        <td style="font-size:0.76rem;max-width:220px;">{{ r.cpu_summary }}</td>
+        <td style="font-size:0.76rem;max-width:260px;">{{ r.gpu_summary }}</td>
+        <td style="font-size:0.72rem;max-width:220px;">{{ r.dependency_summary }}</td>
+        <td style="font-size:0.74rem;">{{ r.client_version or '-' }}<br><code class="text-mono">{{ r.machine_code[:16] if r.machine_code else '-' }}</code></td>
+        <td>
+            {% if r.status == 'active' %}
+            <form method="post" action="/admin/users/kick-session" style="margin:0;">
+                <input type="hidden" name="user_id" value="{{ r.user_id }}">
+                <input type="hidden" name="session_id" value="{{ r.id }}">
+                <input type="hidden" name="reason" value="admin_kick_from_usage_records">
+                <button class="btn btn-danger btn-sm">踢下线</button>
+            </form>
+            {% else %}
+            <a class="btn btn-sm btn-secondary" href="/admin/users/{{ r.user_id }}">画像</a>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+{% else %}
+<div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 6h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/></svg></div><p>暂无使用记录。新版客户端成功开始推理后会自动创建运行会话。</p></div>
+{% endif %}
+{% endblock %}

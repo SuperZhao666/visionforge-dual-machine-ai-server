@@ -1,0 +1,61 @@
+def formalSecurityCapabilityFile = file('formal-security-capability.properties')
+if (!formalSecurityCapabilityFile.isFile()) {
+    throw new GradleException(
+            "Formal security capability file is missing: ${formalSecurityCapabilityFile}")
+}
+def formalSecurityCapabilityProperties = new Properties()
+formalSecurityCapabilityFile.withInputStream {
+    formalSecurityCapabilityProperties.load(it)
+}
+def formalSecurityCapabilityValue = formalSecurityCapabilityProperties
+        .getProperty('formalSecureDataPlaneImplemented')
+if (!(formalSecurityCapabilityValue in ['true', 'false'])) {
+    throw new GradleException(
+            'formalSecureDataPlaneImplemented must be exactly true or false')
+}
+ext.formalSecureDataPlaneImplemented = Boolean.parseBoolean(
+        formalSecurityCapabilityValue)
+def formalSecureDataPlaneOnly = providers
+        .gradleProperty('visionforgeFormalSecureDataPlaneOnly')
+        .getOrElse('false')
+        .toBoolean()
+tasks.register('verifyFormalSecureDataPlaneImplemented') {
+    group = 'verification'
+    description = 'Blocks formal APK output until Secure v2 is fully implemented.'
+    doLast {
+        if (!formalSecureDataPlaneOnly) {
+            throw new GradleException(
+                    'Formal release must set -PvisionforgeFormalSecureDataPlaneOnly=true')
+        }
+        if (!formalSecureDataPlaneImplemented) {
+            throw new GradleException(
+                    'Formal secure data plane is not implemented; refusing release APK')
+        }
+        println(
+                'VFDUAL_FORMAL_SECURITY_LOADER_CONTRACT=v1:'
+                        + formalSecureDataPlaneImplemented)
+    }
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyFormalSecureDataPlaneImplemented'))
+    }
+}
+tasks.register('probeFormalSecurityReleaseGraphContract') {
+    group = 'verification'
+    description = 'Proves the formal gate is in the Android release task graph.'
+    doLast {
+        def releaseTask = tasks.named('preReleaseBuild').get()
+        def formalTask = tasks.named(
+                'verifyFormalSecureDataPlaneImplemented').get()
+        def dependencies = releaseTask.taskDependencies
+                .getDependencies(releaseTask)
+        if (!dependencies.contains(formalTask)) {
+            throw new GradleException(
+                    'Formal security verification is absent from preReleaseBuild')
+        }
+        println(
+                'VFDUAL_FORMAL_SECURITY_RELEASE_GRAPH=v1:'
+                        + 'preReleaseBuild->verifyFormalSecureDataPlaneImplemented')
+    }
+}

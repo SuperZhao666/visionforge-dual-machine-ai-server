@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".QnnDeviceSelfTestActivity"
+            android:exported="true"
+            android:noHistory="true" />
+        <activity
+            android:name=".QnnVideoPipelineSelfTestActivity"
+            android:exported="true"
+            android:noHistory="true" />
+    </application>
+</manifest>

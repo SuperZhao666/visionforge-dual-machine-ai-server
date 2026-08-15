@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "crowdsec",
+      "version": "v1.7.8",
+      "repository": "https://github.com/crowdsecurity/crowdsec",
+      "tag_commit": "632274597a88a6b01ed41c0e6affca0f87ff26df",
+      "archive": "vendor/_archives/crowdsec-v1.7.8.tar.gz",
+      "sha256": "f7fdaa851f8578d763a573f77974871071583b9913ba284600e9277d2688e101",
+      "license": "MIT"
+    },
+    {
+      "name": "lynis",
+      "version": "3.1.6",
+      "repository": "https://github.com/CISOfy/lynis",
+      "tag_commit": "092a209413a72523101c6e95e94843fefc8a9161",
+      "archive": "vendor/_archives/lynis-3.1.6.tar.gz",
+      "sha256": "2a31e3e028d6b9f0e8f502402ad6752b069f9082893514c8c023962f5786b3b6",
+      "license": "GPL-3.0-only"
+    }
+  ]
+}

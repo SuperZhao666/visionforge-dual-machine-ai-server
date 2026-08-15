@@ -1,0 +1,72 @@
+{% extends "admin/base.html" %}
+{% block title %}用户管理 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>用户管理</h2>
+        <p>创建账号、调整角色与状态，点击用户名进入画像页。</p>
+    </div>
+    <div class="page-actions"><span class="badge badge-neutral">共 {{ users|length }} 个账号</span></div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>创建用户</h3>
+            <p class="card-desc">新账号默认按时长付费，初始小时可为 0。</p>
+        </div>
+    </div>
+    <form method="post" action="/admin/users/create">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid form-grid-tight">
+            <div class="form-group"><label>用户名</label><input name="username" required></div>
+            <div class="form-group"><label>邮箱</label><input name="email"></div>
+            <div class="form-group"><label>初始密码</label><input name="password" type="password" required minlength="8"></div>
+            <div class="form-group"><label>初始小时</label><input name="balance_hours" type="number" min="0" step="1" value="0"></div>
+            <div class="form-group"><label>管理员</label><select name="is_admin"><option value="0">否</option><option value="1">是</option></select></div>
+        </div>
+        <div class="form-actions"><button class="btn btn-primary btn-sm">创建</button></div>
+    </form>
+</div>
+
+<div class="table-wrap" data-reveal><table>
+    <thead><tr><th>ID</th><th>用户名</th><th>邮箱</th><th>状态</th><th class="num">余额</th><th>角色</th><th>注册时间</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for u in users %}
+    <tr>
+        <td style="color:var(--text-muted);">{{ u.id }}</td>
+        <td><a href="/admin/users/{{ u.id }}">{{ u.username }}</a></td>
+        <td>{{ u.email or '-' }}</td>
+        <td>
+            {% if u.status == 'banned' %}<span class="badge badge-expired">封禁</span>
+            {% elif u.status == 'disabled' %}<span class="badge badge-pending">停用</span>
+            {% else %}<span class="badge badge-active">正常</span>{% endif %}
+        </td>
+        <td class="num">{{ "%.1f"|format((u.balance_seconds or 0) / 3600) }}h</td>
+        <td>{% if u.is_admin %}<span class="badge badge-active">管理员</span>{% else %}<span style="color:var(--text-muted);">用户</span>{% endif %}</td>
+        <td style="font-size:0.8rem;">{{ u.created_at[:19] }}</td>
+        <td>
+            <div class="btn-group">
+            <a href="/admin/users/{{ u.id }}" class="btn btn-sm btn-secondary">详情</a>
+            {% if u.id != user.id %}
+            <form method="post" action="/admin/users/toggle-admin">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="user_id" value="{{ u.id }}">
+                <button class="btn btn-sm btn-secondary">{% if u.is_admin %}降级{% else %}升管理{% endif %}</button>
+            </form>
+            {% if not u.is_admin %}
+            <form method="post" action="/admin/users/delete">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="user_id" value="{{ u.id }}">
+                <input type="hidden" name="reason" value="delete from user list">
+                <button class="btn btn-sm btn-danger" onclick="return confirm('确认删除用户 {{ u.username }}？')">删除</button>
+            </form>
+            {% endif %}
+            {% endif %}
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+{% endblock %}

@@ -1,0 +1,19 @@
+#pragma once
+
+#define IDI_VF_APP 201
+#define IDI_VF_DISPLAY 202
+#define IDI_VF_ENCODER 203
+#define IDI_VF_PHONE 204
+#define IDI_VF_LINK 205
+#define IDI_VF_CAPTURE 206
+#define IDI_VF_VIDEO 207
+#define IDI_VF_SEND 208
+#define IDI_VF_NETWORK 209
+#define IDI_VF_PULSE 210
+#define IDI_VF_ROUTER 211
+#define IDI_VF_PLAY 212
+#define IDI_VF_SETTINGS 213
+#define IDI_VF_CHEVRON 214
+#define IDI_VF_CHECK 215
+#define IDI_VF_TRASH 216
+#define IDI_VF_LOCK 217

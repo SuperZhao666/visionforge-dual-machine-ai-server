@@ -1,0 +1,67 @@
+{% extends "admin/base.html" %}
+{% block title %}官网支付订单 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>官网支付订单</h2>
+        <p>这里只处理 VisionForge 官网购买，不管理闲鱼订单或闲鱼自动发货。</p>
+    </div>
+    <div class="page-actions"><span class="badge badge-neutral">共 {{ orders|length }} 笔</span></div>
+</div>
+<div class="table-wrap" data-reveal><table>
+    <thead><tr><th>ID</th><th>用户</th><th>套餐</th><th class="num">金额</th><th>状态</th><th>订单号/交易号</th><th>支付</th><th>时间</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for order in orders %}
+    <tr>
+        <td style="color:var(--text-muted);">#{{ order.id }}</td>
+        <td>{{ order.username or '-' }}<br><span style="font-size:0.7rem;color:var(--text-muted);">{{ order.email or '' }}</span></td>
+        <td>{{ order.plan }}</td>
+        <td class="num">¥{{ "%.2f"|format(order.amount) }}</td>
+        <td>
+            {% if order.status == 'delivered' %}<span class="badge badge-delivered">已发货</span>
+            {% elif order.status == 'paid' %}<span class="badge badge-paid">已支付</span>
+            {% elif order.status == 'pending' %}<span class="badge badge-pending">待支付</span>
+            {% elif order.status == 'cancelled' %}<span class="badge badge-expired">已取消</span>
+            {% elif order.status == 'failed' %}<span class="badge badge-expired">已失败</span>
+            {% elif order.status == 'refund_required' %}<span class="badge badge-pending">待退款</span>
+            {% elif order.status == 'refunding' %}<span class="badge badge-warning">退款中</span>
+            {% elif order.status == 'refunded' %}<span class="badge badge-expired">已退款</span>
+            {% else %}<span>{{ order.status }}</span>{% endif %}
+        </td>
+        <td>
+            <code style="font-size:0.78rem;">{{ order.merchant_order_no or '-' }}</code>
+            {% if order.yungouos_trade_no %}
+            <br><code style="font-size:0.72rem;color:var(--text-muted);">{{ order.yungouos_trade_no }}</code>
+            {% endif %}
+        </td>
+        <td>{{ order.payment_method or '-' }}</td>
+        <td style="font-size:0.8rem;">{{ order.created_at[:19] }}</td>
+        <td>
+            <div class="btn-group">
+            {% if order.status == 'pending' %}
+            <form method="post" action="/admin/orders/confirm">
+                <input type="hidden" name="order_id" value="{{ order.id }}">
+                <button type="submit" class="btn btn-sm btn-primary" onclick="return confirm('确认已收到官网付款？将为该账号增加对应时长。')">确认收款并到账</button>
+            </form>
+            <form method="post" action="/admin/orders/cancel">
+                <input type="hidden" name="order_id" value="{{ order.id }}">
+                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('确认取消？')">取消</button>
+            </form>
+            {% elif order.status in ('delivered', 'refund_required') %}
+            <form method="post" action="/admin/orders/refund">
+                <input type="hidden" name="order_id" value="{{ order.id }}">
+                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('确认退款？转账完成后请点已退款确认。')">退款</button>
+            </form>
+            {% elif order.status == 'refunding' %}
+            <form method="post" action="/admin/orders/refund-done">
+                <input type="hidden" name="order_id" value="{{ order.id }}">
+                <button type="submit" class="btn btn-sm btn-primary" onclick="return confirm('确认已转账退款给用户？')">已退款确认</button>
+            </form>
+            {% endif %}
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+{% endblock %}

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#06070c">
+    <meta name="description" content="VisionForge — 本地视觉推理与运行时控制平台">
+    <title>{% block title %}VisionForge{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/css/style.css?v=5">
+    {% block extra_head %}{% endblock %}
+    <script>
+        /* FX 武装标记：仅 JS 可用时启用转场/reveal 初始态；fx.js 未就绪则 1.6s 后回退 */
+        document.documentElement.classList.add('fx');
+        setTimeout(function () {
+            if (!window.__fxReady) document.documentElement.classList.remove('fx');
+        }, 1600);
+    </script>
+    <script defer src="/static/js/vendor/gsap.min.js?v=3.15.0"></script>
+    <script defer src="/static/js/vendor/ScrollTrigger.min.js?v=3.15.0"></script>
+    <script defer src="/static/js/vendor/lenis.min.js?v=1.3.25"></script>
+    <script defer src="/static/js/fx.js?v=6"></script>
+</head>
+<body>
+    <div class="page-veil" aria-hidden="true"></div>
+    {% block body_content %}
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="nav-brand" aria-label="VisionForge 首页">
+                <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8.6" stroke="url(#vf-g-nav)" stroke-width="1.5"/>
+                    <circle cx="12" cy="12" r="3" fill="#7c6ff0"/>
+                    <path d="M12 1.8v3.4M12 18.8v3.4M1.8 12h3.4M18.8 12h3.4" stroke="#67e8f9" stroke-width="1.3" stroke-linecap="round"/>
+                    <defs>
+                        <linearGradient id="vf-g-nav" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                            <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#67e8f9"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+                VisionForge
+            </a>
+            <div class="nav-links">
+                {% if user %}
+                    <a href="/admin" class="nav-user">{{ user.username }}</a>
+                    <a href="/admin">管理后台</a>
+                    <form method="post" action="/auth/logout" style="display:inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" style="background:none;border:0;color:inherit;padding:0.4rem 0.8rem;cursor:pointer;font:inherit;font-size:0.875rem;font-weight:500;color:var(--text-secondary);">退出</button>
+                    </form>
+                {% else %}
+                    <a href="/login">管理员登录</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <main class="container {% block main_class %}{% endblock %}">
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+        <div class="alert alert-success">{{ success }}</div>
+        {% endif %}
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>&copy; 2026 VisionForge. All rights reserved.</p>
+    </footer>
+    {% endblock %}
+    {% if csrf_token %}
+    <script>
+    (() => {
+        const token = {{ csrf_token | tojson }};
+        document.querySelectorAll('form[method="post"], form[method="POST"]').forEach((form) => {
+            if (form.querySelector('input[name="csrf_token"]')) return;
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'csrf_token';
+            input.value = token;
+            form.appendChild(input);
+        });
+    })();
+    </script>
+    {% endif %}
+</body>
+</html>

@@ -1,0 +1,79 @@
+{% extends "admin/base.html" %}
+{% block title %}帮助内容 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>帮助内容</h2>
+        <p>维护客户端帮助中心展示的问答，按排序值升序下发。</p>
+    </div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>新增帮助问答</h3>
+            <p class="card-desc">保存并启用后，客户端下次拉取帮助内容时自动生效。</p>
+        </div>
+    </div>
+    <form method="post" action="/admin/help-faqs/create">
+        <div class="form-group"><label>问题标题</label><input name="question" placeholder="例如：启动后提示 GPU 不可用怎么办？" required></div>
+        <div class="form-group"><label>解答内容</label><textarea name="answer" rows="5" placeholder="输入客户端帮助中心要显示的解答。"></textarea></div>
+        <div class="form-grid form-grid-tight">
+            <div class="form-group"><label>排序</label><input name="sort_order" type="number" value="100" min="0"></div>
+            <div class="form-group">
+                <label>状态</label>
+                <select name="enabled">
+                    <option value="1" selected>启用</option>
+                    <option value="0">隐藏</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-actions"><button class="btn btn-primary btn-sm">保存</button></div>
+    </form>
+</div>
+
+{% if faqs %}
+<div class="table-wrap" data-reveal><table>
+    <thead><tr><th style="width:72px;">排序</th><th>问题</th><th>解答</th><th style="width:86px;">状态</th><th style="width:170px;">操作</th></tr></thead>
+    <tbody>
+    {% for item in faqs %}
+    <tr>
+        <td>{{ item.sort_order }}</td>
+        <td style="font-size:0.84rem;font-weight:700;">{{ item.question }}</td>
+        <td style="font-size:0.78rem;color:var(--text-secondary);white-space:pre-wrap;">{{ item.answer[:260] }}{% if item.answer|length > 260 %}...{% endif %}</td>
+        <td>{% if item.enabled %}<span class="badge badge-active">启用</span>{% else %}<span class="badge badge-neutral">隐藏</span>{% endif %}</td>
+        <td>
+            <div class="btn-group">
+            <details style="width:100%;">
+                <summary class="btn btn-sm btn-secondary" style="cursor:pointer;display:inline-block;">编辑</summary>
+                <form method="post" action="/admin/help-faqs/update" style="margin-top:0.6rem;display:grid;gap:0.5rem;min-width:360px;">
+                    <input type="hidden" name="faq_id" value="{{ item.id }}">
+                    <div class="form-group"><label>问题标题</label><input name="question" value="{{ item.question }}" required></div>
+                    <div class="form-group"><label>解答内容</label><textarea name="answer" rows="6">{{ item.answer }}</textarea></div>
+                    <div style="display:grid;grid-template-columns:120px 120px;gap:0.5rem;">
+                        <div class="form-group"><label>排序</label><input name="sort_order" type="number" value="{{ item.sort_order }}" min="0"></div>
+                        <div class="form-group">
+                            <label>状态</label>
+                            <select name="enabled">
+                                <option value="1" {% if item.enabled %}selected{% endif %}>启用</option>
+                                <option value="0" {% if not item.enabled %}selected{% endif %}>隐藏</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary btn-sm">保存修改</button>
+                </form>
+            </details>
+            <form method="post" action="/admin/help-faqs/delete">
+                <input type="hidden" name="faq_id" value="{{ item.id }}">
+                <button class="btn btn-sm btn-danger" onclick="return confirm('确认删除这条帮助内容？')">删除</button>
+            </form>
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+{% else %}
+<div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 6h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/></svg></div><p>暂无帮助内容。客户端会先显示内置兜底 FAQ，后台新增启用后会自动下发。</p></div>
+{% endif %}
+{% endblock %}

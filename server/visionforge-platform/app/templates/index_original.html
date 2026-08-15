@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}VisionForge - 智能屏幕目标检测辅助工具{% endblock %}
+{% block content %}
+
+<section class="hero">
+    <h1><span class="gradient-text">VisionForge</span></h1>
+    <p>基于计算机视觉与深度学习的智能屏幕目标检测与自动化辅助工具。GPU加速推理，毫秒级响应。</p>
+    <div class="hero-actions">
+        <a href="{{ download_url }}" class="btn btn-primary" style="font-size:1rem;padding:0.7rem 2rem;">{{ download_text }}</a>
+        <a href="/shop" class="btn btn-outline" style="font-size:1rem;padding:0.7rem 2rem;">立即购买</a>
+    </div>
+</section>
+
+<section style="padding:2rem 0 3rem;">
+    <h2 class="section-title">核心功能</h2>
+    <p class="section-subtitle">专为精准与速度而生</p>
+    <div class="feature-grid">
+        <div class="feature-card">
+            <div class="feature-icon">🎯</div>
+            <h3>智能目标检测</h3>
+            <p>ONNX深度学习模型，精准识别屏幕目标（头部/身体），320x320 ROI对齐，检测延迟低至3ms。</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">⚡</div>
+            <h3>GPU加速推理</h3>
+            <p>CUDA 12.x + TensorRT + DirectML多后端，NVIDIA显卡自动加速，不兼容时回退CPU保证可用。</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🖱️</div>
+            <h3>多驱动支持</h3>
+            <p>Interception / DD / GHUB / MouClass / SendInput 五种鼠标驱动模式，自动选择最优方案。</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🔒</div>
+            <h3>稳定可靠</h3>
+            <p>独立进程运行核心，GUI与推理分离。完整崩溃转储、日志轮转、异常上下文记录，问题可追溯。</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">📊</div>
+            <h3>实时监控</h3>
+            <p>总览页实时FPS/GPU温度显示，结构化事件日志全量记录，支持可视化性能分析。</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🛡️</div>
+            <h3>安全设计</h3>
+            <p>一机一码绑定、RSA-2048签名验证、日志PII脱敏、硬件快照诊断，保护隐私和授权安全。</p>
+        </div>
+    </div>
+</section>
+
+<section style="padding:2rem 0 3rem;">
+    <h2 class="section-title">系统要求</h2>
+    <p class="section-subtitle">确保最佳体验</p>
+    <div class="card" style="max-width:480px;margin:0 auto;">
+        <table>
+            <tr><td style="color:var(--text-muted);border:none;">操作系统</td><td style="border:none;">Windows 10/11 64位</td></tr>
+            <tr><td style="color:var(--text-muted);border:none;">显卡</td><td style="border:none;">NVIDIA GTX 10系及以上（CUDA）</td></tr>
+            <tr><td style="color:var(--text-muted);border:none;">内存</td><td style="border:none;">建议 8GB 以上</td></tr>
+            <tr><td style="color:var(--text-muted);border:none;">磁盘</td><td style="border:none;">至少 2GB 可用空间</td></tr>
+        </table>
+    </div>
+</section>
+
+<section style="padding:2rem 0 4rem;">
+    <h2 class="section-title">选择你的套餐</h2>
+    <p class="section-subtitle">购买后自动发放卡密，即刻激活使用</p>
+    <div class="pricing-grid">
+        <div class="pricing-card">
+            <h3>一天体验卡</h3>
+            <div class="price">¥9.9</div>
+            <p class="price-desc">24小时全功能体验</p>
+            <a href="/shop" class="btn btn-secondary" style="width:100%;">购买</a>
+        </div>
+        <div class="pricing-card featured">
+            <h3>一周卡 ⭐</h3>
+            <div class="price">¥29.9</div>
+            <p class="price-desc">7天无限制使用</p>
+            <a href="/shop" class="btn btn-primary" style="width:100%;">购买</a>
+        </div>
+        <div class="pricing-card">
+            <h3>月卡</h3>
+            <div class="price">¥79.9</div>
+            <p class="price-desc">31天畅享所有功能</p>
+            <a href="/shop" class="btn btn-secondary" style="width:100%;">购买</a>
+        </div>
+        <div class="pricing-card">
+            <h3>永久卡</h3>
+            <div class="price">¥299.9</div>
+            <p class="price-desc">一次购买，永久使用</p>
+            <a href="/shop" class="btn btn-secondary" style="width:100%;">购买</a>
+        </div>
+    </div>
+</section>
+
+{% endblock %}

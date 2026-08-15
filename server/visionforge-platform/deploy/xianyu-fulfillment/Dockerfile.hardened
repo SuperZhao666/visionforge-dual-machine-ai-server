@@ -1,0 +1,23 @@
+ARG UPSTREAM_IMAGE
+FROM ${UPSTREAM_IMAGE}
+
+COPY patches/harden_upstream.py /tmp/harden_upstream.py
+COPY hardened_entrypoint.sh /usr/local/bin/visionforge-xianyu-entrypoint
+COPY bridge/bridge.py /opt/visionforge/bridge.py
+
+RUN python /tmp/harden_upstream.py --root /app \
+    && rm -f /tmp/harden_upstream.py \
+    && chmod 755 /usr/local/bin/visionforge-xianyu-entrypoint \
+    && chmod 0444 /opt/visionforge/bridge.py
+
+RUN groupadd --gid 10001 visionforge \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin visionforge \
+    && mkdir -p /app/data /app/logs /app/backups /app/static/uploads/images \
+        /app/trajectory_history /home/visionforge/.cache \
+    && chown -R 10001:10001 /app/data /app/logs /app/backups /app/static/uploads \
+        /app/trajectory_history /home/visionforge
+
+ENV HOME=/home/visionforge
+ENV XDG_CACHE_HOME=/home/visionforge/.cache
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/visionforge-xianyu-entrypoint"]

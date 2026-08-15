@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="runtime_notification_channel">实时链路</string>
+    <string name="runtime_notification_ready">等待手机与电脑连接</string>
+    <string name="runtime_notification_starting">正在启动画面接收与 AI 推理</string>
+    <string name="runtime_notification_running">画面接收与 AI 推理正在运行</string>
+    <string name="runtime_notification_failed">启动失败，请打开应用查看当前状态</string>
+    <string name="game_model_title">游戏模型</string>
+    <string name="game_valorant">无畏契约</string>
+    <string name="game_overwatch2">守望先锋</string>
+    <string name="game_delta_force">三角洲行动</string>
+    <string name="game_counter_strike_2">反恐精英2</string>
+    <string name="aim_target_title">瞄准位置</string>
+    <string name="target_body">身体</string>
+    <string name="target_head">头部</string>
+    <string name="target_teammate">队友</string>
+    <string name="target_ai">机器人</string>
+    <string name="target_crosshair">准星</string>
+    <string name="target_ct_body">CT 身体</string>
+    <string name="target_ct_head">CT 头部</string>
+    <string name="target_t_body">T 身体</string>
+    <string name="target_t_head">T 头部</string>
+    <string name="status_model_switch_requested">模型切换已提交；运行中会自动热重载，无需重启。</string>
+    <string name="status_model_switch_unavailable">手机端运行服务暂不可用，模型没有切换。</string>
+    <string name="status_aim_target_adjusted">目标位置已更新。</string>
+</resources>

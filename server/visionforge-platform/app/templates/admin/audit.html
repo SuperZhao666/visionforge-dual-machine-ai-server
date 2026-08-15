@@ -1,0 +1,32 @@
+{% extends "admin/base.html" %}
+{% block title %}审计记录 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>审计记录</h2>
+        <p>全部管理动作的时间、对象、原因与来源 IP，按时间倒序。</p>
+    </div>
+    {% if records %}<div class="page-actions"><span class="badge badge-neutral">共 {{ records|length }} 条</span></div>{% endif %}
+</div>
+
+{% if records %}
+<div class="table-wrap" data-reveal><table>
+    <thead><tr><th>时间</th><th>管理员</th><th>动作</th><th>对象</th><th>原因</th><th>IP</th><th>详情</th></tr></thead>
+    <tbody>
+    {% for r in records %}
+    <tr>
+        <td style="font-size:0.78rem;white-space:nowrap;">{{ r.created_at[:19] }}</td>
+        <td>{{ r.admin_username or r.admin_user_id }}</td>
+        <td><code>{{ r.action }}</code></td>
+        <td>{{ r.target_type }} #{{ r.target_id }}</td>
+        <td>{{ r.reason or '-' }}</td>
+        <td><code>{{ r.ip or '-' }}</code></td>
+        <td><code style="font-size:0.7rem;white-space:normal;">{{ r.detail_json }}</code></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+{% else %}
+<div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 6h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/></svg></div><p>暂无审计记录</p></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,124 @@
+{% extends "admin/base.html" %}
+{% block title %}安全策略 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>安全策略</h2>
+        <p>集中管理客户端完整性校验、运行租约和允许启动的客户端白名单。</p>
+    </div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>运行安全开关</h3>
+            <p class="card-desc">开启后，客户端必须上报已加入白名单的完整性 hash，服务端才发放运行租约。</p>
+        </div>
+        <div class="card-actions"><span class="badge badge-neutral">最近更新：{{ (security.updated_at or '-')[:19] }}</span></div>
+    </div>
+    <form method="post" action="/admin/security/settings">
+        <div class="form-grid">
+            <div class="form-group">
+                <label>强制完整性校验</label>
+                <select name="enforce_integrity">
+                    <option value="1" {% if security.enforce_integrity %}selected{% endif %}>开启</option>
+                    <option value="0" {% if not security.enforce_integrity %}selected{% endif %}>关闭</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>租约有效期（秒）</label>
+                <input name="lease_ttl_seconds" type="number" min="15" max="15" value="15" readonly>
+                <span class="form-hint">严格单实例策略固定为 15 秒，不允许放宽。</span>
+            </div>
+        </div>
+        <div class="form-actions"><button class="btn btn-primary btn-sm">保存安全策略</button></div>
+    </form>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>新增白名单</h3>
+            <p class="card-desc">manifest_hash 为客户端完整性清单的 64 位 SHA256；版本可填 <code>*</code> 匹配全部。</p>
+        </div>
+    </div>
+    <form method="post" action="/admin/security/allowlist/create">
+        <div class="form-grid">
+            <div class="form-group">
+                <label>客户端版本</label>
+                <input name="client_version" placeholder="v17.8.60_dual_ort_auto_update 或 *">
+            </div>
+            <div class="form-group">
+                <label>manifest_hash</label>
+                <input name="manifest_hash" maxlength="64" required placeholder="64 位 SHA256">
+            </div>
+            <div class="form-group">
+                <label>状态</label>
+                <select name="enabled">
+                    <option value="1">启用</option>
+                    <option value="0">停用</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group"><label>备注</label><input name="note" placeholder="例如：本地开发机 2026-07-08"></div>
+        <div class="form-group"><label>文件 hash JSON（可选）</label><textarea name="file_hashes_json" rows="4" placeholder='{"files":[{"path":"app_gui.py","sha256":"..."}]}'></textarea></div>
+        <div class="form-actions"><button class="btn btn-primary btn-sm">加入白名单</button></div>
+    </form>
+</div>
+
+{% if allowlist %}
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>白名单列表</h3>
+            <p class="card-desc">共 {{ allowlist|length }} 条，展开“编辑”可修改或删除。</p>
+        </div>
+    </div>
+    <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>版本</th><th>manifest_hash</th><th>状态</th><th>备注</th><th>时间</th><th>操作</th></tr></thead>
+        <tbody>
+        {% for item in allowlist %}
+        <tr>
+            <td>{{ item.id }}</td>
+            <td style="font-size:0.76rem;"><code>{{ item.client_version }}</code></td>
+            <td style="font-size:0.72rem;"><code class="text-mono">{{ item.manifest_hash[:16] }}...</code></td>
+            <td>{% if item.enabled %}<span class="badge badge-active">启用</span>{% else %}<span class="badge badge-neutral">停用</span>{% endif %}</td>
+            <td style="font-size:0.78rem;">{{ item.note or '-' }}</td>
+            <td style="font-size:0.74rem;">{{ (item.updated_at or item.created_at)[:19] }}</td>
+            <td>
+                <details>
+                    <summary class="btn btn-secondary btn-sm" style="display:inline-block;cursor:pointer;">编辑</summary>
+                    <div style="margin-top:0.75rem;min-width:min(720px,80vw);padding:0.85rem;border:1px solid var(--border);border-radius:8px;background:var(--surface);">
+                        <form method="post" action="/admin/security/allowlist/update">
+                            <input type="hidden" name="allowlist_id" value="{{ item.id }}">
+                            <div class="form-grid">
+                                <div class="form-group"><label>客户端版本</label><input name="client_version" value="{{ item.client_version }}"></div>
+                                <div class="form-group"><label>manifest_hash</label><input name="manifest_hash" value="{{ item.manifest_hash }}" maxlength="64" required></div>
+                                <div class="form-group">
+                                    <label>状态</label>
+                                    <select name="enabled">
+                                        <option value="1" {% if item.enabled %}selected{% endif %}>启用</option>
+                                        <option value="0" {% if not item.enabled %}selected{% endif %}>停用</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-group"><label>备注</label><input name="note" value="{{ item.note }}"></div>
+                            <div class="form-group"><label>文件 hash JSON</label><textarea name="file_hashes_json" rows="5">{{ item.file_hashes_json }}</textarea></div>
+                            <div class="form-actions"><button class="btn btn-secondary btn-sm">保存修改</button></div>
+                        </form>
+                        <form method="post" action="/admin/security/allowlist/delete" class="form-actions">
+                            <input type="hidden" name="allowlist_id" value="{{ item.id }}">
+                            <button class="btn btn-danger btn-sm" onclick="return confirm('确认删除该白名单？')">删除白名单</button>
+                        </form>
+                    </div>
+                </details>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+{% else %}
+<div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 6h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/></svg></div><p>暂无完整性白名单</p></div>
+{% endif %}
+{% endblock %}

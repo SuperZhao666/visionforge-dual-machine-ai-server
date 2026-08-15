@@ -1,0 +1,3 @@
+# Install in the nginx http {} context. This zone is intentionally independent
+# from the existing single-machine limits.
+limit_req_zone $binary_remote_addr zone=vf_dual_machine:10m rate=30r/s;

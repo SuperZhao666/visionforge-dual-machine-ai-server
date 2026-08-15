@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% block title %}VisionForge 双机推流使用教程{% endblock %}
+{% block extra_head %}
+<meta name="description" content="VisionForge 双机推流安装、网络连接、鼠标控制、日志导出与问题反馈图文教程">
+<link rel="stylesheet" href="/static/css/tutorial.css?v=4">
+{% endblock %}
+{% block body_content %}
+<div class="tutorial-home">
+    <header class="tutorial-nav">
+        <a class="tutorial-brand" href="#top" aria-label="回到教程顶部">
+            <span class="tutorial-brand-mark" aria-hidden="true">VF</span>
+            <span>VisionForge</span>
+        </a>
+        <nav aria-label="教程导航">
+            <a href="#connect">连接</a>
+            <a href="#start">启动</a>
+            <a href="#logs">日志</a>
+            <a href="#feedback">反馈</a>
+            <a class="tutorial-admin-link" href="/login" aria-label="进入管理员登录页">
+                <span aria-hidden="true">⚙</span> 管理员登录
+            </a>
+        </nav>
+    </header>
+
+    <main id="top">
+        <section class="tutorial-hero">
+            <div class="tutorial-shell tutorial-hero-grid">
+                <div>
+                    <p class="eyebrow"><span></span> 双机推流 · 新手图文教程</p>
+                    <h1>先连通画面，<br><em>再测试移动。</em></h1>
+                    <p class="hero-lead">
+                        手机负责接收画面、AI 推理与鼠标控制；电脑端 VF Host 只负责采集、编码和发送画面。
+                        程序优先使用千兆有线链路，没有扩展坞或网线时会自动回退到局域网 UDP 无线推流。
+                    </p>
+                    <div class="hero-actions">
+                        <a class="tutorial-button primary" href="#prepare">从准备开始</a>
+                        <a class="tutorial-button secondary" href="#logs">直接看日志反馈</a>
+                    </div>
+                </div>
+                <aside class="hero-checklist" aria-label="开始前检查">
+                    <div class="checklist-title">开始前只检查 4 件事</div>
+                    <ol>
+                        <li><span>01</span><b>手机</b>已安装 VF Mobile</li>
+                        <li><span>02</span><b>电脑</b>已有 VFHost.exe</li>
+                        <li><span>03</span><b>网络</b>选 CAT6 或 UDP</li>
+                        <li><span>04</span><b>控制</b>选 MAKCU 或蓝牙 HID</li>
+                    </ol>
+                </aside>
+            </div>
+        </section>
+
+        <section class="tutorial-section" id="prepare">
+            <div class="tutorial-shell">
+                <div class="section-heading">
+                    <span class="section-number">01</span>
+                    <div>
+                        <p class="section-kicker">安装与激活</p>
+                        <h2>把两个程序准备好</h2>
+                    </div>
+                </div>
+                <div class="three-card-grid">
+                    <article class="tutorial-card">
+                        <span class="card-icon">A</span>
+                        <h3>安装手机 APP</h3>
+                        <p>在手机安装收到的 VF Mobile APK。若系统询问是否允许安装此应用，请确认文件来自官方交付包。</p>
+                    </article>
+                    <article class="tutorial-card">
+                        <span class="card-icon">K</span>
+                        <h3>激活永久卡密</h3>
+                        <p>打开 APP 底部“卡密”页，输入收到的卡密并等待“卡密已激活”。本教程对应永久卡，成功后无需重复输入。</p>
+                    </article>
+                    <article class="tutorial-card">
+                        <span class="card-icon">H</span>
+                        <h3>放置 Host</h3>
+                        <p>把 VFHost.exe 放在电脑桌面。建议保持文件名与位置不变，避免防火墙授权指向旧文件。</p>
+                    </article>
+                </div>
+                <div class="notice warning">
+                    <strong>授权状态与购买说明不一致？</strong>
+                    先截图“卡密”页面并反馈，不要反复输入卡密，也不要卸载 APP 清除数据。
+                </div>
+            </div>
+        </section>
+
+        <section class="tutorial-section section-tinted" id="connect">
+            <div class="tutorial-shell">
+                <div class="section-heading">
+                    <span class="section-number">02</span>
+                    <div>
+                        <p class="section-kicker">画面传输网络</p>
+                        <h2>有线优先，无线自动回退</h2>
+                    </div>
+                </div>
+                <div class="decision-banner">
+                    <span>你有千兆网口扩展坞和网线吗？</span>
+                    <div class="decision-options">
+                        <a href="#cat6"><b>有</b> → 使用 CAT6 有线</a>
+                        <a href="#udp"><b>没有</b> → 使用 UDP 无线</a>
+                    </div>
+                </div>
+                <div class="connection-grid">
+                    <article class="connection-card recommended" id="cat6">
+                        <div class="connection-label">推荐 · 更稳定</div>
+                        <h3>CAT6 千兆有线</h3>
+                        <p>适合追求低延迟和稳定帧率。程序检测到有效有线手机端点后会自动优先使用。</p>
+                        <div class="wiring-flow" aria-label="CAT6 接线顺序">
+                            <span>电脑网口</span><i>网线</i><span>手机千兆扩展坞</span><i>USB-C</i><span>手机</span>
+                        </div>
+                        <ol class="plain-steps">
+                            <li>网线一头插电脑主机网口。</li>
+                            <li>另一头插手机扩展坞的千兆网口。</li>
+                            <li>扩展坞连接手机；看到网口指示灯后再打开 APP。</li>
+                        </ol>
+                    </article>
+                    <article class="connection-card" id="udp">
+                        <div class="connection-label">零额外硬件</div>
+                        <h3>UDP 局域网无线</h3>
+                        <p>没有扩展坞或网线时无需手工切换。确保手机和电脑处于同一个局域网，Host 会自动发现并回退。</p>
+                        <div class="wiring-flow wireless" aria-label="UDP 无线连接顺序">
+                            <span>电脑</span><i>同一路由器</i><span>局域网 / Wi-Fi</span><i>UDP</i><span>手机</span>
+                        </div>
+                        <ol class="plain-steps">
+                            <li>手机与电脑连接同一个路由器。</li>
+                            <li>先打开 VF Mobile，再打开 VFHost.exe。</li>
+                            <li>不要同时使用会隔离设备的访客 Wi-Fi。</li>
+                        </ol>
+                    </article>
+                </div>
+                <div class="notice info">
+                    <strong>这里是 UDP，不是“UPD”。</strong>
+                    网络传输只负责把画面送到手机；鼠标怎么输出由下一节单独设置，二者不要混为一谈。
+                </div>
+            </div>
+        </section>
+
+        <section class="tutorial-section" id="control-route">
+            <div class="tutorial-shell">
+                <div class="section-heading">
+                    <span class="section-number">03</span>
+                    <div>
+                        <p class="section-kicker">鼠标控制路线</p>
+                        <h2>MAKCU 与蓝牙 HID 二选一</h2>
+                    </div>
+                </div>
+                <div class="connection-grid">
+                    <article class="connection-card recommended">
+                        <div class="connection-label">有盒子时选择</div>
+                        <h3>MAKCU 有线盒子</h3>
+                        <div class="makcu-diagram" aria-label="MAKCU 接线示意">
+                            <span>电脑 USB</span><b>← 左侧口</b><strong>MAKCU</strong><b>中间线 →</b><span>手机扩展坞</span>
+                        </div>
+                        <p class="diagram-tail">MAKCU 右侧口 → 鼠标接收器或有线鼠标插头</p>
+                        <ol class="plain-steps">
+                            <li>按盒体正面朝向确认左、中、右位置；若实物有丝印，以丝印为准。</li>
+                            <li>APP“控制”页选择“MAKCU 有线盒子”。</li>
+                            <li>等待路线状态显示已就绪，再测试移动。</li>
+                        </ol>
+                    </article>
+                    <article class="connection-card">
+                        <div class="connection-label">没有盒子时选择</div>
+                        <h3>蓝牙 HID 无线</h3>
+                        <ol class="plain-steps numbered">
+                            <li>打开手机蓝牙。</li>
+                            <li>在 APP“控制”页选择“蓝牙 HID 无线”。</li>
+                            <li>打开电脑蓝牙，添加设备并与手机完成配对。</li>
+                            <li>回到 APP；未显示“已就绪”时点击“重新检测”。</li>
+                        </ol>
+                    </article>
+                </div>
+                <figure class="phone-shot figure-card">
+                    <img src="/static/img/tutorial/mobile-control.png" alt="VF Mobile 控制页面，鼠标输出路线选择蓝牙 HID 无线并显示已就绪" width="1080" height="2400" loading="lazy">
+                    <figcaption>
+                        <span>真实界面</span>
+                        “鼠标输出路线”只选一种。图中蓝牙 HID 已连接电脑并显示“已就绪”。
+                    </figcaption>
+                </figure>
+            </div>
+        </section>
+
+        <section class="tutorial-section section-tinted" id="start">
+            <div class="tutorial-shell">
+                <div class="section-heading">
+                    <span class="section-number">04</span>
+                    <div>
+                        <p class="section-kicker">开始推流</p>
+                        <h2>严格按这个顺序启动</h2>
+                    </div>
+                </div>
+                <ol class="launch-sequence">
+                    <li><span>1</span><div><b>先打开 VF Mobile</b><p>保持在“推理”页，看到“等待主机连接”。</p></div></li>
+                    <li><span>2</span><div><b>再打开桌面 VFHost.exe</b><p>等待手机端点与当前链路完成自动检测。</p></div></li>
+                    <li><span>3</span><div><b>确认链路</b><p>有线应显示 CAT6；没有有效有线端点时应显示无线自动回退。</p></div></li>
+                    <li><span>4</span><div><b>点击“开始传输”</b><p>首次出现系统授权提示时，只允许官方交付的当前 VFHost.exe。</p></div></li>
+                </ol>
+                <figure class="wide-shot figure-card">
+                    <img src="/static/img/tutorial/host-home.png" alt="VF Host 主界面，左侧有开始传输按钮，右上角有诊断与日志按钮" width="1242" height="892" loading="lazy">
+                    <figcaption>
+                        <span>电脑端</span>
+                        左侧等待手机端点检测；检测完成后点击紫色“开始传输”。右上角“诊断与日志”用于问题反馈。
+                    </figcaption>
+                </figure>
+            </div>
+        </section>
+
+        <section class="tutorial-section" id="network-check">
+            <div class="tutorial-shell">
+                <div class="section-heading">
+                    <span class="section-number">05</span>
+                    <div>
+                        <p class="section-kicker">第一阶段验收</p>
+                        <h2>先确认网络和画面正常</h2>
+                    </div>
+                </div>
+                <div class="acceptance-grid">
+                    <div class="acceptance-list">
+                        <h3>保持 15–30 秒，检查这些状态</h3>
+                        <ul class="check-list">
+                            <li>Host 的手机端点不再显示“尚未检测”。</li>
+                            <li>Host 捕获、编码、发送指标开始出现数值。</li>
+                            <li>手机“接收画面 / 处理画面 / AI 推理”不再等待。</li>
+                            <li>手机新画面接收、解码、推理 FPS 持续大于 0。</li>
+                            <li>画面没有持续断开、黑屏或频繁重新连接。</li>
+                        </ul>
+                        <div class="notice danger compact">
+                            <strong>只要网络还不稳定，就先不要测移动。</strong>
+                            否则无法判断抖动来自网络、推理还是控制输出。
+                        </div>
+                    </div>
+                    <figure class="phone-shot figure-card">
+                        <img src="/static/img/tutorial/mobile-home.png" alt="VF Mobile 推理页等待主机连接，显示接收、处理、AI 推理和输出设备状态" width="1080" height="2400" loading="lazy">
+                        <figcaption><span>手机端</span>主机未开始时显示“等待主机连接”；开始后各链路状态和 FPS 会实时更新。</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </section>
+
+        <section class="tutorial-section section-tinted" id="movement-check">
+            <div class="tutorial-shell">
+                <div class="section-heading">
+                    <span class="section-number">06</span>
+                    <div>
+                        <p class="section-kicker">第二阶段验收</p>
+                        <h2>网络稳定后再测试移动效果</h2>
+                    </div>
+                </div>
+                <div class="test-ladder">
+                    <article><span>1</span><h3>确认控制路线</h3><p>MAKCU 或蓝牙 HID 必须显示“已就绪”。</p></article>
+                    <article><span>2</span><h3>确认模型与瞄准位置</h3><p>选择对应游戏模型，再选择身体或头部。</p></article>
+                    <article><span>3</span><h3>先测单目标</h3><p>在已授权的训练环境中先做小范围、低复杂度跟随。</p></article>
+                    <article><span>4</span><h3>再测目标切换</h3><p>记录切换瞬间是否抖动、停顿、抽帧或丢失目标。</p></article>
+                </div>
+                <div class="notice info">
+                    <strong>不要一上来同时改很多参数。</strong>
+                    每次只改一个设置，并记录修改前后现象，反馈才有可比性。
+                </div>
+            </div>
+        </section>
+
+        <section class="tutorial-section" id="logs">
+            <div class="tutorial-shell">
+                <div class="section-heading">
+                    <span class="section-number">07</span>
+                    <div>
+                        <p class="section-kicker">日志反馈</p>
+                        <h2>手机和电脑日志都要发</h2>
+                    </div>
+                </div>
+                <div class="log-grid">
+                    <article class="log-card">
+                        <div class="log-card-head"><span>手机</span><h3>导出 VF Mobile 运行日志</h3></div>
+                        <ol class="plain-steps numbered">
+                            <li>问题出现后尽快回到 VF Mobile。</li>
+                            <li>点击右上角齿轮形按钮；当前版本实际功能为“导出运行日志”。</li>
+                            <li>在系统文件保存器中选择一个容易找到的文件夹。</li>
+                            <li>确认文件名后点击右下角“保存”。</li>
+                        </ol>
+                        <figure class="export-shot">
+                            <img src="/static/img/tutorial/mobile-log-export-guide.png" alt="Android 日志保存界面，选择文件夹后点击保存" width="1080" height="600" loading="lazy">
+                        </figure>
+                    </article>
+                    <article class="log-card">
+                        <div class="log-card-head"><span>电脑</span><h3>打开 VF Host 日志目录</h3></div>
+                        <ol class="plain-steps numbered">
+                            <li>先点击“停止传输”，不要先关闭 Host 窗口。</li>
+                            <li>点击右上角“诊断与日志”。</li>
+                            <li>系统会打开 <code>%LOCALAPPDATA%\VisionForge\DualMachine</code>。</li>
+                            <li>复制 <code>host-events.jsonl</code> 与最新的 <code>host-metrics-v6.csv</code>。</li>
+                            <li>如果 <code>crashes</code> 中有新文件，也一起发送；复制完成后再关闭 Host。</li>
+                        </ol>
+                        <div class="file-stack" aria-label="需要发送的 Host 日志文件">
+                            <span>host-events.jsonl</span>
+                            <span>host-metrics-v6.csv</span>
+                            <span>crashes / 最新文件（如有）</span>
+                        </div>
+                    </article>
+                </div>
+                <div class="notice warning">
+                    <strong>发送前检查：</strong>
+                    不要把卡密、无线调试配对码、账号密码或无关个人文件一起发送。日志太多时可把本次相关文件压缩为一个 ZIP。
+                </div>
+            </div>
+        </section>
+
+        <section class="tutorial-section section-tinted" id="feedback">
+            <div class="tutorial-shell">
+                <div class="section-heading">
+                    <span class="section-number">08</span>
+                    <div>
+                        <p class="section-kicker">问题描述</p>
+                        <h2>照着模板写，定位会快很多</h2>
+                    </div>
+                </div>
+                <div class="feedback-grid">
+                    <div class="report-template">
+                        <div class="report-title">复制这份问题描述模板</div>
+                        <pre>发生时间：
+网络方式：CAT6 有线 / UDP 无线
+控制方式：MAKCU / 蓝牙 HID
+游戏与模型：
+瞄准位置：身体 / 头部
+触发方式：右键 / 侧键 / 始终开启
+
+操作步骤：
+1.
+2.
+3.
+
+期望结果：
+实际结果：
+出现频率：每次 / 偶发 / 约多少秒一次
+Host 状态与 FPS：
+手机接收 / 解码 / 推理 FPS：
+
+附件：手机日志 + Host 日志 + 可选录屏</pre>
+                    </div>
+                    <div class="issue-examples">
+                        <h3>不要只说“不能用”</h3>
+                        <div class="bad-good">
+                            <div><b>不够清楚</b><p>“很卡”“抖得厉害”“没反应”。</p></div>
+                            <div><b>推荐写法</b><p>“UDP 无线，守望先锋模型、头部、侧键触发；单目标正常，切换第二个目标时约每 3 次出现一次左右抖动，手机推理 140 FPS，已附两端日志。”</p></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="troubleshooting">
+                    <h3>常见问题快速对照</h3>
+                    <div class="trouble-row"><b>Host 找不到手机</b><span>确认 APP 已打开；无线时检查同一局域网，有线时检查扩展坞与网口指示灯。</span></div>
+                    <div class="trouble-row"><b>手机一直 0 FPS</b><span>确认已点击“开始传输”，并检查 Host 捕获、编码、发送三项是否都有数值。</span></div>
+                    <div class="trouble-row"><b>画面正常但鼠标不动</b><span>检查 APP“控制”页的输出路线是否已就绪；这是控制链路问题，不是推流网络问题。</span></div>
+                    <div class="trouble-row"><b>移动抖动或目标切换抖动</b><span>记录模型、瞄准位置、触发方式、网络与控制路线，并同时发送手机与 Host 日志。</span></div>
+                    <div class="trouble-row"><b>CAT6 未启用</b><span>检查网线两端和扩展坞供电；程序会在没有有效有线手机端点时保持 UDP 无线回退。</span></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="tutorial-cta">
+            <div class="tutorial-shell cta-inner">
+                <div><p class="section-kicker">准备完成</p><h2>记住：先画面，后移动；反馈时两端日志一起发。</h2></div>
+                <a class="tutorial-button primary" href="mailto:visionforgemessage@foxmail.com">发送问题反馈</a>
+            </div>
+        </section>
+    </main>
+
+    <footer class="tutorial-footer">
+        <span>© 2026 VisionForge</span>
+        <span>仅用于获得授权的本地测试环境</span>
+        <a href="/login">管理员登录</a>
+    </footer>
+</div>
+{% endblock %}

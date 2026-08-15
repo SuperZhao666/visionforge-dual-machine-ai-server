@@ -1,0 +1,11 @@
+[Unit]
+Description=Run VisionForge uploaded log retention daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=20m
+Unit=vf-log-retention.service
+
+[Install]
+WantedBy=timers.target

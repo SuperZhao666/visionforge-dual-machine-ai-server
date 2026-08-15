@@ -1,0 +1,599 @@
+{% extends "admin/base.html" %}
+
+{% block title %}双机卡密管理 - VisionForge{% endblock %}
+
+{% block admin_content %}
+<style>
+    .dm-stack { display: grid; gap: 18px; }
+    .dm-note { color: var(--text-muted, #8f98ad); font-size: 13px; line-height: 1.7; }
+    .dm-warning { border-left: 3px solid #f59e0b; padding: 10px 12px; background: rgba(245,158,11,.08); border-radius: 6px; }
+    .dm-danger { border-left-color: #ef4444; background: rgba(239,68,68,.08); }
+    .dm-inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .dm-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .dm-actions form { margin: 0; }
+    .dm-details { margin-top: 8px; min-width: 330px; }
+    .dm-details > summary { cursor: pointer; color: var(--primary, #8b7cf6); }
+    .dm-form-compact { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid var(--border, #293044); border-radius: 8px; }
+    .dm-form-compact input, .dm-form-compact select, .dm-form-compact textarea { width: 100%; }
+    .dm-kv { display: grid; grid-template-columns: minmax(145px, .7fr) minmax(180px, 1.3fr); gap: 7px 14px; margin: 0; }
+    .dm-kv dt { color: var(--text-muted, #8f98ad); }
+    .dm-kv dd { margin: 0; word-break: break-all; }
+    .dm-mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }
+    .dm-card-code-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .dm-scroll { max-height: 480px; overflow: auto; }
+    .dm-audit-detail { max-width: 440px; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+    .dm-pagination { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+    .dm-muted-row { opacity: .72; }
+    @media (max-width: 900px) {
+        .dm-kv { grid-template-columns: 1fr; }
+        .dm-details { min-width: 250px; }
+    }
+</style>
+
+<div class="dm-stack">
+    <div class="page-header">
+        <div>
+            <h1>双机卡密管理</h1>
+            <p>通过本机 HMAC 桥接管理隔离的双机侧车数据库，不访问官网单机授权表。</p>
+        </div>
+        {% if bridge_ready %}
+        <span class="badge badge-success">桥接密钥已配置</span>
+        {% else %}
+        <span class="badge badge-neutral">桥接未配置</span>
+        {% endif %}
+    </div>
+
+    <div class="dm-warning">
+        <strong>卡密保密边界：</strong>
+        选中具体批次时，本页会通过禁止缓存的响应展示明文卡密，便于逐张复制；全局查询、地址栏和审计记录仍只保留卡密编号及末四位。批量导出为可选操作，请将明文存入受控位置。
+    </div>
+
+    <section class="card">
+        <div class="card-header">
+            <div>
+                <h2>签发双机卡</h2>
+                <p class="card-desc">提交成功后跳转到对应批次，可直接查看和逐张复制；需要批量处理时再选择导出明文 CSV。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/dual-machine-cards/issue">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="dm-product-key">产品</label>
+                    <select id="dm-product-key" name="product_key" required>
+                        {% for product in product_options %}
+                        <option value="{{ product.product_key }}">
+                            {{ product.display_name }}（{% if product.is_permanent %}永久授权{% else %}{{ product.duration_seconds }} 秒计时授权{% endif %}）
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="dm-quantity">数量</label>
+                    <input id="dm-quantity" type="number" name="quantity" value="1" min="1" max="500" required>
+                </div>
+                <div class="form-group">
+                    <label for="dm-expires">卡密到期 Unix 时间戳（可选）</label>
+                    <input id="dm-expires" type="number" name="expires_at_epoch" min="1" placeholder="留空表示不设置卡密兑换截止时间">
+                </div>
+                <div class="form-group">
+                    <label for="dm-note">用途备注</label>
+                    <input id="dm-note" name="note" maxlength="500" placeholder="例如：闲鱼订单批次或渠道说明">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-primary" type="submit">签发并在页面查看</button>
+            </div>
+        </form>
+    </section>
+
+    <section class="card">
+        <div class="card-header">
+            <div>
+                <h2>卡密批次</h2>
+                <p class="card-desc">共 {{ batch_total }} 条；支持按批次号、请求号、产品或备注查询。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/dual-machine-cards/filter">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="filter_scope" value="batch">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="dm-batch-query">批次查询</label>
+                    <input id="dm-batch-query" name="batch_query" maxlength="128" value="{{ filters.batch_query }}" placeholder="批次号 / 请求号 / 产品 / 备注（不要输入卡密）">
+                </div>
+                <div class="form-group">
+                    <label for="dm-batch-status">状态</label>
+                    <select id="dm-batch-status" name="batch_status">
+                        <option value="" {% if not filters.batch_status %}selected{% endif %}>全部状态</option>
+                        <option value="active" {% if filters.batch_status == 'active' %}selected{% endif %}>有效</option>
+                        <option value="revoked" {% if filters.batch_status == 'revoked' %}selected{% endif %}>已停用</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="dm-batch-deleted">归档状态</label>
+                    <select id="dm-batch-deleted" name="batch_deleted">
+                        <option value="active" {% if filters.batch_deleted == 'active' %}selected{% endif %}>未归档</option>
+                        <option value="deleted" {% if filters.batch_deleted == 'deleted' %}selected{% endif %}>已归档</option>
+                        <option value="all" {% if filters.batch_deleted == 'all' %}selected{% endif %}>全部</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" type="submit">筛选批次</button>
+                <a class="btn btn-secondary" href="/admin/dual-machine-cards">重置</a>
+            </div>
+        </form>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>批次</th>
+                        <th>产品 / 数量</th>
+                        <th>卡密状态统计</th>
+                        <th>状态</th>
+                        <th>时间 / 备注</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for batch in batches %}
+                    <tr class="{% if batch.deleted_at %}dm-muted-row{% endif %}">
+                        <td>
+                            <strong>#{{ batch.id }}</strong><br>
+                            <span class="dm-note dm-mono">{{ batch.request_id or '' }}</span>
+                        </td>
+                        <td>
+                            {{ batch.display_name or batch.product_key }}<br>
+                            <span class="dm-note">{{ batch.quantity }} 张 · {{ batch.channel or '-' }} · {% if batch.is_permanent %}永久授权{% else %}{{ batch.authorization_kind }} 计时授权{% endif %}</span>
+                        </td>
+                        <td>
+                            <span class="dm-note">
+                                待用 {{ batch.issued_count or 0 }} / 已激活 {{ batch.activated_count or 0 }}<br>
+                                停用 {{ batch.revoked_count or 0 }} / 过期 {{ batch.expired_count or 0 }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge {% if batch.status == 'active' %}badge-success{% else %}badge-neutral{% endif %}">{{ batch.status }}</span>
+                            {% if batch.deleted_at %}<br><span class="badge badge-neutral">已归档</span>{% endif %}
+                        </td>
+                        <td>
+                            <span class="dm-note">创建：{{ batch.created_at or '-' }}</span><br>
+                            <span class="dm-note">到期：{{ batch.expires_at_epoch or '不限制' }}</span><br>
+                            <span>{{ batch.note or '-' }}</span>
+                        </td>
+                        <td>
+                            <div class="dm-actions">
+                                <a class="btn btn-secondary btn-sm" href="/admin/dual-machine-cards?batch_id={{ batch.id }}#dm-code-list">查看卡密</a>
+                                {% if not batch.deleted_at %}
+                                <form method="post" action="/admin/dual-machine-cards/batches/{{ batch.id }}/export">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <button class="btn btn-secondary btn-sm" type="submit">导出明文 CSV</button>
+                                </form>
+                                {% endif %}
+                            </div>
+                            <details class="dm-details">
+                                <summary>修改 / 状态操作</summary>
+                                {% if batch.deleted_at %}
+                                <p class="dm-note">该批次已归档；数据与原停用状态均保留。</p>
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/batches/{{ batch.id }}/unarchive">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <label>解除归档原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <span class="dm-note">解除归档只恢复可见性；若批次原本已停用，还需再执行“恢复批次”。</span>
+                                    <button class="btn btn-secondary btn-sm" type="submit">解除批次归档</button>
+                                </form>
+                                {% else %}
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/batches/{{ batch.id }}/update">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <label>备注<input name="note" maxlength="500" value="{{ batch.note or '' }}"></label>
+                                    <label>到期 Unix 时间戳<input type="number" min="1" name="expires_at_epoch" value="{{ batch.expires_at_epoch or '' }}" placeholder="留空将清除批次兑换截止时间"></label>
+                                    <label>修改原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <button class="btn btn-secondary btn-sm" type="submit">保存修改</button>
+                                </form>
+                                {% if batch.status == 'revoked' %}
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/batches/{{ batch.id }}/restore">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <label>恢复原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <button class="btn btn-secondary btn-sm" type="submit">恢复批次</button>
+                                </form>
+                                {% else %}
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/batches/{{ batch.id }}/revoke">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <label>停用原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <label class="dm-warning dm-danger">
+                                        <input type="checkbox" name="revoke_activated_entitlements" value="1">
+                                        同时停用已兑换出的双机授权（会终止活跃会话）
+                                    </label>
+                                    <button class="btn btn-danger btn-sm" type="submit">停用批次</button>
+                                </form>
+                                {% endif %}
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/batches/{{ batch.id }}/archive">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <label>归档原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <span class="dm-note">归档不是物理删除：批次、卡密及历史授权数据都会保留，并与停用/恢复状态分开。</span>
+                                    <button class="btn btn-danger btn-sm" type="submit">归档批次（保留数据）</button>
+                                </form>
+                                {% endif %}
+                            </details>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="empty-state">没有符合条件的双机卡批次。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="dm-pagination">
+            {% if links.batch_previous %}<a class="btn btn-secondary btn-sm" href="{{ links.batch_previous }}">上一页</a>{% endif %}
+            {% if links.batch_next %}<a class="btn btn-secondary btn-sm" href="{{ links.batch_next }}">下一页</a>{% endif %}
+        </div>
+    </section>
+
+    <section id="dm-code-list" class="card">
+        <div class="card-header">
+            <div>
+                {% if filters.batch_id %}
+                <h2>批次 #{{ filters.batch_id }} 的卡密</h2>
+                <p class="card-desc">共 {{ code_total }} 条。仅可按卡密记录 ID 或末四位查询，避免明文进入地址栏。</p>
+                {% else %}
+                <h2>全局卡密查询</h2>
+                <p class="card-desc">跨全部批次共 {{ code_total }} 条。支持记录 ID、批次、末四位、产品、状态、备注、授权 ID、设备码与公钥指纹；禁止输入或显示卡密明文。</p>
+                {% endif %}
+            </div>
+            {% if selected_batch %}<span class="badge badge-neutral">{{ selected_batch.product_key }} · {{ selected_batch.status }}</span>{% endif %}
+        </div>
+        <form method="post" action="/admin/dual-machine-cards/filter">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="filter_scope" value="code">
+            {% if filters.batch_id %}<input type="hidden" name="batch_id" value="{{ filters.batch_id }}">{% endif %}
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="dm-code-query">{% if filters.batch_id %}记录 ID / 卡密末四位{% else %}安全字段全局搜索{% endif %}</label>
+                    <input id="dm-code-query" name="code_query" maxlength="{% if filters.batch_id %}10{% else %}128{% endif %}" value="{{ filters.code_query }}" {% if filters.batch_id %}pattern="([0-9]{1,10}|[23456789A-HJ-NP-Z]{1,4})" placeholder="例如 128 或 7K9P"{% else %}placeholder="记录 ID、批次、末四位、备注、授权或设备指纹"{% endif %}>
+                </div>
+                <div class="form-group">
+                    <label for="dm-code-status">状态</label>
+                    <select id="dm-code-status" name="code_status">
+                        <option value="" {% if not filters.code_status %}selected{% endif %}>全部状态</option>
+                        <option value="issued" {% if filters.code_status == 'issued' %}selected{% endif %}>待兑换</option>
+                        <option value="activated" {% if filters.code_status == 'activated' %}selected{% endif %}>已激活</option>
+                        <option value="revoked" {% if filters.code_status == 'revoked' %}selected{% endif %}>已停用</option>
+                        <option value="expired" {% if filters.code_status == 'expired' %}selected{% endif %}>已过期</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="dm-code-deleted">归档状态</label>
+                    <select id="dm-code-deleted" name="code_deleted">
+                        <option value="active" {% if filters.code_deleted == 'active' %}selected{% endif %}>未归档</option>
+                        <option value="deleted" {% if filters.code_deleted == 'deleted' %}selected{% endif %}>已归档</option>
+                        <option value="all" {% if filters.code_deleted == 'all' %}selected{% endif %}>全部</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-actions"><button class="btn btn-secondary" type="submit">筛选卡密</button></div>
+        </form>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>记录 / 序号</th>
+                        <th>卡密标识</th>
+                        <th>产品 / 状态</th>
+                        <th>激活与授权</th>
+                        <th>时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for code in codes %}
+                    <tr class="{% if code.deleted_at %}dm-muted-row{% endif %}">
+                        <td>
+                            #{{ code.id }} / {{ code.ordinal }}<br>
+                            <a class="dm-note" href="/admin/dual-machine-cards?batch_id={{ code.batch_id }}">批次 #{{ code.batch_id }}</a>
+                        </td>
+                        <td>
+                            {% if code.plaintext_code %}
+                            <div class="dm-card-code-row">
+                                <code id="dm-card-code-{{ code.id }}" class="dm-mono">{{ code.plaintext_code }}</code>
+                                <button class="btn btn-secondary btn-sm" type="button" data-copy-card-id="{{ code.id }}">复制卡密</button>
+                            </div>
+                            <span class="dm-note">末四位：{{ code.code_suffix or '----' }}</span>
+                            {% else %}
+                            <span class="dm-mono">••••-{{ code.code_suffix or '----' }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {{ code.product_key }} · {% if code.is_permanent %}永久授权{% else %}{{ code.duration_seconds }} 秒{% endif %}<br>
+                            <span class="badge {% if code.status in ['issued', 'activated'] %}badge-success{% else %}badge-neutral{% endif %}">{{ code.status }}</span>
+                            {% if code.deleted_at %}<span class="badge badge-neutral">已归档</span>{% endif %}
+                            {% if code.admin_note %}<br><span class="dm-note">{{ code.admin_note }}</span>{% endif %}
+                        </td>
+                        <td>
+                            <span class="dm-note">激活记录：{{ code.activation_id or '-' }}</span><br>
+                            {% if code.entitlement_id %}
+                            <a class="dm-mono" href="/admin/dual-machine-cards?batch_id={{ code.batch_id }}&amp;entitlement_id={{ code.entitlement_id }}">{{ code.entitlement_id }}</a>
+                            {% else %}-{% endif %}
+                            {% if code.device_bindings %}<br><span class="dm-note">设备绑定 {{ code.device_bindings|length }} 条</span>{% endif %}
+                        </td>
+                        <td>
+                            <span class="dm-note">创建：{{ code.created_at or '-' }}</span><br>
+                            <span class="dm-note">激活：{{ code.activated_at_epoch or '-' }}</span><br>
+                            <span class="dm-note">到期：{{ code.expires_at_epoch or '-' }}</span>
+                        </td>
+                        <td>
+                            <details class="dm-details">
+                                <summary>状态操作</summary>
+                                {% if code.deleted_at %}
+                                <p class="dm-note">该卡密已归档；卡密、激活历史与原状态均保留。</p>
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/codes/{{ code.id }}/unarchive">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <input type="hidden" name="batch_id" value="{{ filters.batch_id }}">
+                                    <label>解除归档原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <span class="dm-note">解除归档不改变停用、已激活或过期状态；需要时再执行对应状态操作。</span>
+                                    <button class="btn btn-secondary btn-sm" type="submit">解除卡密归档</button>
+                                </form>
+                                {% else %}
+                                {% if code.status != 'activated' and not code.deleted_at %}
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/codes/{{ code.id }}/update">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <input type="hidden" name="batch_id" value="{{ filters.batch_id }}">
+                                    <label>管理员备注<input name="admin_note" maxlength="500" value="{{ code.admin_note or '' }}"></label>
+                                    <label>兑换截止 Unix 时间戳<input type="number" min="1" name="expires_at_epoch" value="{{ code.expires_at_epoch or '' }}" placeholder="留空将清除截止时间"></label>
+                                    <label>修改原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <span class="dm-note">只能修改未激活卡密的备注与兑换截止时间；产品、授权类型、时长和卡密内容不可修改。</span>
+                                    <button class="btn btn-secondary btn-sm" type="submit">保存卡密修改</button>
+                                </form>
+                                {% endif %}
+                                {% if code.status == 'revoked' %}
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/codes/{{ code.id }}/restore">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <input type="hidden" name="batch_id" value="{{ filters.batch_id }}">
+                                    <label>恢复原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <button class="btn btn-secondary btn-sm" type="submit">恢复卡密</button>
+                                </form>
+                                {% elif code.status == 'activated' %}
+                                <p class="dm-note">已激活卡密不能直接停用；请进入对应授权，使用“停用双机授权”完成停用。</p>
+                                {% if code.entitlement_id %}
+                                <a class="btn btn-secondary btn-sm" href="/admin/dual-machine-cards?batch_id={{ code.batch_id }}&amp;entitlement_id={{ code.entitlement_id }}#dm-entitlement-management">查看对应授权并执行停用</a>
+                                {% endif %}
+                                {% else %}
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/codes/{{ code.id }}/revoke">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <input type="hidden" name="batch_id" value="{{ filters.batch_id }}">
+                                    <label>停用原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <button class="btn btn-danger btn-sm" type="submit">停用卡密</button>
+                                </form>
+                                {% endif %}
+                                <form class="dm-form-compact" method="post" action="/admin/dual-machine-cards/codes/{{ code.id }}/archive">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <input type="hidden" name="batch_id" value="{{ filters.batch_id }}">
+                                    <label>归档原因<input name="reason" minlength="2" maxlength="200" required></label>
+                                    <span class="dm-note">归档保留卡密与激活历史，不等同于停用；归档前请确认状态操作已经完成。</span>
+                                    <button class="btn btn-danger btn-sm" type="submit">归档卡密（保留数据）</button>
+                                </form>
+                                {% endif %}
+                            </details>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="empty-state">没有符合条件的卡密记录。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="dm-pagination">
+            {% if links.code_previous %}<a class="btn btn-secondary btn-sm" href="{{ links.code_previous }}">上一页</a>{% endif %}
+            {% if links.code_next %}<a class="btn btn-secondary btn-sm" href="{{ links.code_next }}">下一页</a>{% endif %}
+        </div>
+    </section>
+
+    <section id="dm-entitlement-management" class="card">
+        <div class="card-header">
+            <div>
+                <h2>双机授权与设备信息</h2>
+                <p class="card-desc">按 32 位授权 ID 查看主机端、安卓端的绑定标识、客户端版本及硬件摘要。</p>
+            </div>
+        </div>
+        <form method="get" action="/admin/dual-machine-cards">
+            {% if filters.batch_id %}<input type="hidden" name="batch_id" value="{{ filters.batch_id }}">{% endif %}
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="dm-entitlement-id">授权 ID</label>
+                    <input id="dm-entitlement-id" class="dm-mono" name="entitlement_id" minlength="32" maxlength="32" pattern="[0-9a-f]{32}" value="{{ filters.entitlement_id }}" required>
+                </div>
+            </div>
+            <div class="form-actions"><button class="btn btn-secondary" type="submit">查看授权详情</button></div>
+        </form>
+
+        {% if entitlement %}
+        <div class="card-grid" style="margin-top:16px;">
+            <div class="mini-card">
+                <h3>授权状态</h3>
+                <dl class="dm-kv">
+                    <dt>授权 ID</dt><dd class="dm-mono">{{ entitlement.entitlement_id }}</dd>
+                    <dt>配对 ID</dt><dd class="dm-mono">{{ entitlement.pair_id or '-' }}</dd>
+                    <dt>状态</dt><dd><span class="badge {% if entitlement.status == 'active' %}badge-success{% else %}badge-neutral{% endif %}">{{ entitlement.status }}</span></dd>
+                    <dt>授权类型</dt><dd>{% if entitlement.is_permanent %}永久授权{% else %}{{ entitlement.authorization_kind }} 计时授权{% endif %}</dd>
+                    <dt>产品</dt><dd>{{ entitlement.product_key or '-' }}</dd>
+                    <dt>来源卡密记录</dt><dd>{{ entitlement.source_license_code_id or '-' }}</dd>
+                    <dt>剩余秒数</dt><dd>{% if entitlement.is_permanent %}永久（不扣时）{% else %}{{ entitlement.remaining_seconds or 0 }}{% endif %}</dd>
+                    <dt>累计授予</dt><dd>{% if entitlement.is_permanent %}不适用{% else %}{{ entitlement.total_credited_seconds or 0 }}{% endif %}</dd>
+                    <dt>累计消耗</dt><dd>{% if entitlement.is_permanent %}不适用{% else %}{{ entitlement.total_consumed_seconds or 0 }}{% endif %}</dd>
+                    <dt>撤销版本</dt><dd>{{ entitlement.revocation_version or 0 }}</dd>
+                    <dt>创建时间</dt><dd>{{ entitlement.created_at or '-' }}</dd>
+                    <dt>更新时间</dt><dd>{{ entitlement.updated_at or '-' }}</dd>
+                </dl>
+            </div>
+            {% for binding in entitlement.device_bindings or [] %}
+            <div class="mini-card">
+                <h3>设备绑定 {{ loop.index }} {% if binding.is_current %}<span class="badge badge-success">当前</span>{% else %}<span class="badge badge-neutral">历史</span>{% endif %}</h3>
+                <dl class="dm-kv">
+                    <dt>绑定 ID</dt><dd class="dm-mono">{{ binding.binding_id or '-' }}</dd>
+                    <dt>配对 ID</dt><dd class="dm-mono">{{ binding.pair_id or '-' }}</dd>
+                    <dt>主机设备码</dt><dd class="dm-mono">{{ binding.host_device_code or '-' }}</dd>
+                    <dt>主机客户端</dt><dd>{{ binding.host_client_version or '-' }}</dd>
+                    <dt>主机公钥指纹</dt><dd class="dm-mono">{{ binding.host_key_sha256 or '-' }}</dd>
+                    <dt>安卓设备码</dt><dd class="dm-mono">{{ binding.android_device_code or '-' }}</dd>
+                    <dt>安卓客户端</dt><dd>{{ binding.android_client_version or '-' }}</dd>
+                    <dt>安卓公钥指纹</dt><dd class="dm-mono">{{ binding.android_key_sha256 or '-' }}</dd>
+                    <dt>绑定时间</dt><dd>{{ binding.created_at or '-' }}</dd>
+                    <dt>最近在线</dt><dd>{{ binding.last_seen_at or '-' }}</dd>
+                </dl>
+                {% if binding.android_device_profile %}
+                <h4>安卓设备硬件资料</h4>
+                {% set profile = binding.android_device_profile %}
+                <dl class="dm-kv">
+                    <dt>制造商</dt><dd>{{ profile.manufacturer or '-' }}</dd>
+                    <dt>品牌</dt><dd>{{ profile.brand or '-' }}</dd>
+                    <dt>型号</dt><dd>{{ profile.model or '-' }}</dd>
+                    <dt>设备代号</dt><dd>{{ profile.device or '-' }}</dd>
+                    <dt>产品代号</dt><dd>{{ profile.product or '-' }}</dd>
+                    <dt>硬件代号</dt><dd>{{ profile.hardware or '-' }}</dd>
+                    <dt>Android 版本</dt><dd>{{ profile.os_release or '-' }}</dd>
+                    <dt>SDK 级别</dt><dd>{{ profile.sdk_int or '-' }}</dd>
+                    <dt>支持 ABI</dt><dd>{{ profile.supported_abis|join(', ') if profile.supported_abis else '-' }}</dd>
+                    <dt>设备资料指纹</dt><dd class="dm-mono">{{ profile.device_fingerprint or '-' }}</dd>
+                </dl>
+                {% endif %}
+                {% if binding.is_current %}
+                <form class="dm-form-compact dm-warning" method="post" action="/admin/dual-machine-cards/entitlements/{{ entitlement.entitlement_id }}/device-bindings/{{ binding.binding_id }}/unbind">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="batch_id" value="{{ filters.batch_id }}">
+                    <strong>解绑会立即结束该授权的活跃会话，并使当前双端设备凭据失效；不会补时或清空剩余时长。</strong>
+                    <label>解绑原因<input name="reason" minlength="2" maxlength="200" required></label>
+                    <button class="btn btn-danger btn-sm" type="submit">解绑当前设备</button>
+                </form>
+                {% endif %}
+            </div>
+            {% else %}
+            <div class="mini-card"><p class="dm-note">该授权暂未记录双端设备绑定。</p></div>
+            {% endfor %}
+        </div>
+        {% if entitlement.status == 'revoked' %}
+        <form class="dm-form-compact dm-warning" method="post" action="/admin/dual-machine-cards/entitlements/{{ entitlement.entitlement_id }}/restore">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="batch_id" value="{{ filters.batch_id }}">
+            <strong>恢复不会补时、不会重复授予；来源卡密与批次必须仍然有效。恢复后用户需使用原卡密重新绑定设备。</strong>
+            <label>恢复原因<input name="reason" minlength="2" maxlength="200" required></label>
+            <button class="btn btn-secondary" type="submit">恢复双机授权</button>
+        </form>
+        {% else %}
+        <form class="dm-form-compact dm-warning dm-danger" method="post" action="/admin/dual-machine-cards/entitlements/{{ entitlement.entitlement_id }}/revoke">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="batch_id" value="{{ filters.batch_id }}">
+            <strong>停用该授权会终止活跃用时会话，并提升撤销版本。</strong>
+            <label>停用原因<input name="reason" minlength="2" maxlength="200" required></label>
+            <button class="btn btn-danger" type="submit">停用双机授权</button>
+        </form>
+        {% endif %}
+        {% endif %}
+    </section>
+
+    <section class="card">
+        <div class="card-header">
+            <div>
+                <h2>双机侧车审计</h2>
+                <p class="card-desc">共 {{ audit_total }} 条。审计数据来自隔离侧车，不落入官网单机业务库。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/dual-machine-cards/filter">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="filter_scope" value="audit">
+            {% if filters.batch_id %}<input type="hidden" name="batch_id" value="{{ filters.batch_id }}">{% endif %}
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="dm-audit-type">事件类型</label>
+                    <input id="dm-audit-type" name="audit_event_type" maxlength="80" value="{{ filters.audit_event_type }}" placeholder="例如 license_batch_revoked">
+                </div>
+                <div class="form-group">
+                    <label for="dm-audit-query">审计查询</label>
+                    <input id="dm-audit-query" name="audit_query" maxlength="128" value="{{ filters.audit_query }}" placeholder="事件 / 主体 / Trace ID">
+                </div>
+            </div>
+            <div class="form-actions"><button class="btn btn-secondary" type="submit">筛选审计</button></div>
+        </form>
+        <div class="table-wrap dm-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>时间</th>
+                        <th>事件</th>
+                        <th>主体</th>
+                        <th>结果</th>
+                        <th>Trace / 来源</th>
+                        <th>安全详情</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for event in audit_events %}
+                    <tr>
+                        <td>{{ event.created_at or '-' }}</td>
+                        <td>{{ event.event_type }}</td>
+                        <td>{{ event.subject_type }}<br><span class="dm-mono dm-note">{{ event.subject_id or '-' }}</span></td>
+                        <td>
+                            <span class="badge {% if event.result == 'ok' %}badge-success{% else %}badge-neutral{% endif %}">{{ event.result }}</span>
+                            {% if event.error_code %}<br>{{ event.error_code }}{% endif %}
+                        </td>
+                        <td>
+                            <span class="dm-mono dm-note">{{ event.trace_id or '-' }}</span><br>
+                            <span class="dm-note">{{ event.ip_address or '-' }}</span>
+                        </td>
+                        <td class="dm-audit-detail">
+                            {% if event.detail is mapping %}{{ event.detail|tojson }}{% else %}{{ event.detail_json or event.detail or '{}' }}{% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="empty-state">没有符合条件的双机侧车审计记录。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="dm-pagination">
+            {% if links.audit_previous %}<a class="btn btn-secondary btn-sm" href="{{ links.audit_previous }}">上一页</a>{% endif %}
+            {% if links.audit_next %}<a class="btn btn-secondary btn-sm" href="{{ links.audit_next }}">下一页</a>{% endif %}
+        </div>
+    </section>
+</div>
+<script>
+    (() => {
+        const copyText = async (value) => {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(value);
+                return;
+            }
+            const input = document.createElement('textarea');
+            input.value = value;
+            input.setAttribute('readonly', '');
+            input.style.position = 'fixed';
+            input.style.opacity = '0';
+            document.body.appendChild(input);
+            input.select();
+            const copied = document.execCommand('copy');
+            input.remove();
+            if (!copied) throw new Error('copy_failed');
+        };
+
+        document.addEventListener('click', async (event) => {
+            const button = event.target.closest('[data-copy-card-id]');
+            if (!button) return;
+            const code = document.getElementById(`dm-card-code-${button.dataset.copyCardId}`);
+            if (!code) return;
+            const originalLabel = button.textContent;
+            button.disabled = true;
+            try {
+                await copyText(code.textContent.trim());
+                button.textContent = '已复制';
+            } catch (error) {
+                button.textContent = '复制失败';
+            } finally {
+                window.setTimeout(() => {
+                    button.textContent = originalLabel;
+                    button.disabled = false;
+                }, 1200);
+            }
+        });
+    })();
+</script>
+{% endblock %}

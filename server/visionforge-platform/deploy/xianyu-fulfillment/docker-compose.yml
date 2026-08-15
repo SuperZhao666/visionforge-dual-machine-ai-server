@@ -1,0 +1,123 @@
+name: visionforge-fulfillment
+
+x-runtime-security: &runtime-security
+  restart: unless-stopped
+  init: true
+  user: "10001:10001"
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  fulfillment-bridge:
+    <<: *runtime-security
+    image: ${XIANYU_IMAGE:?run prepare.sh and set XIANYU_IMAGE}
+    container_name: visionforge-fulfillment-bridge
+    profiles: ["live"]
+    entrypoint: ["python", "/opt/visionforge/bridge.py"]
+    read_only: true
+    environment:
+      BRIDGE_INTERNAL_TOKEN: ${BRIDGE_INTERNAL_TOKEN:?required}
+      XIANYU_PROVIDER_ACCOUNT: ${XIANYU_PROVIDER_ACCOUNT:?required}
+      PLATFORM_CODE_ISSUANCE_URL: ${PLATFORM_CODE_ISSUANCE_URL:?required}
+      CODE_ISSUANCE_SERVICE_ID: ${CODE_ISSUANCE_SERVICE_ID:-xianyu-code-bridge}
+      CODE_ISSUANCE_HMAC_SECRET: ${CODE_ISSUANCE_HMAC_SECRET:?required}
+      DELIVERY_MESSAGE_TEMPLATE: ${DELIVERY_MESSAGE_TEMPLATE:-}
+    extra_hosts:
+      - "${PLATFORM_HOSTNAME:-www.visionforge.cloud}:172.29.47.1"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    expose:
+      - "8080"
+    networks:
+      fulfillment_internal:
+        ipv4_address: 172.29.47.2
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  xianyu-app:
+    <<: *runtime-security
+    image: ${XIANYU_IMAGE:?run prepare.sh and set XIANYU_IMAGE}
+    container_name: visionforge-xianyu-fulfillment
+    profiles: ["live"]
+    depends_on:
+      fulfillment-bridge:
+        condition: service_healthy
+    entrypoint: ["/usr/local/bin/visionforge-xianyu-entrypoint"]
+    ports:
+      - "127.0.0.1:${XIANYU_ADMIN_PORT:-6202}:8090"
+    environment:
+      TZ: Asia/Shanghai
+      DB_PATH: /app/data/xianyu_data.db
+      LOG_LEVEL: INFO
+      DEBUG: "false"
+      RELOAD: "false"
+      SQL_LOG_ENABLED: "false"
+      API_HOST: 0.0.0.0
+      API_PORT: "8090"
+      USE_XVFB: "true"
+      ENABLE_HEADFUL: "true"
+      ENABLE_VNC: "false"
+      MULTIUSER_ENABLED: "false"
+      USER_REGISTRATION_ENABLED: "false"
+      EMAIL_VERIFICATION_ENABLED: "false"
+      CAPTCHA_ENABLED: "false"
+      AUTO_REPLY_ENABLED: "false"
+      AUTO_DELIVERY_ENABLED: ${XIANYU_AUTO_DELIVERY_ENABLED:-false}
+      AI_REPLY_ENABLED: "false"
+      AUTO_DELIVERY_TIMEOUT: "30"
+      API_CARD_TIMEOUT: "15"
+      VISIONFORGE_MANAGED_FULFILLMENT_MODE: ${VISIONFORGE_MANAGED_FULFILLMENT_MODE:-shadow}
+      VISIONFORGE_PACKAGE_SPEC_NAME: ${VISIONFORGE_PACKAGE_SPEC_NAME:-套餐}
+      VISIONFORGE_PACKAGE_SPEC_VALUES: ${VISIONFORGE_PACKAGE_SPEC_VALUES:-1小时,5小时,10小时,50小时,100小时}
+      VISIONFORGE_PACKAGE_PRODUCT_KEYS: ${VISIONFORGE_PACKAGE_PRODUCT_KEYS:?required}
+      VISIONFORGE_PACKAGE_DEFAULT_INVENTORY: ${VISIONFORGE_PACKAGE_DEFAULT_INVENTORY:-999}
+      VISIONFORGE_MANAGED_BRIDGE_URL: ${VISIONFORGE_MANAGED_BRIDGE_URL:-http://fulfillment-bridge:8080/issue}
+      BRIDGE_INTERNAL_TOKEN: ${BRIDGE_INTERNAL_TOKEN:?required}
+      ADMIN_USERNAME: ${XIANYU_ADMIN_USERNAME:?required}
+      ADMIN_PASSWORD: ${XIANYU_ADMIN_PASSWORD:?required}
+      JWT_SECRET_KEY: ${XIANYU_JWT_SECRET:?required}
+    volumes:
+      - ./runtime/data:/app/data:rw
+      - ./runtime/logs:/app/logs:rw
+      - ./runtime/backups:/app/backups:rw
+      - ./runtime/uploads:/app/static/uploads:rw
+      - ./runtime/trajectory_history:/app/trajectory_history:rw
+      - ./runtime/home:/home/visionforge:rw
+    tmpfs:
+      - /tmp:rw,nosuid,size=256m
+      - /run:rw,noexec,nosuid,size=16m
+    shm_size: 256m
+    networks:
+      fulfillment_internal:
+        ipv4_address: 172.29.47.3
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/health"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 60s
+
+networks:
+  fulfillment_internal:
+    name: fulfillment_internal
+    internal: false
+    ipam:
+      config:
+        - subnet: 172.29.47.0/28

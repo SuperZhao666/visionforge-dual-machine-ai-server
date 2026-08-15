@@ -1,0 +1,8 @@
+/reports/**
+!/reports/.gitkeep
+/runtime/**
+!/runtime/.gitkeep
+/vendor/_archives/*.tar.gz
+/vendor/_archives/*.zip
+/vendor/src/**
+!/vendor/src/.gitkeep

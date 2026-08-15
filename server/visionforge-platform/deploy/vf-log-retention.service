@@ -1,0 +1,17 @@
+[Unit]
+Description=VisionForge uploaded log retention
+After=vf.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/vf-platform
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/ubuntu/vf-platform/venv/bin/python deploy/purge_log_storage.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/home/ubuntu/vf-platform/data /home/ubuntu/vf-platform/log_storage
+UMask=0077

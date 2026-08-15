@@ -1,0 +1,33 @@
+# Include only inside the existing visionforge.cloud HTTPS server {} block.
+# Do not include this in the default/IP virtual host.
+location = /api/dual-machine/v1 {
+    return 404;
+}
+
+location ^~ /api/dual-machine/v1/ {
+    client_max_body_size 16k;
+    limit_req zone=vf_dual_machine burst=60 nodelay;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Cross-Origin-Resource-Policy "same-site" always;
+    add_header Permissions-Policy "camera=(), geolocation=(), microphone=()" always;
+    add_header Cache-Control "no-store" always;
+    add_header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" always;
+    add_header X-Request-ID $request_id always;
+
+    proxy_pass http://127.0.0.1:8010;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    # Overwrite the untrusted client-supplied forwarding chain.
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Request-ID $request_id;
+
+    proxy_connect_timeout 3s;
+    proxy_send_timeout 10s;
+    proxy_read_timeout 10s;
+}

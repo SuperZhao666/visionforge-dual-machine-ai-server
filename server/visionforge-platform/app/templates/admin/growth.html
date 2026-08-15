@@ -1,0 +1,129 @@
+{% extends "admin/base.html" %}
+{% block title %}兑换码与邀请 - VisionForge{% endblock %}
+{% block admin_content %}
+<div class="page-header" data-reveal>
+    <div class="page-header-main">
+        <h2>兑换码与邀请码</h2>
+        <p>这里仅管理 VisionForge 时长权益、兑换码和邀请奖励。闲鱼账号、商品、套餐、订单及自动发货规则统一在独立闲鱼管理系统操作。</p>
+    </div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>功能配置</h3>
+            <p class="card-desc">
+                独立兑换码密钥：{% if redemption_secret_configured %}<span class="text-success">已配置</span>{% else %}<span class="text-warning">未配置（当前回退主密钥，生产环境不建议）</span>{% endif %}。
+                密钥只允许通过部署环境写入，本页不会回显。
+            </p>
+        </div>
+    </div>
+    <form method="post" action="/admin/growth/settings">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid" style="margin-bottom:0.85rem;">
+            <label class="checkbox-line"><input type="checkbox" name="redemption_enabled" value="1" {% if settings.redemption_enabled %}checked{% endif %}> 开放客户端兑换</label>
+            <label class="checkbox-line"><input type="checkbox" name="referral_enabled" value="1" {% if settings.referral_enabled %}checked{% endif %}> 开放邀请奖励</label>
+        </div>
+        <div class="form-grid">
+            <div class="form-group"><label>每次邀请奖励（小时）</label><input type="number" min="1" max="1000" name="referral_reward_hours" value="{{ (settings.referral_reward_seconds / 3600)|int }}" required></div>
+            <div class="form-group"><label>兑换码有效期（天）</label><input type="number" min="1" max="3650" name="code_expiry_days" value="{{ settings.code_expiry_days }}" required></div>
+            <div class="form-group"><label>客户端下载地址</label><input type="url" name="download_url" value="{{ settings.download_url }}" required></div>
+        </div>
+        <div class="form-actions"><button class="btn btn-primary">保存配置</button></div>
+    </form>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>时长权益</h3>
+            <p class="card-desc">闲鱼 API 卡按套餐静态填写这里的权益标识，例如 <code>1h</code> 或 <code>10h</code>。实际入账时长始终由服务器决定。</p>
+        </div>
+    </div>
+    <div class="card-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:0;">
+    {% for product in products %}
+        <form method="post" action="/admin/growth/products/update" class="mini-card">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="product_key" value="{{ product.product_key }}">
+            <strong>{{ product.product_key }}</strong>
+            <div class="form-group" style="margin-top:0.75rem;"><label>显示名称</label><input name="display_name" value="{{ product.display_name }}" required></div>
+            <div class="form-group"><label>时长（小时）</label><input type="number" name="duration_hours" min="1" max="10000" value="{{ (product.duration_seconds / 3600)|int }}" required></div>
+            <label class="checkbox-line" style="padding:0.3rem 0;"><input type="checkbox" name="enabled" value="1" {% if product.enabled %}checked{% endif %}> 允许未来发码</label>
+            <div class="form-actions"><button class="btn btn-secondary btn-sm">更新</button></div>
+        </form>
+    {% endfor %}
+    </div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>管理员即时生成兑换码</h3>
+            <p class="card-desc">用于代理拿卡、售后补发等人工场景。提交后当场生成并下载一次性 CSV；系统没有预生成码池。</p>
+        </div>
+    </div>
+    <form method="post" action="/admin/growth/codes/generate">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid">
+            <div class="form-group"><label>时长权益</label><select name="product_key">{% for product in products if product.enabled %}<option value="{{ product.product_key }}">{{ product.display_name }}</option>{% endfor %}</select></div>
+            <div class="form-group"><label>生成数量</label><input type="number" name="quantity" min="1" max="500" value="1" required></div>
+            <div class="form-group"><label>用途备注</label><input name="note" maxlength="500" placeholder="例如：代理 A 本次拿卡"></div>
+        </div>
+        <div class="form-actions"><button class="btn btn-primary">生成并下载 CSV</button></div>
+    </form>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>发码批次</h3>
+            <p class="card-desc">废止操作只影响尚未兑换的码，已兑换记录不会改变。</p>
+        </div>
+    </div>
+    <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>来源</th><th>权益</th><th class="num">数量</th><th>未用/已兑/失效</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+        <tbody>
+        {% for batch in batches %}
+        <tr>
+            <td>{{ batch.id }}</td>
+            <td>{{ batch.channel }}</td>
+            <td>{{ batch.display_name }}</td>
+            <td class="num">{{ batch.quantity }}</td>
+            <td>{{ batch.issued_count }}/{{ batch.redeemed_count }}/{{ batch.unavailable_count }}</td>
+            <td>{% if batch.status == 'active' %}<span class="badge badge-active">生效中</span>{% else %}<span class="badge badge-neutral">{{ batch.status }}</span>{% endif %}</td>
+            <td style="font-size:0.8rem;">{{ batch.created_at }}</td>
+            <td>{% if batch.status == 'active' and batch.issued_count %}
+                <form method="post" action="/admin/growth/codes/revoke" onsubmit="return confirm('确定废止该批次所有尚未兑换的码？已兑换记录不会改变。');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="batch_id" value="{{ batch.id }}">
+                    <button class="btn btn-danger btn-sm">废止未兑换码</button>
+                </form>{% endif %}</td>
+        </tr>
+        {% else %}<tr><td colspan="8">暂无发码批次</td></tr>{% endfor %}
+        </tbody>
+    </table></div>
+</div>
+
+<div class="card" data-reveal>
+    <div class="card-header">
+        <div>
+            <h3>最近邀请奖励</h3>
+            <p class="card-desc">新用户注册并满足条件后，邀请人自动到账奖励时长。</p>
+        </div>
+    </div>
+    <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>邀请人</th><th>新用户</th><th>奖励</th><th>状态</th><th>注册时间</th><th>到账时间</th></tr></thead>
+        <tbody>
+        {% for row in referrals %}
+        <tr>
+            <td>{{ row.id }}</td>
+            <td>{{ row.inviter_username }}</td>
+            <td>{{ row.invitee_username }}</td>
+            <td>{{ (row.reward_seconds / 3600)|int }} 小时</td>
+            <td>{% if row.status == 'rewarded' %}<span class="badge badge-success">已到账</span>{% else %}<span class="badge badge-neutral">{{ row.status }}</span>{% endif %}</td>
+            <td style="font-size:0.8rem;">{{ row.created_at }}</td>
+            <td style="font-size:0.8rem;">{{ row.rewarded_at }}</td>
+        </tr>
+        {% else %}<tr><td colspan="7">暂无邀请记录</td></tr>{% endfor %}
+        </tbody>
+    </table></div>
+</div>
+{% endblock %}

@@ -1,0 +1,8 @@
+-w /etc/ssh/ -p wa -k vf_ssh_config
+-w /etc/nginx/ -p wa -k vf_nginx_config
+-w /etc/apt/ -p wa -k vf_package_config
+-w /etc/systemd/system/vf.service -p wa -k vf_service_config
+-w /etc/systemd/system/vf.service.d/ -p wa -k vf_service_config
+-w /home/ubuntu/vf-platform/.env -p wa -k vf_secret_config
+-w /home/ubuntu/vf-platform/owner_keys/ -p wa -k vf_signing_keys
+-w /home/ubuntu/vf-platform/modules/qq-steward/.env -p wa -k vf_bot_secrets
