@@ -117,7 +117,7 @@ jobs:
 
   host:
     name: Windows Host CMake build and unit tests
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -138,7 +138,7 @@ jobs:
 
   host-formal-release:
     name: Host formal release gate (blocked until security review)
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Check out source
         uses: actions/checkout@v4
