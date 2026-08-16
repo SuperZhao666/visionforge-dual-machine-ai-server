@@ -88,16 +88,28 @@ public final class MobileRuntimeCompositionRoot {
                 VideoFragmentHeader.BYTE_LENGTH,
                 datagram.length - VideoFragmentHeader.BYTE_LENGTH,
                 nowNanos);
-        return switch (result.code()) {
-            case ACCEPTED -> DatagramOutcome.BUFFERED;
-            case DUPLICATE, STALE_EPOCH -> DatagramOutcome.STALE_OR_DUPLICATE;
-            case CANDIDATE_REJECTED -> requestCandidateIdrPreservingCurrent(
-                    result.streamEpoch(), "reassembly_candidate_rejected", nowNanos);
-            case REPEAT -> onRepeat(result.streamEpoch(), nowNanos);
-            case CONFLICT, INVALID, RESOURCE_LIMIT, GAP_DETECTED -> requestRecovery(
-                    result.streamEpoch(), "reassembly_" + lower(result.code().name()), nowNanos);
-            case COMPLETE -> onComplete(result, nowNanos);
-        };
+        switch (result.code()) {
+            case ACCEPTED:
+                return DatagramOutcome.BUFFERED;
+            case DUPLICATE:
+            case STALE_EPOCH:
+                return DatagramOutcome.STALE_OR_DUPLICATE;
+            case CANDIDATE_REJECTED:
+                return requestCandidateIdrPreservingCurrent(
+                        result.streamEpoch(), "reassembly_candidate_rejected", nowNanos);
+            case REPEAT:
+                return onRepeat(result.streamEpoch(), nowNanos);
+            case CONFLICT:
+            case INVALID:
+            case RESOURCE_LIMIT:
+            case GAP_DETECTED:
+                return requestRecovery(
+                        result.streamEpoch(), "reassembly_" + lower(result.code().name()), nowNanos);
+            case COMPLETE:
+                return onComplete(result, nowNanos);
+            default:
+                return DatagramOutcome.INVALID;
+        }
     }
 
     public AtomicRuntimeReadModel readModel() {
@@ -117,17 +129,17 @@ public final class MobileRuntimeCompositionRoot {
         advanceClock(nowNanos);
         DecoderRestartCoordinator.Completion completion = restarts.complete(completedEpoch);
         switch (completion.decision()) {
-            case STALE_CALLBACK -> {
+            case STALE_CALLBACK: {
                 safeDiagnostic("decoder_restart_stale_completion", Long.toString(completedEpoch));
                 return;
             }
-            case INVALID_FUTURE_CALLBACK -> {
+            case INVALID_FUTURE_CALLBACK: {
                 safeDiagnostic("decoder_restart_future_completion", Long.toString(completedEpoch));
                 requestSessionRebuild(receiveEpoch, "decoder_restart_future_completion", nowNanos);
                 return;
             }
-            case START_NEXT -> {
-                long nextEpoch = completion.nextEpoch().orElseThrow();
+            case START_NEXT: {
+                long nextEpoch = completion.nextEpoch().getAsLong();
                 if (!startDecoderRestart(nextEpoch, nowNanos)) {
                     return;
                 }
@@ -136,7 +148,11 @@ public final class MobileRuntimeCompositionRoot {
                         nextEpoch, 0L, nowNanos);
                 return;
             }
-            case SETTLED -> decoderEpoch = completedEpoch;
+            case SETTLED:
+                decoderEpoch = completedEpoch;
+                break;
+            default:
+                return;
         }
         drainReadyAccessUnits(nowNanos);
     }
@@ -214,14 +230,17 @@ public final class MobileRuntimeCompositionRoot {
                 result.repeatedContent(), accessUnit);
         OrderedAccessUnitHandoff.OfferDecision offer = handoff.offer(unit);
         switch (offer) {
-            case STALE, DUPLICATE -> {
+            case STALE:
+            case DUPLICATE: {
                 return DatagramOutcome.STALE_OR_DUPLICATE;
             }
-            case EPOCH_EXHAUSTED -> {
+            case EPOCH_EXHAUSTED: {
                 requestSessionRebuild(result.streamEpoch(), "frame_sequence_epoch_exhausted", nowNanos);
                 return DatagramOutcome.RECOVERY_REQUESTED;
             }
-            case CONFLICT, OVERFLOW, NEED_IDR -> {
+            case CONFLICT:
+            case OVERFLOW:
+            case NEED_IDR: {
                 reassembly.discardInflight();
                 handoff.requireFreshIdr();
                 if (!requestIdr(result.streamEpoch(), "compressed_handoff_" + lower(offer.name()), nowNanos)) {
@@ -232,9 +251,13 @@ public final class MobileRuntimeCompositionRoot {
                         result.streamEpoch(), result.frameSequence(), nowNanos);
                 return DatagramOutcome.RECOVERY_REQUESTED;
             }
-            case ACCEPTED, EPOCH_ADVANCED -> {
+            case ACCEPTED:
+            case EPOCH_ADVANCED: {
                 // Continue below.
+                break;
             }
+            default:
+                return DatagramOutcome.INVALID;
         }
 
         if (decoderEpoch != result.streamEpoch()) {
@@ -392,12 +415,15 @@ public final class MobileRuntimeCompositionRoot {
             blockerChangedAtNanos = lastNowNanos;
         }
         long ageNanos = lastNowNanos - blockerChangedAtNanos;
-        RuntimeSnapshot.Lifecycle lifecycle = switch (blocker) {
-            case RECOVERY_REQUIRED, WAITING_FRESH_IDR -> RuntimeSnapshot.Lifecycle.RECOVERING;
-            default -> videoState == RuntimeSnapshot.VideoState.DEGRADED
+        RuntimeSnapshot.Lifecycle lifecycle;
+        if (blocker == RuntimeSnapshot.ControlBlocker.RECOVERY_REQUIRED
+                || blocker == RuntimeSnapshot.ControlBlocker.WAITING_FRESH_IDR) {
+            lifecycle = RuntimeSnapshot.Lifecycle.RECOVERING;
+        } else {
+            lifecycle = videoState == RuntimeSnapshot.VideoState.DEGRADED
                     ? RuntimeSnapshot.Lifecycle.RECOVERING
                     : RuntimeSnapshot.Lifecycle.RUNNING;
-        };
+        }
         RuntimeSnapshot previous = readModel.snapshot();
         boolean stateChanged = previous.lifecycle() != lifecycle
                 || previous.videoState() != videoState
@@ -440,7 +466,7 @@ public final class MobileRuntimeCompositionRoot {
     }
 
     private static String sanitizeDetail(String value) {
-        if (value == null || value.isBlank()) {
+        if (value == null || value.trim().isEmpty()) {
             return "unspecified";
         }
         String compact = value.replaceAll("[^A-Za-z0-9_.-]", "_");

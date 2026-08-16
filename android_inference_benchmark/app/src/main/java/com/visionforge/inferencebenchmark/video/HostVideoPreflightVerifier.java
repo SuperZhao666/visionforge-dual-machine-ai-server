@@ -25,13 +25,41 @@ public final class HostVideoPreflightVerifier {
         RECOVERY_REQUIRED
     }
 
-    public record Snapshot(
-            boolean ready,
-            int confirmedCompleteAccessUnits,
-            VideoFrameIdentity lastCompleteIdentity,
-            long rejectedDatagrams,
-            long continuityFailures,
-            long completedAccessUnits) {}
+    /** Immutable Java 8-compatible diagnostic snapshot. */
+    public static final class Snapshot {
+        private final boolean ready;
+        private final int confirmedCompleteAccessUnits;
+        private final VideoFrameIdentity lastCompleteIdentity;
+        private final long rejectedDatagrams;
+        private final long continuityFailures;
+        private final long completedAccessUnits;
+
+        private Snapshot(
+                boolean ready,
+                int confirmedCompleteAccessUnits,
+                VideoFrameIdentity lastCompleteIdentity,
+                long rejectedDatagrams,
+                long continuityFailures,
+                long completedAccessUnits) {
+            this.ready = ready;
+            this.confirmedCompleteAccessUnits = confirmedCompleteAccessUnits;
+            this.lastCompleteIdentity = lastCompleteIdentity;
+            this.rejectedDatagrams = rejectedDatagrams;
+            this.continuityFailures = continuityFailures;
+            this.completedAccessUnits = completedAccessUnits;
+        }
+
+        public boolean ready() { return ready; }
+        public int confirmedCompleteAccessUnits() {
+            return confirmedCompleteAccessUnits;
+        }
+        public VideoFrameIdentity lastCompleteIdentity() {
+            return lastCompleteIdentity;
+        }
+        public long rejectedDatagrams() { return rejectedDatagrams; }
+        public long continuityFailures() { return continuityFailures; }
+        public long completedAccessUnits() { return completedAccessUnits; }
+    }
 
     private final VideoPreflightReassemblyWindow reassembly;
     private final int requiredCompleteAccessUnits;
@@ -95,18 +123,22 @@ public final class HostVideoPreflightVerifier {
                 VideoWireProtocol.HEADER_BYTES,
                 length - VideoWireProtocol.HEADER_BYTES,
                 nowNanos);
-        return switch (result.code()) {
-            case ACCEPTED, DUPLICATE -> Decision.BUFFERED;
-            case COMPLETE -> onComplete(result);
-            case GAP_DETECTED, RESOURCE_LIMIT, CONFLICT -> {
-                continuityFailures++;
-                yield Decision.RECOVERY_REQUIRED;
-            }
-            case INVALID, STALE_EPOCH, CANDIDATE_REJECTED, REPEAT -> {
-                rejectedDatagrams++;
-                yield Decision.REJECTED;
-            }
-        };
+        VideoPreflightReassemblyWindow.Code code = result.code();
+        if (code == VideoPreflightReassemblyWindow.Code.ACCEPTED
+                || code == VideoPreflightReassemblyWindow.Code.DUPLICATE) {
+            return Decision.BUFFERED;
+        }
+        if (code == VideoPreflightReassemblyWindow.Code.COMPLETE) {
+            return onComplete(result);
+        }
+        if (code == VideoPreflightReassemblyWindow.Code.GAP_DETECTED
+                || code == VideoPreflightReassemblyWindow.Code.RESOURCE_LIMIT
+                || code == VideoPreflightReassemblyWindow.Code.CONFLICT) {
+            continuityFailures++;
+            return Decision.RECOVERY_REQUIRED;
+        }
+        rejectedDatagrams++;
+        return Decision.REJECTED;
     }
 
     public synchronized Snapshot snapshot() {

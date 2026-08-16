@@ -257,6 +257,15 @@ android {
     namespace = 'com.visionforge.inferencebenchmark'
     compileSdk 35
 
+    // The dual-machine application source uses records and switch expressions.
+    // Keep the standalone Java 8 cryptographic self-test tasks below explicitly
+    // constrained to Java 8; the Android application itself is a Java 17
+    // source/target module as its dependency-free contract tasks already are.
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
     signingConfigs {
         release {
             // minSdk 29 makes the legacy JAR signature unnecessary. Keep only

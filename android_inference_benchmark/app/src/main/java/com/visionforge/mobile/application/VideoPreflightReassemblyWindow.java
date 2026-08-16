@@ -21,12 +21,16 @@ import java.util.OptionalLong;
 public final class VideoPreflightReassemblyWindow {
     private static final byte[] EMPTY_ACCESS_UNIT = new byte[0];
 
-    public record Config(
-            int maxInflightFrames,
-            long maxTotalBytes,
-            int maxAccessUnitBytes,
-            long frameTimeoutNanos) {
-        public Config {
+    public static final class Config {
+        private final int maxInflightFrames;
+        private final long maxTotalBytes;
+        private final int maxAccessUnitBytes;
+        private final long frameTimeoutNanos;
+        public Config(
+                int maxInflightFrames,
+                long maxTotalBytes,
+                int maxAccessUnitBytes,
+                long frameTimeoutNanos) {
             if (maxInflightFrames < 1 || maxTotalBytes < 1L || maxAccessUnitBytes < 1
                     || frameTimeoutNanos < 1L) {
                 throw new IllegalArgumentException("all reassembly limits must be positive");
@@ -34,13 +38,19 @@ public final class VideoPreflightReassemblyWindow {
             if (maxAccessUnitBytes > maxTotalBytes) {
                 throw new IllegalArgumentException("one access unit cannot exceed the global byte budget");
             }
+            this.maxInflightFrames = maxInflightFrames;
+            this.maxTotalBytes = maxTotalBytes;
+            this.maxAccessUnitBytes = maxAccessUnitBytes;
+            this.frameTimeoutNanos = frameTimeoutNanos;
         }
-
+        public int maxInflightFrames() { return maxInflightFrames; }
+        public long maxTotalBytes() { return maxTotalBytes; }
+        public int maxAccessUnitBytes() { return maxAccessUnitBytes; }
+        public long frameTimeoutNanos() { return frameTimeoutNanos; }
         public static Config productionDefaults() {
             return new Config(16, 8L * 1024L * 1024L, 2 * 1024 * 1024, 500_000_000L);
         }
     }
-
     public enum Code {
         ACCEPTED,
         COMPLETE,
@@ -53,21 +63,38 @@ public final class VideoPreflightReassemblyWindow {
         GAP_DETECTED,
         REPEAT
     }
+    private static final class FrameKey {
+        private final long epoch;
+        private final long sequence;
 
-    private record FrameKey(long epoch, long sequence) {}
-
+        private FrameKey(long epoch, long sequence) {
+            this.epoch = epoch;
+            this.sequence = sequence;
+        }
+        private long epoch() { return epoch; }
+        private long sequence() { return sequence; }
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof FrameKey)) return false;
+            FrameKey key = (FrameKey) other;
+            return epoch == key.epoch && sequence == key.sequence;
+        }
+        @Override
+        public int hashCode() {
+            return Objects.hash(epoch, sequence);
+        }
+    }
     private static final class FrameAssembly {
         private final byte[][] fragments;
         private final long createdAtNanos;
         private int receivedCount;
         private int bytes;
-
         private FrameAssembly(int fragmentCount, long createdAtNanos) {
             fragments = new byte[fragmentCount][];
             this.createdAtNanos = createdAtNanos;
         }
     }
-
     private final Config config;
     private final Map<FrameKey, FrameAssembly> frames = new LinkedHashMap<>();
     private Long currentEpoch;
@@ -79,7 +106,6 @@ public final class VideoPreflightReassemblyWindow {
     private long duplicatePayloadBytesAvoided;
     private long completedAccessUnitBytes;
     private long resourceLimitEvents;
-
     public VideoPreflightReassemblyWindow(Config config) {
         this.config = Objects.requireNonNull(config, "config");
     }

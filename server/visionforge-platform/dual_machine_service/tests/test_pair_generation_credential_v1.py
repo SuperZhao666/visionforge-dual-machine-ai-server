@@ -73,6 +73,9 @@ class _NoOpVerifyPublicKey(rsa.RSAPublicKey):
     def __copy__(self):
         return self
 
+    def __deepcopy__(self, memo):
+        return self
+
 
 class _NoOpSignPrivateKey(rsa.RSAPrivateKey):
     def __init__(self, delegate: rsa.RSAPrivateKey) -> None:
@@ -104,6 +107,9 @@ class _NoOpSignPrivateKey(rsa.RSAPrivateKey):
         return b"\x00"
 
     def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
         return self
 
 
