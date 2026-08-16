@@ -1,5 +1,6 @@
 #include "MakcuMoveBridge.hpp"
 
+#include "ControlBlockerState.hpp"
 #include "MobileControlCore.hpp"
 #include "MakcuOutputGate.hpp"
 
@@ -19,7 +20,15 @@ constexpr std::int32_t kMinimumAxisDelta = 1;
 constexpr std::int32_t kMaximumAxisDelta = 127;
 constexpr std::uint32_t kMinimumSwitchConfirmationMs = 10U;
 constexpr std::uint32_t kMaximumSwitchConfirmationMs = 100U;
-constexpr std::uint64_t kMaximumMoveCompletionAgeUs = 100'000U;
+// Java delivery owns a bounded 25 ms USB write and 50 ms exact-response wait.
+// Include executor/JNI/USB scheduling headroom while keeping a short,
+// fail-closed end-to-end command lifetime. The remaining budget is forwarded
+// to Java so both layers enforce the same terminal deadline.
+constexpr std::uint64_t kMaximumMoveCompletionAgeUs = 250'000U;
+// Receiver fresh-content recovery requests an IDR after 150 ms and backs off
+// from 500 ms. Two seconds admits bounded recovery without allowing an ACK
+// barrier to remain armed for the lifetime of the process.
+constexpr std::uint64_t kMaximumPostAckVisibilityAgeUs = 2'000'000U;
 
 std::mutex g_bridge_mutex;
 std::mutex g_control_mutex;
@@ -57,6 +66,16 @@ std::atomic_uint64_t g_bluetooth_hid_api_acceptances{};
 std::atomic_uint64_t g_stale_bluetooth_hid_api_acceptances{};
 std::atomic_uint64_t g_last_bluetooth_hid_api_acceptance_us{};
 std::atomic_uint64_t g_post_completion_visibility_suppressed{};
+std::atomic_uint64_t g_post_completion_visibility_timeouts{};
+std::atomic_uint64_t g_no_move_suppressed{};
+std::atomic_uint64_t g_response_guard_suppressed{};
+std::atomic_uint64_t g_device_resolution_suppressed{};
+std::atomic_uint64_t g_settle_guard_suppressed{};
+std::atomic_uint64_t g_direction_flip_suppressed{};
+std::atomic_uint64_t g_motion_invalid_suppressed{};
+std::atomic_uint64_t g_detected_not_control_eligible_suppressed{};
+std::atomic_uint64_t g_last_detection_count{};
+std::atomic<float> g_last_max_detection_confidence{};
 std::atomic<std::int32_t> g_last_offered_delta_x{};
 std::atomic<std::int32_t> g_last_offered_delta_y{};
 std::atomic<std::int32_t> g_last_nonzero_offered_direction_x{};
@@ -75,6 +94,7 @@ std::atomic_bool g_java_bridge_ready{};
 MakcuOutputGate g_output_gate{};
 MakcuMoveCommitGate g_move_commit_gate{};
 MakcuMoveVisibilityGate g_move_visibility_gate{};
+ControlBlockerState g_control_blocker{};
 
 enum class JavaDeliveryCall {
   suspend,
@@ -86,6 +106,83 @@ std::uint64_t monotonic_microseconds() noexcept {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void update_control_blocker(
+    ControlBlockerReason reason, std::uint64_t now_us = 0U) noexcept {
+  g_control_blocker.update(
+      reason, now_us == 0U ? monotonic_microseconds() : now_us);
+}
+
+ControlBlockerReason blocker_for_control_output(
+    const MobileControlOutput& output) noexcept {
+  switch (output.suppression_reason) {
+    case ControlSuppressionReason::none:
+      return output.has_move()
+          ? ControlBlockerReason::runnable
+          : ControlBlockerReason::response_guard;
+    case ControlSuppressionReason::invalid_time:
+    case ControlSuppressionReason::stale_frame:
+    case ControlSuppressionReason::non_monotonic_frame:
+    case ControlSuppressionReason::motion_invalid:
+      return ControlBlockerReason::motion_invalid;
+    case ControlSuppressionReason::no_valid_target:
+      return ControlBlockerReason::no_valid_target;
+    case ControlSuppressionReason::detected_not_control_eligible:
+      return ControlBlockerReason::detected_not_control_eligible;
+    case ControlSuppressionReason::lock_held:
+      return ControlBlockerReason::target_held;
+    case ControlSuppressionReason::switch_pending:
+      return ControlBlockerReason::switch_pending;
+    case ControlSuppressionReason::deadzone:
+      return ControlBlockerReason::deadzone;
+    case ControlSuppressionReason::settle_guard:
+      return ControlBlockerReason::settle_guard;
+    case ControlSuppressionReason::response_guard:
+      return ControlBlockerReason::response_guard;
+    case ControlSuppressionReason::device_resolution_guard:
+      return ControlBlockerReason::device_resolution_guard;
+    case ControlSuppressionReason::direction_flip:
+      return ControlBlockerReason::direction_flip;
+  }
+  return ControlBlockerReason::motion_invalid;
+}
+
+void observe_no_move(
+    const MobileControlOutput& output, std::uint64_t now_us) noexcept {
+  ++g_no_move_suppressed;
+  switch (output.suppression_reason) {
+    case ControlSuppressionReason::deadzone:
+      ++g_deadzone_suppressed;
+      break;
+    case ControlSuppressionReason::response_guard:
+      ++g_response_guard_suppressed;
+      break;
+    case ControlSuppressionReason::device_resolution_guard:
+      ++g_device_resolution_suppressed;
+      break;
+    case ControlSuppressionReason::settle_guard:
+      ++g_settle_guard_suppressed;
+      break;
+    case ControlSuppressionReason::direction_flip:
+      ++g_direction_flip_suppressed;
+      break;
+    case ControlSuppressionReason::invalid_time:
+    case ControlSuppressionReason::stale_frame:
+    case ControlSuppressionReason::non_monotonic_frame:
+    case ControlSuppressionReason::motion_invalid:
+      ++g_motion_invalid_suppressed;
+      break;
+    case ControlSuppressionReason::none:
+    case ControlSuppressionReason::no_valid_target:
+    case ControlSuppressionReason::lock_held:
+    case ControlSuppressionReason::switch_pending:
+      break;
+    case ControlSuppressionReason::detected_not_control_eligible:
+      ++g_detected_not_control_eligible_suppressed;
+      break;
+  }
+  update_control_blocker(blocker_for_control_output(output), now_us);
 }
 
 std::uint64_t absolute_counts(std::int32_t delta) noexcept {
@@ -150,6 +247,17 @@ void observe_matching_device_ack() noexcept {
   observe_interval(
       monotonic_microseconds(), g_last_device_ack_at_us,
       g_last_device_ack_interval_us);
+}
+
+std::uint64_t remaining_move_budget_us(
+    std::uint64_t started_at_us, std::uint64_t now_us) noexcept {
+  if (started_at_us == 0U || now_us < started_at_us) {
+    return kMaximumMoveCompletionAgeUs;
+  }
+  const std::uint64_t elapsed = now_us - started_at_us;
+  return elapsed >= kMaximumMoveCompletionAgeUs
+      ? 0U
+      : kMaximumMoveCompletionAgeUs - elapsed;
 }
 
 void reset_move_telemetry_continuity() noexcept {
@@ -239,7 +347,10 @@ bool invoke_java_delivery_gate(JavaDeliveryCall call, std::uint64_t generation =
   return call_succeeded;
 }
 
-void fail_closed_native_state(MakcuStreamCloseScope scope) noexcept {
+void fail_closed_native_state(
+    MakcuStreamCloseScope scope,
+    ControlBlockerReason blocker =
+        ControlBlockerReason::transport_failure) noexcept {
   g_stream_generation_gate.fail_closed(scope);
   if (scope == MakcuStreamCloseScope::delivery_failure) {
     ++g_delivery_fail_close_requests;
@@ -254,12 +365,18 @@ void fail_closed_native_state(MakcuStreamCloseScope scope) noexcept {
     g_control_core.reset();
   }
   reset_move_telemetry_continuity();
+  update_control_blocker(
+      scope == MakcuStreamCloseScope::stream_lifecycle
+          ? ControlBlockerReason::user_disabled
+          : blocker);
 }
 
 void fail_closed_bridge(
     MakcuStreamCloseScope scope =
-        MakcuStreamCloseScope::delivery_failure) noexcept {
-  fail_closed_native_state(scope);
+        MakcuStreamCloseScope::delivery_failure,
+    ControlBlockerReason blocker =
+        ControlBlockerReason::transport_failure) noexcept {
+  fail_closed_native_state(scope, blocker);
   static_cast<void>(invoke_java_delivery_gate(JavaDeliveryCall::fail_closed));
 }
 
@@ -276,12 +393,16 @@ bool complete_matching_move(
     ++stale_counter;
     return false;
   }
+  update_control_blocker(
+      ControlBlockerReason::post_ack_visibility, acknowledged_at_us);
   return true;
 }
 }  // namespace
 
 bool bind_makcu_move_bridge(JNIEnv* environment, jclass controller_class) {
-  fail_closed_bridge();
+  fail_closed_bridge(
+      MakcuStreamCloseScope::delivery_failure,
+      ControlBlockerReason::initializing);
   g_java_bridge_ready.store(false, std::memory_order_release);
   if (environment == nullptr || controller_class == nullptr || environment->ExceptionCheck()) {
     clear_jni_exception(environment);
@@ -304,7 +425,8 @@ bool bind_makcu_move_bridge(JNIEnv* environment, jclass controller_class) {
   }
 
   const jmethodID candidate_offer =
-      environment->GetStaticMethodID(candidate_class, "offerNativeMove", "(IIJ)Z");
+      environment->GetStaticMethodID(
+          candidate_class, "offerNativeMove", "(IIJJ)Z");
   const jmethodID candidate_suspend = environment->ExceptionCheck() ? nullptr
       : environment->GetStaticMethodID(
           candidate_class, "suspendNativeDeliveryForRecovery", "(J)Z");
@@ -502,6 +624,10 @@ bool configure_makcu_control_profile(const MakcuControlProfile& profile) {
     g_move_visibility_gate.fail_closed();
   }
   if (!g_output_gate.set_user_requested(profile.output_enabled)) return false;
+  update_control_blocker(
+      profile.output_enabled
+          ? ControlBlockerReason::runnable
+          : ControlBlockerReason::user_disabled);
   return true;
 }
 
@@ -517,6 +643,7 @@ void suspend_makcu_output_for_recovery(std::uint64_t generation) noexcept {
   std::scoped_lock publish_lock(g_publish_mutex);
   g_stream_generation_gate.activate(generation);
   g_output_gate.suspend_for_recovery(generation);
+  update_control_blocker(ControlBlockerReason::recovery_suspended);
   // Java suspension first closes its offer gate and waits for transport I/O
   // already in progress. Keep the exact native ticket valid during that wait
   // so a legitimate final ACK cannot be misclassified as stale and cancel an
@@ -530,7 +657,11 @@ void suspend_makcu_output_for_recovery(std::uint64_t generation) noexcept {
     g_control_core.reset();
   }
   if (!java_suspended ||
-      !g_output_gate.recovery_suspended_for(generation)) fail_closed_bridge();
+      !g_output_gate.recovery_suspended_for(generation)) {
+    fail_closed_bridge(
+        MakcuStreamCloseScope::delivery_failure,
+        ControlBlockerReason::transport_failure);
+  }
 }
 
 bool resume_makcu_output_after_valid_frame(std::uint64_t generation) noexcept {
@@ -539,8 +670,13 @@ bool resume_makcu_output_after_valid_frame(std::uint64_t generation) noexcept {
   if (!completion.matched) return false;
   const bool java_output_enabled =
       invoke_java_delivery_gate(JavaDeliveryCall::resume, generation);
-  if (completion.output_enabled && java_output_enabled) return true;
-  fail_closed_bridge();
+  if (completion.output_enabled && java_output_enabled) {
+    update_control_blocker(ControlBlockerReason::runnable);
+    return true;
+  }
+  fail_closed_bridge(
+      MakcuStreamCloseScope::delivery_failure,
+      ControlBlockerReason::transport_failure);
   return false;
 }
 
@@ -560,13 +696,29 @@ void publish_makcu_move_for_detections(
   std::scoped_lock publish_lock(g_publish_mutex);
   if (!g_stream_generation_gate.accepts(stream_generation)) {
     ++g_stale_stream_generation_suppressed;
+    update_control_blocker(
+        ControlBlockerReason::stale_stream_generation, now_us);
     return;
   }
   ++g_processed_frames;
+  g_last_detection_count.store(
+      static_cast<std::uint64_t>(detections.size()),
+      std::memory_order_relaxed);
+  float maximum_detection_confidence = 0.0F;
+  for (const YoloDetection& detection : detections) {
+    if (std::isfinite(detection.confidence)) {
+      maximum_detection_confidence = std::max(
+          maximum_detection_confidence, detection.confidence);
+    }
+  }
+  g_last_max_detection_confidence.store(
+      maximum_detection_confidence, std::memory_order_relaxed);
   if (g_move_commit_gate.expire_if_older(
           now_us, kMaximumMoveCompletionAgeUs)) {
     ++g_move_completion_timeouts;
-    fail_closed_bridge();
+    fail_closed_bridge(
+        MakcuStreamCloseScope::delivery_failure,
+        ControlBlockerReason::ticket_deadline_expired);
     return;
   }
   if (g_move_commit_gate.pending()) {
@@ -576,18 +728,31 @@ void publish_makcu_move_for_detections(
           detections, {frame_sequence, observed_at_us, now_us}));
     }
     ++g_move_completion_pending_suppressed;
+    update_control_blocker(ControlBlockerReason::ticket_pending, now_us);
     return;
   }
-  bool completed_move_became_visible = false;
-  if (!g_move_visibility_gate.consume_if_visible(
-          frame_sequence, observed_at_us, content_updated,
-          &completed_move_became_visible)) {
+  const MakcuMoveVisibilityDecision visibility_decision =
+      g_move_visibility_gate.evaluate(
+          frame_sequence, observed_at_us, content_updated, now_us,
+          kMaximumPostAckVisibilityAgeUs);
+  if (visibility_decision == MakcuMoveVisibilityDecision::timed_out) {
+    ++g_post_completion_visibility_timeouts;
+    fail_closed_bridge(
+        MakcuStreamCloseScope::delivery_failure,
+        ControlBlockerReason::post_ack_visibility_timeout);
+    return;
+  }
+  const bool completed_move_became_visible =
+      visibility_decision == MakcuMoveVisibilityDecision::became_visible;
+  if (visibility_decision == MakcuMoveVisibilityDecision::waiting) {
     {
       std::scoped_lock lock(g_control_mutex);
       static_cast<void>(g_control_core.observe_tracking_only(
           detections, {frame_sequence, observed_at_us, now_us}));
     }
     ++g_post_completion_visibility_suppressed;
+    update_control_blocker(
+        ControlBlockerReason::post_ack_visibility, now_us);
     return;
   }
 
@@ -605,20 +770,33 @@ void publish_makcu_move_for_detections(
   if (output.held) ++g_held_targets;
   if (output.switched) ++g_target_switches;
   if (!output.has_move()) {
-    ++g_deadzone_suppressed;
+    observe_no_move(output, now_us);
     return;
   }
   ++g_candidates;
   if (!g_output_gate.output_enabled()) {
     ++g_output_disabled_suppressed;
+    update_control_blocker(ControlBlockerReason::output_disabled, now_us);
     return;
   }
   const std::uint64_t ticket =
       g_move_commit_gate.begin(now_us, frame_sequence);
   if (ticket == 0U) {
     ++g_move_completion_pending_suppressed;
+    update_control_blocker(ControlBlockerReason::ticket_begin_failed, now_us);
     std::scoped_lock lock(g_control_mutex);
     g_control_core.reset();
+    return;
+  }
+
+  const std::uint64_t dispatch_budget_us = remaining_move_budget_us(
+      now_us, monotonic_microseconds());
+  if (dispatch_budget_us == 0U) {
+    static_cast<void>(g_move_commit_gate.complete(ticket));
+    ++g_move_completion_timeouts;
+    fail_closed_bridge(
+        MakcuStreamCloseScope::delivery_failure,
+        ControlBlockerReason::ticket_deadline_expired);
     return;
   }
 
@@ -648,7 +826,8 @@ void publish_makcu_move_for_detections(
     }
     const jboolean accepted = environment->CallStaticBooleanMethod(
         g_controller_class, g_offer_move, output.delta_x, output.delta_y,
-        static_cast<jlong>(ticket));
+        static_cast<jlong>(ticket),
+        static_cast<jlong>(dispatch_budget_us));
     if (environment->ExceptionCheck()) {
       environment->ExceptionClear();
       ++g_java_dispatch_failures;
@@ -662,6 +841,7 @@ void publish_makcu_move_for_detections(
   });
   if (offer_authorized && java_dispatch_completed && java_offer_accepted) {
     observe_accepted_move(output.delta_x, output.delta_y);
+    update_control_blocker(ControlBlockerReason::ticket_pending, now_us);
     return;
   }
 
@@ -672,14 +852,27 @@ void publish_makcu_move_for_detections(
   }
   if (!offer_authorized) {
     ++g_output_disabled_suppressed;
+    update_control_blocker(ControlBlockerReason::output_disabled, now_us);
     return;
   }
-  fail_closed_bridge();
+  fail_closed_bridge(
+      MakcuStreamCloseScope::delivery_failure,
+      java_dispatch_completed
+          ? ControlBlockerReason::dispatch_rejected
+          : ControlBlockerReason::dispatch_unavailable);
 }
 
 void report_makcu_move_result(
     std::uint64_t ticket, bool device_acknowledged,
     std::uint64_t acknowledgement_us) noexcept {
+  if (g_move_commit_gate.expire_if_deadline_reached(
+          monotonic_microseconds(), kMaximumMoveCompletionAgeUs)) {
+    ++g_move_completion_timeouts;
+    fail_closed_bridge(
+        MakcuStreamCloseScope::delivery_failure,
+        ControlBlockerReason::ticket_deadline_expired);
+    return;
+  }
   if (!device_acknowledged) {
     // Claim the exact ticket and close native authorization before pending is
     // cleared. Do not acquire g_publish_mutex here: the serial reader may hold
@@ -711,6 +904,14 @@ void report_makcu_move_result(
 
 bool report_bluetooth_hid_move_accepted(
     std::uint64_t ticket, std::uint64_t api_acceptance_us) noexcept {
+  if (g_move_commit_gate.expire_if_deadline_reached(
+          monotonic_microseconds(), kMaximumMoveCompletionAgeUs)) {
+    ++g_move_completion_timeouts;
+    fail_closed_bridge(
+        MakcuStreamCloseScope::delivery_failure,
+        ControlBlockerReason::ticket_deadline_expired);
+    return false;
+  }
   if (!complete_matching_move(
           ticket, g_stale_bluetooth_hid_api_acceptances,
           kPostAcknowledgementAdditionalDelayUs)) {
@@ -723,6 +924,27 @@ bool report_bluetooth_hid_move_accepted(
 }
 
 std::string makcu_move_bridge_report() {
+  const std::uint64_t report_now_us = monotonic_microseconds();
+  const MakcuMoveCommitSnapshot commit_snapshot =
+      g_move_commit_gate.snapshot();
+  const MakcuMoveVisibilitySnapshot visibility_snapshot =
+      g_move_visibility_gate.snapshot();
+  const ControlBlockerSnapshot blocker_snapshot =
+      g_control_blocker.snapshot();
+  const std::uint64_t commit_age_us =
+      commit_snapshot.pending() && commit_snapshot.started_at_us != 0U &&
+              report_now_us >= commit_snapshot.started_at_us
+          ? report_now_us - commit_snapshot.started_at_us
+          : 0U;
+  const std::uint64_t visibility_age_us =
+      visibility_snapshot.armed && visibility_snapshot.armed_at_us != 0U &&
+              report_now_us >= visibility_snapshot.armed_at_us
+          ? report_now_us - visibility_snapshot.armed_at_us
+          : 0U;
+  const std::uint64_t blocker_age_us =
+      blocker_snapshot.since_us != 0U && report_now_us >= blocker_snapshot.since_us
+          ? report_now_us - blocker_snapshot.since_us
+          : 0U;
   ControlCoreMetrics control_metrics{};
   MobileTargetTrackerMetrics tracker_metrics{};
   MobileMotionPlannerMetrics motion_metrics{};
@@ -733,6 +955,8 @@ std::string makcu_move_bridge_report() {
   float missing_switch_max_jump_pixels{};
   std::uint64_t lost_target_hold_duration_us{};
   std::uint64_t lost_track_duration_us{};
+  float tracker_new_track_confidence_threshold{};
+  float tracker_low_confidence_threshold{};
   {
     std::scoped_lock lock(g_control_mutex);
     control_metrics = g_control_core.metrics();
@@ -749,6 +973,10 @@ std::string makcu_move_bridge_report() {
     lost_target_hold_duration_us =
         g_control_core.lost_target_hold_duration_us();
     lost_track_duration_us = g_control_core.lost_track_duration_us();
+    tracker_new_track_confidence_threshold =
+        g_control_core.tracker_new_track_confidence_threshold();
+    tracker_low_confidence_threshold =
+        g_control_core.tracker_low_confidence_threshold();
   }
   std::ostringstream value;
   value << "processing_enabled=1"
@@ -766,7 +994,12 @@ std::string makcu_move_bridge_report() {
         << " java_offer_rejections=" << g_java_offer_rejections.load()
         << " native_move_completion_pending=" << g_move_commit_gate.pending()
         << " native_move_completion_pending_ticket="
-        << g_move_commit_gate.pending_ticket()
+        << commit_snapshot.ticket
+        << " native_move_completion_pending_source_sequence="
+        << commit_snapshot.source_sequence
+        << " native_move_completion_pending_age_us=" << commit_age_us
+        << " native_move_completion_deadline_us="
+        << kMaximumMoveCompletionAgeUs
         << " native_move_completion_pending_suppressed="
         << g_move_completion_pending_suppressed.load()
         << " native_move_completion_timeouts="
@@ -801,13 +1034,25 @@ std::string makcu_move_bridge_report() {
         << " bluetooth_hid_api_acceptance_semantics="
            "android_hid_stack_accepted_not_host_or_physical_ack"
         << " post_completion_visibility_armed="
-        << g_move_visibility_gate.armed()
+        << visibility_snapshot.armed
+        << " post_completion_visibility_source_sequence="
+        << visibility_snapshot.source_sequence
+        << " post_completion_visibility_age_us=" << visibility_age_us
+        << " post_completion_visibility_timeout_us="
+        << kMaximumPostAckVisibilityAgeUs
+        << " post_completion_visibility_timeouts="
+        << g_post_completion_visibility_timeouts.load()
         << " makcu_post_completion_visibility_min_us="
         << kPostAcknowledgementAdditionalDelayUs
         << " bluetooth_hid_post_completion_visibility_min_us="
         << kPostAcknowledgementAdditionalDelayUs
         << " post_completion_visibility_suppressed="
         << g_post_completion_visibility_suppressed.load()
+        << " control_blocker="
+        << control_blocker_reason_name(blocker_snapshot.reason)
+        << " control_blocker_age_us=" << blocker_age_us
+        << " control_blocker_transition_id="
+        << blocker_snapshot.transition_id
         << " java_bridge_ready=" << g_java_bridge_ready.load()
         << " output_disabled_suppressed=" << g_output_disabled_suppressed.load()
         << " output_requested=" << g_output_gate.user_requested()
@@ -825,7 +1070,27 @@ std::string makcu_move_bridge_report() {
         << " lost_target_hold_duration_us="
         << lost_target_hold_duration_us
         << " tracker_lost_duration_us=" << lost_track_duration_us
+        << " last_detection_count=" << g_last_detection_count.load()
+        << " last_max_detection_confidence="
+        << g_last_max_detection_confidence.load()
+        << " tracker_new_track_confidence_threshold="
+        << tracker_new_track_confidence_threshold
+        << " tracker_low_confidence_threshold="
+        << tracker_low_confidence_threshold
         << " deadzone_suppressed=" << g_deadzone_suppressed.load()
+        << " no_move_suppressed=" << g_no_move_suppressed.load()
+        << " response_guard_suppressed="
+        << g_response_guard_suppressed.load()
+        << " device_resolution_suppressed="
+        << g_device_resolution_suppressed.load()
+        << " settle_guard_suppressed="
+        << g_settle_guard_suppressed.load()
+        << " direction_flip_suppressed="
+        << g_direction_flip_suppressed.load()
+        << " motion_invalid_suppressed="
+        << g_motion_invalid_suppressed.load()
+        << " detected_not_control_eligible_suppressed="
+        << g_detected_not_control_eligible_suppressed.load()
         << " held_targets=" << g_held_targets.load()
         << " target_switches=" << g_target_switches.load()
         << " no_targets=" << g_no_targets.load()
@@ -840,6 +1105,8 @@ std::string makcu_move_bridge_report() {
         << " geometry_border_rejected=" << control_metrics.rejected_border
         << " geometry_size_rejected=" << control_metrics.rejected_size
         << " geometry_aspect_rejected=" << control_metrics.rejected_aspect_ratio
+        << " detected_not_control_eligible_frames="
+        << control_metrics.detected_not_control_eligible_frames
         << " head_preemptions=" << control_metrics.head_preemptions
         << " head_body_projection_continuations="
         << control_metrics.head_body_projection_continuations
@@ -965,6 +1232,8 @@ std::string makcu_move_bridge_report() {
         << motion_metrics.direction_reorientations
         << " motion_response_guard_suppressions="
         << motion_metrics.response_guard_suppressions
+        << " motion_subcount_resolution_suppressions="
+        << motion_metrics.subcount_resolution_suppressions
         << " motion_settle_guard_suppressions="
         << motion_metrics.settle_guard_suppressions
         << " motion_settle_quantization_rescues="

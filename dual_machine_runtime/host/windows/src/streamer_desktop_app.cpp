@@ -1,8 +1,7 @@
 #include "vfdual/streamer_desktop_app.hpp"
 
-#include "vfdual/host_cat6_bootstrap.hpp"
-#include "vfdual/host_cat6_session.hpp"
 #include "vfdual/host_direct_link_provisioner.hpp"
+#include "vfdual/host_runtime_service.hpp"
 #include "vfdual/host_release_version.hpp"
 #include "vfdual/host_window_layout.hpp"
 #include "vfdual/h264_encoder_config.hpp"
@@ -51,6 +50,7 @@ constexpr int kCloseSettingsButtonId = 1011;
 constexpr UINT kStartupCompletedMessage = WM_APP + 1;
 constexpr UINT kMobileRefreshCompletedMessage = WM_APP + 2;
 constexpr UINT kAcceptanceAutostartMessage = WM_APP + 3;
+constexpr auto kCat6EndpointDiscoveryTimeout = std::chrono::seconds(45);
 constexpr auto kWirelessLanDiscoveryTimeout = std::chrono::seconds(8);
 
 void schedule_autostart_retry(HWND window, bool acceptance_autostart) {
@@ -113,7 +113,7 @@ struct StartupResult final {
 
 struct MobileRefreshResult final {
     std::uint64_t generation{};
-    std::optional<Cat6SessionSnapshot> mobile;
+    std::optional<host::application::HostMobileEndpointReadModel> mobile;
 };
 
 std::string describe_background_exception(
@@ -144,7 +144,7 @@ void post_startup_completed_result(
 
 void post_mobile_refresh_completed_result(
     HWND window, std::uint64_t generation,
-    std::optional<Cat6SessionSnapshot> mobile) noexcept {
+    std::optional<host::application::HostMobileEndpointReadModel> mobile) noexcept {
     auto* result = new (std::nothrow) MobileRefreshResult{
         generation, std::move(mobile)};
     if (result == nullptr) return;
@@ -269,7 +269,7 @@ const wchar_t* encoder_vendor_name(std::int32_t vendor) noexcept {
     }
 }
 
-std::wstring describe_encoder_state(const HostStreamMetrics& metrics) {
+std::wstring describe_encoder_state(const host::application::HostRuntimeReadModel& metrics) {
     if (metrics.encoder_backend == 1) {
         if (!metrics.encoder_same_adapter) {
             return L"NVIDIA NVENC (H.264)  |  \u8de8\u5361\u786c\u4ef6\u7f16\u7801";
@@ -642,11 +642,11 @@ void StreamerDesktopApp::shutdown_background_runtime() noexcept {
     background_shutdown_done_ = true;
     cancel_mobile_refresh_probe();
     ++startup_generation_;
-    runtime_service_.request_stop();
-    runtime_service_.stop();
+    runtime_facade_.request_stop();
+    runtime_facade_.stop();
     safe_join_thread(startup_thread_);
     isolated_dhcp_server_.stop();
-    runtime_service_.restore_direct_link_on_clean_shutdown();
+    runtime_facade_.restore_direct_link_on_clean_shutdown();
 }
 
 int StreamerDesktopApp::run(HINSTANCE instance, bool acceptance_autostart) {
@@ -888,7 +888,7 @@ LRESULT StreamerDesktopApp::handle_message(HWND window, UINT message, WPARAM w_p
                     return 0;
                 }
                 set_ui_phase(HostUiPhase::idle);
-                update_action_state(runtime_service_.is_running(), false);
+                update_action_state(runtime_facade_.is_running(), false);
                 set_status(L"手机端点检测已取消。");
                 return 0;
             }
@@ -961,7 +961,7 @@ LRESULT StreamerDesktopApp::handle_message(HWND window, UINT message, WPARAM w_p
             if (w_param == kAutostartRetryTimerId) {
                 KillTimer(window, kAutostartRetryTimerId);
                 if (acceptance_autostart_ && !starting_ &&
-                    !runtime_service_.is_running()) {
+                    !runtime_facade_.is_running()) {
                     start_streamer(window);
                 }
             }
@@ -1429,7 +1429,7 @@ void StreamerDesktopApp::set_settings_panel_visible(bool visible) {
 }
 
 void StreamerDesktopApp::refresh_display_selection() {
-    if (starting_ || runtime_service_.is_running()) {
+    if (starting_ || runtime_facade_.is_running()) {
         set_status(L"\u4f20\u8f93\u671f\u95f4\u663e\u793a\u5668\u7531\u8fd0\u884c\u65f6\u6301\u7eed\u6821\u9a8c\uff1b\u505c\u6b62\u540e\u53ef\u624b\u52a8\u5237\u65b0\u3002");
         return;
     }
@@ -1452,7 +1452,7 @@ void StreamerDesktopApp::refresh_display_selection() {
 
 void StreamerDesktopApp::refresh_mobile_device() {
     reap_completed_mobile_refresh_thread("refresh_mobile_device_enter");
-    if (mobile_refresh_running() || starting_ || runtime_service_.is_running()) {
+    if (mobile_refresh_running() || starting_ || runtime_facade_.is_running()) {
         set_status(L"\u5f53\u524d\u6b63\u5728\u68c0\u6d4b\u6216\u4f20\u8f93\uff0c\u65e0\u9700\u91cd\u590d\u68c0\u6d4b\u624b\u673a\u7aef\u70b9\u3002");
         return;
     }
@@ -1484,20 +1484,13 @@ void StreamerDesktopApp::refresh_mobile_device() {
     const std::stop_token stop_token = mobile_refresh_stop_source_.get_token();
     try {
         mobile_refresh_thread_ = std::thread([
-            window = window_, generation, dhcp_server = &isolated_dhcp_server_,
+            window = window_, generation, discovery = &endpoint_discovery_,
             stop_token, finished = &mobile_refresh_finished_] {
             try {
-                const auto bootstrap = bootstrap_host_cat6_link(
-                    kHostCat6MobileReadyTimeout, dhcp_server, stop_token);
-                std::optional<Cat6SessionSnapshot> mobile = bootstrap.mobile;
-                if (!mobile.has_value() && !stop_token.stop_requested()) {
-                    const HostFirewallProvisioningResult firewall =
-                        ensure_host_firewall_rules_automatically();
-                    if (host_firewall_is_ready(firewall.status)) {
-                        mobile = measure_wireless_lan_mobile_session(
-                            kWirelessLanDiscoveryTimeout, stop_token);
-                    }
-                }
+                auto mobile = discovery->discover(
+                    kCat6EndpointDiscoveryTimeout,
+                    kWirelessLanDiscoveryTimeout,
+                    stop_token);
                 finished->store(true, std::memory_order_release);
                 post_mobile_refresh_completed_result(window, generation, std::move(mobile));
             } catch (...) {
@@ -1608,14 +1601,14 @@ bool StreamerDesktopApp::reap_completed_mobile_refresh_thread(const char* contex
 }
 
 bool StreamerDesktopApp::repair_stale_startup_state(const char* context) noexcept {
-    if (!starting_ || startup_thread_.joinable() || runtime_service_.is_running()) {
+    if (!starting_ || startup_thread_.joinable() || runtime_facade_.is_running()) {
         return false;
     }
     std::ostringstream detail;
     detail << "context=" << (context == nullptr ? "unknown" : context)
            << " starting=" << starting_
            << " startup_joinable=" << startup_thread_.joinable()
-           << " runtime_running=" << runtime_service_.is_running();
+           << " runtime_running=" << runtime_facade_.is_running();
     log_host_runtime_event("host_gui_startup_state_repaired", detail.str());
     starting_ = false;
     update_action_state(false, false);
@@ -1628,7 +1621,7 @@ void StreamerDesktopApp::start_streamer(HWND window) {
     {
         std::ostringstream detail;
         detail << "starting=" << starting_
-               << " runtime_running=" << runtime_service_.is_running()
+               << " runtime_running=" << runtime_facade_.is_running()
                << " mobile_refresh_state=" << static_cast<int>(mobile_refresh_state_)
                << " mobile_refresh_joinable=" << mobile_refresh_thread_.joinable()
                << " mobile_refresh_finished="
@@ -1636,7 +1629,7 @@ void StreamerDesktopApp::start_streamer(HWND window) {
                << " acceptance_autostart=" << acceptance_autostart_;
         log_host_runtime_event("host_gui_start_streamer_entered", detail.str());
     }
-    if (starting_ || runtime_service_.is_running()) {
+    if (starting_ || runtime_facade_.is_running()) {
         log_host_runtime_event(
             "host_gui_start_streamer_skipped",
             "reason=already_starting_or_running");
@@ -1715,14 +1708,27 @@ void StreamerDesktopApp::start_streamer(HWND window) {
         }
         return;
     }
-    HostStreamSettings settings{};
+    host::application::HostStartRequest settings{};
     settings.adapter_index = display.adapter_index;
     settings.output_index = display.output_index;
     settings.width = geometry.encoder_width;
     settings.height = geometry.encoder_height;
-    settings.capture_region = DesktopCaptureRegion{
+    settings.capture_region = host::domain::CaptureRegion::create(
         geometry.local_roi_x, geometry.local_roi_y,
-        geometry.local_roi_width, geometry.local_roi_height};
+        geometry.local_roi_width, geometry.local_roi_height,
+        host::domain::DesktopSpace{
+            0, 0,
+            static_cast<std::int32_t>(geometry.source_width),
+            static_cast<std::int32_t>(geometry.source_height)});
+    if (!settings.capture_region.has_value()) {
+        log_host_runtime_event(
+            "host_gui_start_streamer_skipped",
+            "reason=invalid_capture_region display_id=" +
+                narrow_display_id(display.device_name));
+        set_ui_phase(HostUiPhase::failed);
+        set_status(L"截图区域无效；请刷新显示器后重试。");
+        return;
+    }
     settings.display_id = narrow_display_id(display.device_name);
     settings.display_left = geometry.display_rect.left;
     settings.display_top = geometry.display_rect.top;
@@ -1744,10 +1750,10 @@ void StreamerDesktopApp::start_streamer(HWND window) {
                << " selection_reason=" << settings.display_selection_reason
                << " display_id=" << settings.display_id
                << " refresh_hz=" << display.refresh_hz
-               << " roi=" << settings.capture_region.x << ','
-               << settings.capture_region.y << ','
-               << settings.capture_region.width << 'x'
-               << settings.capture_region.height;
+               << " roi=" << settings.capture_region->left() << ','
+               << settings.capture_region->top() << ','
+               << settings.capture_region->width() << 'x'
+               << settings.capture_region->height();
         log_host_runtime_event("host_gui_start_streamer_selected", detail.str());
     }
     log_host_runtime_event(
@@ -1770,7 +1776,7 @@ void StreamerDesktopApp::start_streamer(HWND window) {
             std::string error;
             bool started = false;
             try {
-                started = runtime_service_.start(settings, error);
+                started = runtime_facade_.start(settings, error);
             } catch (const std::exception& exception) {
                 error = describe_background_exception(
                     "Host runtime start", exception);
@@ -1819,7 +1825,7 @@ void StreamerDesktopApp::start_streamer(HWND window) {
 }
 
 void StreamerDesktopApp::stop_streamer() {
-    const bool had_active_runtime = starting_ || was_running_ || runtime_service_.is_running();
+    const bool had_active_runtime = starting_ || was_running_ || runtime_facade_.is_running();
     if (start_after_mobile_refresh_cancel_) {
         start_after_mobile_refresh_cancel_ = false;
         ++mobile_refresh_generation_;
@@ -1831,15 +1837,15 @@ void StreamerDesktopApp::stop_streamer() {
     }
     if (starting_) {
         ++startup_generation_;
-        runtime_service_.request_stop();
+        runtime_facade_.request_stop();
         EnableWindow(stop_button_, FALSE);
         set_status(L"\u6b63\u5728\u53d6\u6d88\u4f20\u8f93\u94fe\u8def\u542f\u52a8\u7b49\u5f85...");
         append_event(L"\u5df2\u8bf7\u6c42\u53d6\u6d88\uff1a\u6b63\u5728\u505c\u6b62\u624b\u673a\u7aef\u70b9\u68c0\u6d4b");
         return;
     }
     ++startup_generation_;
-    runtime_service_.stop();
-    runtime_service_.restore_direct_link_on_clean_shutdown();
+    runtime_facade_.stop();
+    runtime_facade_.restore_direct_link_on_clean_shutdown();
     safe_join_thread(startup_thread_);
     starting_ = false;
     was_running_ = false;
@@ -1860,14 +1866,14 @@ void StreamerDesktopApp::stop_streamer() {
 }
 
 void StreamerDesktopApp::refresh_status() {
-    if (!runtime_service_.is_running()) {
+    if (!runtime_facade_.is_running()) {
         if (was_running_) {
             was_running_ = false;
-            runtime_service_.restore_direct_link_on_clean_shutdown();
+            runtime_facade_.restore_direct_link_on_clean_shutdown();
             set_ui_phase(HostUiPhase::failed);
             clear_runtime_metrics();
             update_action_state(false, false);
-            const std::string error = runtime_service_.last_error();
+            const std::string error = runtime_facade_.last_error();
             const std::wstring summary = friendly_host_failure(error);
             const std::wstring technical = widen_ascii(error);
             SetWindowTextW(mobile_state_text_, L"\u4e3b\u673a\u4f20\u8f93\u5f02\u5e38\u505c\u6b62");
@@ -1886,7 +1892,7 @@ void StreamerDesktopApp::refresh_status() {
         }
         return;
     }
-    const auto metrics = runtime_service_.last_metrics();
+    const auto metrics = runtime_facade_.snapshot();
     if (!metrics.has_value()) return;
     const bool mobile_state_changed = mobile_reachable_ != metrics->mobile_reachable;
     mobile_reachable_ = metrics->mobile_reachable;

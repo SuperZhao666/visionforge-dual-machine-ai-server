@@ -23,6 +23,7 @@ namespace vfdual {
     case DesktopVideoStepStatus::staging_busy:
       return true;
     case DesktopVideoStepStatus::capture_access_lost:
+    case DesktopVideoStepStatus::capture_device_removed:
     case DesktopVideoStepStatus::capture_failed:
     case DesktopVideoStepStatus::bridge_failed:
     case DesktopVideoStepStatus::encode_failed:

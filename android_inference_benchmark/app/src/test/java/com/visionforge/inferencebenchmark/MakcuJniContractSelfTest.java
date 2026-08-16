@@ -24,6 +24,9 @@ final class MakcuJniContractSelfTest {
         String dispatcher = readUtf8(sourceRoot.resolve(Paths.get(
                 "java", "com", "visionforge", "inferencebenchmark",
                 "ControlOutputMoveDispatcher.java")));
+        String moveDeadline = readUtf8(sourceRoot.resolve(Paths.get(
+                "java", "com", "visionforge", "inferencebenchmark",
+                "ControlMoveDeadline.java")));
         String nativeBridge = readUtf8(sourceRoot.resolve(Paths.get(
                 "cpp", "QnnHtpBridge.cpp")));
         String moveBridge = readUtf8(sourceRoot.resolve(Paths.get(
@@ -38,17 +41,34 @@ final class MakcuJniContractSelfTest {
         require(Pattern.compile("final\\s+class\\s+MakcuSerialController\\s+implements\\s+"
                 + "MakcuConnection\\s*,\\s*MakcuButtonInput\\s*,\\s*ControlOutputMoveSink")
                 .matcher(controller).find());
+        java.util.regex.Matcher javaBudget = Pattern.compile(
+                "DEFAULT_BUDGET_US\\s*=\\s*([0-9_]+)L")
+                .matcher(moveDeadline);
+        java.util.regex.Matcher nativeBudget = Pattern.compile(
+                "kMaximumMoveCompletionAgeUs\\s*=\\s*([0-9']+)U")
+                .matcher(moveBridge);
+        require(javaBudget.find() && nativeBudget.find());
+        require(parseNumericLiteral(javaBudget.group(1))
+                == parseNumericLiteral(nativeBudget.group(1)));
+
         require(Pattern.compile("static\\s+boolean\\s+offerNativeMove\\s*\\("
                         + "\\s*int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
-                        + "\\s*long\\s+ticket\\s*\\).*?"
-                        + "current\\.offerMoveFromNative\\(deltaX,\\s*deltaY,\\s*ticket\\)",
+                        + "\\s*long\\s+ticket\\s*,"
+                        + "\\s*long\\s+remainingBudgetUs\\s*\\).*?"
+                        + "current\\.offerMoveFromNative\\("
+                        + "\\s*deltaX,\\s*deltaY,\\s*ticket,"
+                        + "\\s*remainingBudgetUs\\s*\\)",
                 Pattern.DOTALL).matcher(dispatcher).find());
         require(dispatcher.contains(
                 "current.suspendMoveDeliveryForNativeRecovery(generation)"));
         require(dispatcher.contains(
                 "current.resumeMoveDeliveryAfterNativeRecovery(generation)"));
         require(dispatcher.contains("current.failClosedNativeMoveDelivery()"));
-        require(controller.contains("offerMoveFromNative(int deltaX, int deltaY, long ticket)"));
+        require(Pattern.compile("offerMoveFromNative\\s*\\("
+                        + "\\s*int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
+                        + "\\s*long\\s+ticket\\s*,"
+                        + "\\s*long\\s+remainingBudgetUs\\s*\\)")
+                .matcher(controller).find());
         require(controller.contains("suspendMoveDeliveryForNativeRecovery(long generation)"));
         require(controller.contains("resumeMoveDeliveryAfterNativeRecovery(long generation)"));
         require(controller.contains("failClosedNativeMoveDelivery()"));
@@ -59,12 +79,14 @@ final class MakcuJniContractSelfTest {
         require(controller.contains("handleDeviceAttached(device)"));
         require(controller.contains("automatic_connect=true"));
         require(Pattern.compile("offerNativeMove\\s*\\("
-                        + "int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
-                        + "\\s*long\\s+ticket\\s*\\)")
+                        + "\\s*int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
+                        + "\\s*long\\s+ticket\\s*,"
+                        + "\\s*long\\s+remainingBudgetUs\\s*\\)")
                 .matcher(controller).find());
         require(Pattern.compile("private\\s+boolean\\s+offerMove\\s*\\(.*?"
                         + "!deliveryGate\\.isPhysicalTriggerSatisfied\\(\\).*?"
-                        + "pendingMoveSlot\\.offer\\(packed,\\s*ticket\\).*?"
+                        + "pendingMoveSlot\\.offer\\("
+                        + "packed,\\s*ticket,\\s*deadlineNanos\\).*?"
                         + "!deliveryGate\\.isPhysicalTriggerSatisfied\\(\\)",
                 Pattern.DOTALL).matcher(controller).find());
         require(controller.contains(
@@ -276,15 +298,15 @@ final class MakcuJniContractSelfTest {
         require(moveBridge.contains("environment->NewGlobalRef(controller_class)"));
         require(moveBridge.contains("environment->GetStaticMethodID"));
         require(moveBridge.contains(
-                "GetStaticMethodID(candidate_class, \"offerNativeMove\", \"(IIJ)Z\")"));
+                "candidate_class, \"offerNativeMove\", \"(IIJJ)Z\""));
         require(moveBridge.contains("environment->ExceptionCheck()"));
         require(moveBridge.contains("g_java_bridge_ready.store(false"));
         require(moveBridge.contains("g_move_commit_gate.pending()"));
         require(moveBridge.contains("g_move_commit_gate.expire_if_older("));
-        require(moveBridge.contains("g_move_visibility_gate.consume_if_visible("));
+        require(moveBridge.contains("g_move_visibility_gate.evaluate("));
         require(moveBridge.indexOf("g_move_commit_gate.pending()")
                 < moveBridge.indexOf("g_control_core.process("));
-        require(moveBridge.indexOf("g_move_visibility_gate.consume_if_visible(")
+        require(moveBridge.indexOf("g_move_visibility_gate.evaluate(")
                 < moveBridge.indexOf("g_control_core.process("));
         require(moveBridge.contains("completed_move_became_visible"));
         require(moveBridge.contains("g_control_core.apply_visible_ego_motion("));
@@ -430,8 +452,8 @@ final class MakcuJniContractSelfTest {
         require(moveBridge.contains(
                 "native_stream_lifecycle_close_requests="));
         require(Pattern.compile(
-                "void\\s+fail_closed_native_state\\s*\\("
-                        + "MakcuStreamCloseScope\\s+scope\\)\\s*noexcept"
+                "void\\s+fail_closed_native_state\\s*\\(.*?"
+                        + "MakcuStreamCloseScope\\s+scope.*?\\)\\s*noexcept"
                         + ".*?g_stream_generation_gate\\.fail_closed\\(scope\\)"
                         + ".*?scope\\s*==\\s*MakcuStreamCloseScope::delivery_failure"
                         + ".*?\\+\\+g_delivery_fail_close_requests"
@@ -470,6 +492,10 @@ final class MakcuJniContractSelfTest {
                         + ".*?return\\s+true\\s*;",
                 Pattern.DOTALL);
         require(bluetoothCompletion.matcher(moveBridge).find());
+    }
+
+    private static long parseNumericLiteral(String value) {
+        return Long.parseLong(value.replace("_", "").replace("'", ""));
     }
 
     private static void require(boolean condition) {

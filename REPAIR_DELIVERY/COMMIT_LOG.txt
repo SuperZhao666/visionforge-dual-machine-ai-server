@@ -1,0 +1,14 @@
+078ba3eae024df6c6666fcdefbe29f17d5749997
+Author: OpenAI Repair Assistant <repair-assistant@local.invalid>
+Date: 2026-08-15T07:27:44Z
+Subject: fix portable protocol contract compilation
+
+c02d6ee25255be68cd2cef933ded590903a33767
+Author: OpenAI Repair Assistant <repair-assistant@local.invalid>
+Date: 2026-08-15T07:27:34Z
+Subject: fix bounded mobile control recovery and deadlines
+
+248db99515b6a1dc967e2cb177f159e30bb18881
+Author: OpenAI Repair Assistant <repair-assistant@local.invalid>
+Date: 2026-08-15T06:50:42Z
+Subject: preserve local partial release manifest repair

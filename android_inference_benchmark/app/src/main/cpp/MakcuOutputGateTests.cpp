@@ -371,7 +371,13 @@ void verify_move_ack_timeout_is_strict_and_stale_safe() {
   CHECK(gate.expire_if_older(101'001U, 100'000U));
   CHECK(!gate.pending());
 
-  const std::uint64_t current = gate.begin(102'000U, 2U);
+  const std::uint64_t boundary = gate.begin(200'000U, 8U);
+  CHECK(boundary != 0U);
+  CHECK(!gate.expire_if_deadline_reached(299'999U, 100'000U));
+  CHECK(gate.expire_if_deadline_reached(300'000U, 100'000U));
+  CHECK(!gate.pending());
+
+  const std::uint64_t current = gate.begin(302'000U, 2U);
   CHECK(current != 0U && current != stale);
   CHECK(!gate.complete(stale).matched);
   CHECK(gate.pending_ticket() == current);
@@ -403,6 +409,33 @@ void verify_post_ack_visibility_requires_newer_delayed_frame() {
   gate.arm(60U, 20'000U, 8'000U);
   gate.fail_closed();
   CHECK(gate.consume_if_visible(60U, 20'000U, false));
+}
+
+void verify_post_ack_visibility_timeout_is_bounded_and_fail_closed() {
+  using vfdual_android::MakcuMoveVisibilityDecision;
+  vfdual_android::MakcuMoveVisibilityGate gate;
+  gate.arm(100U, 1'000U, 0U);
+  const auto armed = gate.snapshot();
+  CHECK(armed.armed);
+  CHECK(armed.source_sequence == 100U);
+  CHECK(armed.armed_at_us == 1'000U);
+  CHECK(armed.visible_not_before_us == 1'000U);
+
+  CHECK(gate.evaluate(101U, 1'500U, false, 2'999U, 2'000U) ==
+        MakcuMoveVisibilityDecision::waiting);
+  CHECK(gate.armed());
+  CHECK(gate.evaluate(101U, 1'500U, false, 3'000U, 2'000U) ==
+        MakcuMoveVisibilityDecision::timed_out);
+  CHECK(!gate.armed());
+
+  // A qualifying fresh observation at the timeout boundary is the exact
+  // causal evidence being awaited and therefore wins over timeout.
+  gate.arm(200U, 10'000U, 0U);
+  CHECK(gate.evaluate(201U, 12'000U, true, 12'000U, 2'000U) ==
+        MakcuMoveVisibilityDecision::became_visible);
+  CHECK(!gate.armed());
+  CHECK(gate.evaluate(202U, 12'001U, true, 12'001U, 2'000U) ==
+        MakcuMoveVisibilityDecision::open);
 }
 
 void verify_route_specific_post_completion_visibility() {
@@ -512,6 +545,7 @@ int main() {
   verify_concurrent_duplicate_device_ack_commits_once();
   verify_move_ack_timeout_is_strict_and_stale_safe();
   verify_post_ack_visibility_requires_newer_delayed_frame();
+  verify_post_ack_visibility_timeout_is_bounded_and_fail_closed();
   verify_route_specific_post_completion_visibility();
   verify_repeated_content_never_drives_control();
   return 0;

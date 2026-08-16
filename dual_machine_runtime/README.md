@@ -118,9 +118,21 @@ about 2.08 ms is stage-only evidence; it is not end-to-end 500 FPS. Display
 capture cadence, encode, network, decode, preprocessing, post-processing,
 queues, and optional physical output remain outside that number.
 
-## Current production acceptance
+## Current release identity
 
-The current publishable Android artifact is
+The only current release identity is the repository manifest at
+`../release/release-manifest.json`. It binds the Server, Android and Host
+versions, protocol versions, compatibility range, release ID and the
+content-addressed artifact fields. This checkout intentionally carries an
+unpublished source manifest: no APK or Host hash is claimed as a current
+publishable artifact until a release build fills and signs that manifest.
+
+### Historical acceptance (SUPERSEDED)
+
+The following evidence was valid for an earlier physical acceptance and is
+retained for audit history only. It must not be copied into a current release
+manifest:
+
 `releases/android/cat6-wireless-lan-production-latest/VisionForgeMobile_1.0.1_20260728_190441.apk`
 with SHA256
 `3B985E864DF66B9EB9B460D763EF3F0FE4068FC3FB22FDB3C52A800C493D4C97`.

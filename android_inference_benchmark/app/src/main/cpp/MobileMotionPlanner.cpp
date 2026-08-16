@@ -40,6 +40,8 @@ const char* motion_planner_suppression_name(
     case MotionPlannerSuppressionReason::deadzone: return "deadzone";
     case MotionPlannerSuppressionReason::direction_flip: return "direction_flip";
     case MotionPlannerSuppressionReason::response_guard: return "response_guard";
+    case MotionPlannerSuppressionReason::subcount_resolution:
+      return "subcount_resolution";
     case MotionPlannerSuppressionReason::settle_guard: return "settle_guard";
   }
   return "unknown";
@@ -996,6 +998,16 @@ MobileMotionPlannerOutput MobileMotionPlanner::plan(
     if (in_deadzone) {
       reason = MotionPlannerSuppressionReason::deadzone;
       ++metrics_.deadzone_suppressions;
+    } else if ((std::fabs(predicted_error_x) <= config_.deadzone_pixels ||
+                budget_x < 1.0F) &&
+               (std::fabs(predicted_error_y) <= config_.deadzone_pixels ||
+                budget_y < 1.0F)) {
+      // The target is outside the configured pixel deadzone, but the
+      // calibrated worst-case response says that one physical count would
+      // exceed the admissible correction on every active axis. This is a
+      // device-resolution terminal state, not an unexplained active stall.
+      reason = MotionPlannerSuppressionReason::subcount_resolution;
+      ++metrics_.subcount_resolution_suppressions;
     } else if (settle_limited_x || settle_limited_y) {
       reason = MotionPlannerSuppressionReason::settle_guard;
       ++metrics_.settle_guard_suppressions;

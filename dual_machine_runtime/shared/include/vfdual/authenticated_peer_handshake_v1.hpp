@@ -138,6 +138,8 @@ struct PeerHandshakeTranscriptFields final {
     std::string android_runtime_version;
 };
 
+struct PeerHandshakeTranscriptResult;
+
 /**
  * Validated canonical transcript. Construction is restricted to the strict
  * encoder/parser so downstream signing and ECDH code cannot accept an

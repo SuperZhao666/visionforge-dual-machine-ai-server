@@ -157,7 +157,8 @@ void test_response_budget_and_residual_quantization() {
       observation(2, 20'000, 4.0F, 0.0F, 0.0F, 0.0F, 1.0F));
   assert(!near.has_move());
   assert(near.suppression_reason ==
-         MotionPlannerSuppressionReason::response_guard);
+         MotionPlannerSuppressionReason::subcount_resolution);
+  assert(guarded_planner.metrics().subcount_resolution_suppressions == 1U);
 
   MobileMotionPlannerConfig residual = direct_config();
   residual.response_gain = 0.10F;

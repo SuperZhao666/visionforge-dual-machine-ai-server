@@ -90,6 +90,8 @@ struct PairGenerationProposalFields final {
     std::string android_runtime_version;
 };
 
+struct PairGenerationProposalResult;
+
 /** Strictly validated immutable owner for the canonical 17-field proposal. */
 class VerifiedPairGenerationProposalV1 final {
 public:

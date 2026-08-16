@@ -32,6 +32,7 @@
 #include "vfdual/access_unit_reassembler.hpp"
 #include "vfdual/h264_access_unit.hpp"
 #include "vfdual/protocol.hpp"
+#include "vfdual/receiver_epoch_session.hpp"
 
 namespace {
 constexpr char kTag[] = "VisionForgeMobile";
@@ -82,6 +83,8 @@ struct ReceiverMetrics {
   std::atomic_uint64_t reassembled_access_units{};
   std::atomic_uint64_t decoder_accepted_access_units{};
   std::atomic_uint64_t completed_access_units{};
+  std::atomic_uint64_t fresh_content_access_units{};
+  std::atomic_uint64_t non_actionable_completed_access_units{};
   std::atomic_uint64_t repeated_content_access_units{};
   std::atomic_uint64_t resync_rejected_repeats{};
   std::atomic_uint64_t resync_actionable_acceptances{};
@@ -104,9 +107,13 @@ struct ReceiverMetrics {
   std::atomic_uint64_t recovery_idr_requests{};
   std::atomic_uint64_t fatal_socket_errors{};
   std::atomic_int last_socket_errno{};
+  std::atomic_uint64_t last_stream_epoch{};
   std::atomic_int64_t last_logical_frame_sequence{-1};
+  std::atomic_uint64_t retired_epoch_datagrams{};
+  std::atomic_uint64_t candidate_epoch_rejections{};
   std::atomic_uint64_t last_reassembled_access_unit_us{};
   std::atomic_uint64_t last_completed_access_unit_us{};
+  std::atomic_uint64_t last_fresh_content_access_unit_us{};
 
   void reset() noexcept {
     accepted_datagrams = 0;
@@ -115,6 +122,8 @@ struct ReceiverMetrics {
     reassembled_access_units = 0;
     decoder_accepted_access_units = 0;
     completed_access_units = 0;
+    fresh_content_access_units = 0;
+    non_actionable_completed_access_units = 0;
     repeated_content_access_units = 0;
     resync_rejected_repeats = 0;
     resync_actionable_acceptances = 0;
@@ -137,9 +146,13 @@ struct ReceiverMetrics {
     recovery_idr_requests = 0;
     fatal_socket_errors = 0;
     last_socket_errno = 0;
+    last_stream_epoch = 0;
     last_logical_frame_sequence = -1;
+    retired_epoch_datagrams = 0;
+    candidate_epoch_rejections = 0;
     last_reassembled_access_unit_us = 0;
     last_completed_access_unit_us = 0;
+    last_fresh_content_access_unit_us = 0;
   }
 };
 
@@ -324,12 +337,17 @@ public:
     std::scoped_lock lock(mutex_);
     const std::uint64_t last_reassembled_us = metrics_.last_reassembled_access_unit_us.load();
     const std::uint64_t last_completed_us = metrics_.last_completed_access_unit_us.load();
+    const std::uint64_t last_fresh_content_us =
+        metrics_.last_fresh_content_access_unit_us.load();
     const std::uint64_t reassembled_age_ms = last_reassembled_us == 0
         ? std::numeric_limits<std::uint64_t>::max()
         : (monotonic_microseconds() - last_reassembled_us) / 1'000U;
     const std::uint64_t age_ms = last_completed_us == 0
         ? std::numeric_limits<std::uint64_t>::max()
         : (monotonic_microseconds() - last_completed_us) / 1'000U;
+    const std::uint64_t fresh_content_age_ms = last_fresh_content_us == 0
+        ? std::numeric_limits<std::uint64_t>::max()
+        : (monotonic_microseconds() - last_fresh_content_us) / 1'000U;
     std::ostringstream result;
     result << "UDP receiver running=" << running_
            << " bind_ipv4=" << local_ipv4_
@@ -347,6 +365,10 @@ public:
            << " reassembled_access_units=" << metrics_.reassembled_access_units
            << " decoder_accepted_access_units=" << metrics_.decoder_accepted_access_units
            << " completed_access_units=" << metrics_.completed_access_units
+           << " fresh_content_access_units="
+           << metrics_.fresh_content_access_units
+           << " non_actionable_completed_access_units="
+           << metrics_.non_actionable_completed_access_units
            << " repeated_content_access_units="
            << metrics_.repeated_content_access_units
            << " resync_rejected_repeats="
@@ -376,6 +398,9 @@ public:
            << " recovery_idr_requests=" << metrics_.recovery_idr_requests
            << " fatal_socket_errors=" << metrics_.fatal_socket_errors
            << " last_socket_errno=" << metrics_.last_socket_errno
+           << " last_stream_epoch=" << metrics_.last_stream_epoch
+           << " retired_epoch_datagrams=" << metrics_.retired_epoch_datagrams
+           << " candidate_epoch_rejections=" << metrics_.candidate_epoch_rejections
            << " last_logical_frame_sequence="
            << metrics_.last_logical_frame_sequence
            << " last_reassembled_access_unit_age_ms=";
@@ -384,6 +409,12 @@ public:
     result << " last_completed_access_unit_age_ms=";
     if (age_ms == std::numeric_limits<std::uint64_t>::max()) result << -1;
     else result << age_ms;
+    result << " last_fresh_content_access_unit_age_ms=";
+    if (fresh_content_age_ms == std::numeric_limits<std::uint64_t>::max()) {
+      result << -1;
+    } else {
+      result << fresh_content_age_ms;
+    }
     return result.str();
   }
 
@@ -394,6 +425,7 @@ public:
 private:
   struct CompletedSubmission final {
     bool accepted{};
+    bool content_updated{};
     bool fatal{};
   };
 
@@ -416,10 +448,9 @@ private:
       const vfdual::CompletedAccessUnit& completed, std::uint64_t now_us) {
     ++metrics_.reassembled_access_units;
     metrics_.last_reassembled_access_unit_us.store(now_us);
-    const bool repeated_content =
-        vfdual::video_repeats_content(completed.frame_id);
-    const std::uint32_t logical_frame_id =
-        vfdual::video_logical_frame_sequence(completed.frame_id);
+    const bool repeated_content = completed.repeated_content;
+    const std::uint32_t logical_frame_id = completed.identity.frame_sequence;
+    metrics_.last_stream_epoch = completed.identity.stream_epoch;
     metrics_.last_logical_frame_sequence =
         static_cast<std::int64_t>(logical_frame_id);
     if (repeated_content) ++metrics_.repeated_content_access_units;
@@ -466,6 +497,7 @@ private:
       if (restart_timed_out) record_source_restart_timeout();
       return {
           .accepted = false,
+          .content_updated = false,
           .fatal = vfdual_android::decoder().has_fatal_decoder_failure() ||
               restart_timed_out,
       };
@@ -473,17 +505,29 @@ private:
 
     ++metrics_.decoder_accepted_access_units;
     ++metrics_.completed_access_units;
+    if (admission.content_updated) {
+      ++metrics_.fresh_content_access_units;
+      metrics_.last_fresh_content_access_unit_us.store(
+          monotonic_microseconds());
+    } else {
+      ++metrics_.non_actionable_completed_access_units;
+    }
     if (admission.resync_unlock) ++metrics_.resync_actionable_acceptances;
     metrics_.last_completed_access_unit_us.store(monotonic_microseconds());
-    return {.accepted = true, .fatal = false};
+    return {
+        .accepted = true,
+        .content_updated = admission.content_updated,
+        .fatal = false,
+    };
   }
 
   [[nodiscard]] bool request_idr(
-      int socket, std::uint64_t now_us, bool recovery_request, bool idle_request) noexcept {
-    // Any recovery request closes the complete predictive-reference chain
-    // before the packet is sent. If the request itself is lost, all P/VFRR
-    // access units remain fail-closed and the bounded policy retries IDR1.
-    require_reference_sync();
+      int socket, std::uint64_t now_us, bool recovery_request,
+      bool idle_request, bool invalidate_active_reference = true) noexcept {
+    // Recovery for the active epoch closes its predictive-reference chain.
+    // Candidate-epoch preflight may ask the Host for an IDR without destroying
+    // a still-healthy active stream.
+    if (invalidate_active_reference) require_reference_sync();
     if (socket < 0 || !idr_destination_ready_) return false;
     const auto sent = ::sendto(socket, kIdrRequest.data(), kIdrRequest.size(), MSG_NOSIGNAL,
         reinterpret_cast<const sockaddr*>(&idr_destination_), sizeof(idr_destination_));
@@ -505,48 +549,94 @@ private:
   }
 
   void run(int socket) {
-    vfdual::AccessUnitReassembler reassembler(kMaximumInflightAccessUnits);
+    vfdual::AccessUnitReassembler active_reassembler(
+        kMaximumInflightAccessUnits);
+    vfdual::AccessUnitReassembler candidate_reassembler(
+        kMaximumInflightAccessUnits);
+    vfdual::ReceiverEpochSession epoch_session(8U);
+    std::optional<vfdual::CompletedAccessUnit> pending_candidate_idr;
+    std::uint64_t candidate_reassembler_epoch{};
     std::array<std::byte, vfdual::kMaxDatagramBytes> datagram{};
     std::uint32_t consecutive_socket_errors{};
     bool source_restart_pending{};
+    bool decoder_restart_ready{};
     bool receive_timeout_backoff_available{true};
     std::uint64_t last_accepted_datagram_us = monotonic_microseconds();
     std::uint64_t receive_timeout_us = kInitialReceiveTimeoutUs;
+
+    const auto rebuild_active_reassembler = [&]() {
+      active_reassembler =
+          vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
+      if (const auto active = epoch_session.active_epoch(); active.has_value()) {
+        (void)active_reassembler.activate_epoch(*active);
+      }
+    };
+    const auto rebuild_candidate_reassembler = [&](std::uint64_t epoch) {
+      candidate_reassembler =
+          vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
+      candidate_reassembler_epoch = epoch;
+      (void)candidate_reassembler.activate_epoch(epoch);
+    };
+    const auto commit_restarted_candidate = [&](std::uint64_t now_us) -> bool {
+      if (!decoder_restart_ready || !pending_candidate_idr.has_value()) {
+        return true;
+      }
+      const std::uint64_t epoch =
+          pending_candidate_idr->identity.stream_epoch;
+      if (!epoch_session.commit_candidate(epoch, true)) {
+        ++metrics_.candidate_epoch_rejections;
+        pending_candidate_idr.reset();
+        return true;
+      }
+      rebuild_active_reassembler();
+      recovery_policy_.reset();
+      require_reference_sync();
+      const CompletedSubmission submission =
+          submit_completed_access_unit(*pending_candidate_idr, now_us);
+      pending_candidate_idr.reset();
+      decoder_restart_ready = false;
+      source_restart_pending = false;
+      if (!submission.accepted) {
+        ++metrics_.source_restart_failures;
+        return false;
+      }
+      ++metrics_.source_restart_successes;
+      return true;
+    };
+
     while (running_) {
       sockaddr_in sender{};
       socklen_t sender_size = sizeof(sender);
-      const ssize_t received = ::recvfrom(socket, datagram.data(), datagram.size(), 0,
+      const ssize_t received = ::recvfrom(
+          socket, datagram.data(), datagram.size(), 0,
           reinterpret_cast<sockaddr*>(&sender), &sender_size);
       const auto now_us = monotonic_microseconds();
+
       if (source_restart_pending) {
         const auto completion =
             vfdual_android::decoder().take_stream_restart_completion();
         if (completion.has_value()) {
-          source_restart_pending = false;
           metrics_.last_source_restart_us = completion->elapsed_us;
           if (!completion->succeeded) {
             ++metrics_.source_restart_failures;
             __android_log_print(
                 ANDROID_LOG_ERROR, kTag,
-                "video source decoder restart failed generation=%llu elapsed_us=%llu",
+                "video epoch decoder restart failed generation=%llu elapsed_us=%llu",
                 static_cast<unsigned long long>(completion->generation),
                 static_cast<unsigned long long>(completion->elapsed_us));
             running_ = false;
             break;
           }
-          ++metrics_.source_restart_successes;
-          recovery_policy_.reset();
-          reassembler =
-              vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
-          const bool idr_requested = request_idr(socket, now_us, true, false);
-          __android_log_print(
-              idr_requested ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, kTag,
-              "video source decoder restart completed generation=%llu elapsed_us=%llu; idr_requested=%d errno=%d",
-              static_cast<unsigned long long>(completion->generation),
-              static_cast<unsigned long long>(completion->elapsed_us),
-              idr_requested ? 1 : 0, idr_requested ? 0 : errno);
+          // A newer candidate may still be reassembling. Keep the completed
+          // decoder restart edge and commit only the latest complete real IDR.
+          decoder_restart_ready = true;
+          if (!commit_restarted_candidate(now_us)) {
+            running_ = false;
+            break;
+          }
         }
       }
+
       if (received <= 0) {
         if (!running_) break;
         if (vfdual_android::decoder().has_stream_restart_timed_out()) {
@@ -564,25 +654,26 @@ private:
               ? now_us - last_accepted_datagram_us : 0U;
           const std::uint64_t next_timeout_us =
               vfdual_android::ReceiverIdleBackoff::receive_timeout_us(idle_us);
-          if (receive_timeout_backoff_available && next_timeout_us != receive_timeout_us) {
+          if (receive_timeout_backoff_available &&
+              next_timeout_us != receive_timeout_us) {
             if (set_receive_timeout(socket, next_timeout_us)) {
               receive_timeout_us = next_timeout_us;
               metrics_.receive_timeout_us = next_timeout_us;
             } else {
               receive_timeout_backoff_available = false;
               metrics_.last_socket_errno = errno;
-              __android_log_print(ANDROID_LOG_ERROR, kTag,
+              __android_log_print(
+                  ANDROID_LOG_ERROR, kTag,
                   "video receiver idle timeout backoff disabled errno=%d", errno);
             }
           }
           if (!source_restart_pending &&
               recovery_policy_.observe_idle(now_us, idr_destination_ready_)) {
             const auto pending_flushes = static_cast<std::uint64_t>(
-                reassembler.inflight_frame_count());
+                active_reassembler.inflight_frame_count());
             metrics_.reference_resync_dependent_flushes += pending_flushes;
             metrics_.dropped_access_units += pending_flushes;
-            reassembler =
-                vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
+            rebuild_active_reassembler();
             (void)request_idr(socket, now_us, true, true);
           }
           continue;
@@ -590,52 +681,39 @@ private:
         if (errno == EINTR) continue;
         metrics_.last_socket_errno = errno;
         ++metrics_.fatal_socket_errors;
-        __android_log_print(ANDROID_LOG_ERROR, kTag,
+        __android_log_print(
+            ANDROID_LOG_ERROR, kTag,
             "video receiver socket error errno=%d consecutive=%u running=%d",
-            errno, consecutive_socket_errors + 1U, running_.load() ? 1 : 0);
+            errno, consecutive_socket_errors + 1U,
+            running_.load() ? 1 : 0);
         if (++consecutive_socket_errors < 3U) {
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
           continue;
         }
         break;
       }
+
       consecutive_socket_errors = 0;
       vfdual::VideoFragment fragment;
-      if (!vfdual::decode_video_packet(std::span<const std::byte>(datagram.data(), static_cast<std::size_t>(received)), fragment)) {
+      if (!vfdual::decode_video_packet(
+              std::span<const std::byte>(
+                  datagram.data(), static_cast<std::size_t>(received)),
+              fragment)) {
         ++metrics_.rejected_datagrams;
         continue;
       }
+
       const auto source_decision = source_session_.observe(
           sender.sin_addr.s_addr, sender.sin_port, now_us);
-      if (source_decision == vfdual_android::ReceiverSourceDecision::reject_foreign) {
+      if (source_decision ==
+          vfdual_android::ReceiverSourceDecision::reject_foreign) {
         ++metrics_.foreign_source_datagrams;
         continue;
       }
       const bool source_port_restarted = source_decision ==
           vfdual_android::ReceiverSourceDecision::restart_source_port;
-      if (source_port_restarted) {
-        ++metrics_.source_changes;
-        idr_destination_ = sender;
-        idr_destination_.sin_port = htons(kIdrRequestPort);
-        idr_destination_ready_ = true;
-        reassembler = vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
-        recovery_policy_.reset();
-        require_reference_sync();
-        const bool restarted =
-            vfdual_android::decoder().restart_after_stream_discontinuity();
-        if (!restarted) {
-          ++metrics_.source_restart_failures;
-          __android_log_print(
-              ANDROID_LOG_ERROR, kTag,
-              "video source port restart scheduling failed; stopping receiver");
-          running_ = false;
-          break;
-        }
-        source_restart_pending = true;
-        __android_log_print(
-            ANDROID_LOG_INFO, kTag,
-            "video source port restart scheduled receiver_running=1 output_enabled=0 idr_deferred=1");
-      }
+      if (source_port_restarted) ++metrics_.source_changes;
+
       ++metrics_.accepted_datagrams;
       metrics_.accepted_bytes += static_cast<std::uint64_t>(received);
       last_accepted_datagram_us = now_us;
@@ -647,80 +725,154 @@ private:
         } else {
           receive_timeout_backoff_available = false;
           metrics_.last_socket_errno = errno;
-          __android_log_print(ANDROID_LOG_ERROR, kTag,
-              "video receiver active timeout restore failed errno=%d", errno);
         }
       }
       idr_destination_ = sender;
       idr_destination_.sin_port = htons(kIdrRequestPort);
       idr_destination_ready_ = true;
-      if (source_restart_pending) continue;
 
+      const auto epoch_decision =
+          epoch_session.observe(fragment.identity.stream_epoch);
+      if (epoch_decision == vfdual::ReceiverEpochDecision::invalid) {
+        ++metrics_.rejected_datagrams;
+        continue;
+      }
+      if (epoch_decision == vfdual::ReceiverEpochDecision::retired) {
+        ++metrics_.retired_epoch_datagrams;
+        continue;
+      }
+
+      if (epoch_decision == vfdual::ReceiverEpochDecision::candidate) {
+        const std::uint64_t candidate_epoch = fragment.identity.stream_epoch;
+        if (candidate_reassembler_epoch != candidate_epoch) {
+          rebuild_candidate_reassembler(candidate_epoch);
+          pending_candidate_idr.reset();
+        }
+        const std::uint64_t losses_before =
+            candidate_reassembler.incomplete_access_unit_losses();
+        auto candidate = candidate_reassembler.push(
+            std::move(fragment), now_us);
+        (void)candidate_reassembler.discard_expired(
+            now_us, kAccessUnitReassemblyTtlUs);
+        const bool candidate_lost =
+            candidate_reassembler.incomplete_access_unit_losses() !=
+            losses_before;
+        if (candidate_lost) {
+          ++metrics_.candidate_epoch_rejections;
+          rebuild_candidate_reassembler(candidate_epoch);
+          (void)request_idr(
+              socket, now_us, true, false,
+              /*invalidate_active_reference=*/false);
+          continue;
+        }
+        if (!candidate.has_value()) continue;
+        const bool complete_real_idr =
+            !candidate->repeated_content &&
+            vfdual::h264_access_unit_contains_idr(candidate->bytes);
+        if (!complete_real_idr) {
+          ++metrics_.candidate_epoch_rejections;
+          rebuild_candidate_reassembler(candidate_epoch);
+          (void)request_idr(
+              socket, now_us, true, false,
+              /*invalidate_active_reference=*/false);
+          continue;
+        }
+
+        if (!epoch_session.active_epoch().has_value()) {
+          if (!epoch_session.commit_candidate(candidate_epoch, true)) {
+            ++metrics_.candidate_epoch_rejections;
+            continue;
+          }
+          rebuild_active_reassembler();
+          recovery_policy_.reset();
+          require_reference_sync();
+          const CompletedSubmission submission =
+              submit_completed_access_unit(*candidate, now_us);
+          if (!submission.accepted) {
+            running_ = false;
+            break;
+          }
+          continue;
+        }
+
+        pending_candidate_idr = std::move(candidate);
+        if (!source_restart_pending) {
+          require_reference_sync();
+          if (!vfdual_android::decoder().restart_after_stream_discontinuity()) {
+            ++metrics_.source_restart_failures;
+            running_ = false;
+            break;
+          }
+          source_restart_pending = true;
+          decoder_restart_ready = false;
+        }
+        if (!commit_restarted_candidate(now_us)) {
+          running_ = false;
+          break;
+        }
+        continue;
+      }
+
+      // Active epoch. During MediaCodec replacement every compressed frame is
+      // rejected; only the newest candidate IDR may reopen the pipeline.
+      if (source_restart_pending) continue;
       const std::uint64_t reassembly_losses_before =
-          reassembler.incomplete_access_unit_losses();
-      auto completed = reassembler.push(std::move(fragment), now_us);
-      // IDR access units are much larger than P frames (roughly 100 UDP
-      // fragments on this host). Keep a short but realistic CAT6 window so a
-      // complete random-access frame is not discarded mid-reassembly.
+          active_reassembler.incomplete_access_unit_losses();
+      auto completed = active_reassembler.push(std::move(fragment), now_us);
       const std::size_t expired_access_units =
-          reassembler.discard_expired(now_us, kAccessUnitReassemblyTtlUs);
-      const std::uint64_t reassembly_losses_after =
-          reassembler.incomplete_access_unit_losses();
+          active_reassembler.discard_expired(
+              now_us, kAccessUnitReassemblyTtlUs);
       const std::uint64_t reassembly_losses =
-          reassembly_losses_after - reassembly_losses_before;
+          active_reassembler.incomplete_access_unit_losses() -
+          reassembly_losses_before;
       const bool reassembly_lost = reassembly_losses != 0U;
       if (reassembly_lost) {
         const std::uint64_t dependent_flushes =
-            static_cast<std::uint64_t>(reassembler.inflight_frame_count()) +
+            static_cast<std::uint64_t>(
+                active_reassembler.inflight_frame_count()) +
             (completed.has_value() ? 1U : 0U);
         metrics_.reassembly_expirations += expired_access_units;
         metrics_.reassembly_incomplete_losses += reassembly_losses;
         metrics_.reassembly_dependent_flushes += dependent_flushes;
-        metrics_.dropped_access_units +=
-            reassembly_losses + dependent_flushes;
+        metrics_.dropped_access_units += reassembly_losses + dependent_flushes;
         require_reference_sync();
         completed.reset();
-        reassembler =
-            vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
+        rebuild_active_reassembler();
       }
-      bool accepted = false;
+
+      bool fresh_content_accepted = false;
       bool submission_failed = false;
       bool fatal_decoder_failure = false;
       while (completed.has_value()) {
         const CompletedSubmission submission =
             submit_completed_access_unit(*completed, now_us);
-        accepted = accepted || submission.accepted;
+        fresh_content_accepted = fresh_content_accepted ||
+            (submission.accepted && submission.content_updated);
         submission_failed = submission_failed || !submission.accepted;
-        fatal_decoder_failure =
-            fatal_decoder_failure || submission.fatal;
+        fatal_decoder_failure = fatal_decoder_failure || submission.fatal;
         if (!submission.accepted) break;
-        completed = reassembler.pop_completed();
+        completed = active_reassembler.pop_completed();
       }
       if (fatal_decoder_failure) {
-        __android_log_print(
-            ANDROID_LOG_ERROR, kTag,
-            "video receiver stopping after fatal Java MediaCodec failure");
         running_ = false;
         break;
       }
       if (submission_failed) {
         const std::uint64_t dependent_flushes =
-            static_cast<std::uint64_t>(reassembler.inflight_frame_count());
+            static_cast<std::uint64_t>(
+                active_reassembler.inflight_frame_count());
         metrics_.reference_resync_dependent_flushes += dependent_flushes;
         metrics_.dropped_access_units += dependent_flushes;
-        reassembler =
-            vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
+        rebuild_active_reassembler();
       }
-      if (!source_restart_pending &&
-          recovery_policy_.observe_fragment(
-              now_us, accepted, source_port_restarted,
+      if (recovery_policy_.observe_fragment(
+              now_us, fresh_content_accepted, source_port_restarted,
               reassembly_lost || submission_failed)) {
         const auto pending_flushes = static_cast<std::uint64_t>(
-            reassembler.inflight_frame_count());
+            active_reassembler.inflight_frame_count());
         metrics_.reference_resync_dependent_flushes += pending_flushes;
         metrics_.dropped_access_units += pending_flushes;
-        reassembler =
-            vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
+        rebuild_active_reassembler();
         (void)request_idr(socket, now_us, true, false);
       }
     }

@@ -1,0 +1,26 @@
+{
+  "schema": "visionforge.essential-ignored-assets.v1",
+  "reason": "These complete runtime/offline asset trees were present in the byte-verified baseline but are intentionally ignored by Git; the final package retains them.",
+  "trees": [
+    {
+      "path": "android_inference_benchmark/app/src/main/jniLibs",
+      "file_count": 11,
+      "logical_bytes": 119546520
+    },
+    {
+      "path": "android_inference_benchmark/app/src/main/assets/qnn",
+      "file_count": 6,
+      "logical_bytes": 47670268
+    },
+    {
+      "path": "security-defense/vendor",
+      "file_count": 1739,
+      "logical_bytes": 10060720
+    },
+    {
+      "path": "server/visionforge-platform/deploy/xianyu-fulfillment/upstream",
+      "file_count": 119,
+      "logical_bytes": 6996585
+    }
+  ]
+}

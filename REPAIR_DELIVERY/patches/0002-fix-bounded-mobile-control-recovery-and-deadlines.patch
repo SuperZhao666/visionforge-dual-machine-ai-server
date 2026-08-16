@@ -1,0 +1,2771 @@
+From c02d6ee25255be68cd2cef933ded590903a33767 Mon Sep 17 00:00:00 2001
+From: OpenAI Repair Assistant <repair-assistant@local.invalid>
+Date: Sat, 15 Aug 2026 07:27:34 +0000
+Subject: [PATCH 2/3] fix bounded mobile control recovery and deadlines
+
+---
+ android_inference_benchmark/app/build.gradle  |   2 +
+ .../app/src/main/cpp/ControlBlockerState.hpp  | 123 +++++++
+ .../src/main/cpp/ControlBlockerStateTests.cpp |  32 ++
+ .../app/src/main/cpp/DualMachineReceiver.cpp  |  43 ++-
+ .../app/src/main/cpp/MakcuMoveBridge.cpp      | 307 ++++++++++++++++--
+ .../app/src/main/cpp/MakcuOutputGate.hpp      | 117 ++++++-
+ .../app/src/main/cpp/MakcuOutputGateTests.cpp |  36 +-
+ .../app/src/main/cpp/MobileControlCore.cpp    |  33 ++
+ .../app/src/main/cpp/MobileControlCore.hpp    |  12 +
+ .../src/main/cpp/MobileControlCoreTests.cpp   |   4 +-
+ .../app/src/main/cpp/MobileMotionPlanner.cpp  |  12 +
+ .../app/src/main/cpp/MobileMotionPlanner.hpp  |   2 +
+ .../src/main/cpp/MobileMotionPlannerTests.cpp |   3 +-
+ .../src/main/cpp/ReceiverRecoveryPolicy.cpp   |   4 +-
+ .../src/main/cpp/ReceiverRecoveryPolicy.hpp   |  11 +-
+ .../main/cpp/ReceiverRecoveryPolicyTests.cpp  |  16 +
+ .../AndroidBluetoothHidDeviceAdapter.java     | 117 +++++--
+ .../BluetoothHidMouseTransportCore.java       | 108 +++++-
+ .../BluetoothHidOutputFailClosedPolicy.java   |   4 +
+ .../ControlMoveDeadline.java                  |  58 ++++
+ .../ControlOutputMoveDispatcher.java          |   9 +-
+ .../ControlOutputMoveSink.java                |   8 +-
+ .../MakcuPendingMoveSlot.java                 |  14 +
+ .../MakcuSerialController.java                | 107 +++++-
+ .../MobileControlHealthSummary.java           |  24 ++
+ .../MobileControlRuntime.java                 |   1 +
+ .../inferencebenchmark/QnnHtpBridge.java      |   9 +-
+ ...luetoothHidMouseTransportCoreSelfTest.java |  81 +++++
+ .../ControlMoveDeadlineSelfTest.java          |  34 ++
+ .../MakcuDeliveryGateSelfTest.java            |  20 +-
+ .../MakcuJniContractSelfTest.java             |  48 ++-
+ .../MobileControlHealthSummarySelfTest.java   |  24 +-
+ .../MobileRuntimeSnapshotSelfTest.java        |   1 +
+ dual_machine_runtime/CMakeLists.txt           |   8 +
+ 34 files changed, 1306 insertions(+), 126 deletions(-)
+ create mode 100644 android_inference_benchmark/app/src/main/cpp/ControlBlockerState.hpp
+ create mode 100644 android_inference_benchmark/app/src/main/cpp/ControlBlockerStateTests.cpp
+ create mode 100644 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlMoveDeadline.java
+ create mode 100644 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/ControlMoveDeadlineSelfTest.java
+
+diff --git a/android_inference_benchmark/app/build.gradle b/android_inference_benchmark/app/build.gradle
+index d2ef1b8..98955bc 100644
+--- a/android_inference_benchmark/app/build.gradle
++++ b/android_inference_benchmark/app/build.gradle
+@@ -1250,6 +1250,7 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
+             'src/main/java/com/visionforge/inferencebenchmark/NativeDetectionTracePort.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileDetectionTraceCoordinator.java',
+             'src/main/java/com/visionforge/inferencebenchmark/ControlOutputTransport.java',
++            'src/main/java/com/visionforge/inferencebenchmark/ControlMoveDeadline.java',
+             'src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveSink.java',
+             'src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveDispatcher.java',
+             'src/main/java/com/visionforge/inferencebenchmark/BluetoothHidOutputFailClosedPolicy.java',
+@@ -1319,6 +1320,7 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
+              'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonLeaseStateSelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonNotificationDispatcherSelfTest.java',
+              'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonWorkerRecoveryPolicySelfTest.java',
++            'src/test/java/com/visionforge/inferencebenchmark/ControlMoveDeadlineSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCoreSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidPendingOperationPolicySelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidDebugMoveProbePolicySelfTest.java',
+diff --git a/android_inference_benchmark/app/src/main/cpp/ControlBlockerState.hpp b/android_inference_benchmark/app/src/main/cpp/ControlBlockerState.hpp
+new file mode 100644
+index 0000000..679269d
+--- /dev/null
++++ b/android_inference_benchmark/app/src/main/cpp/ControlBlockerState.hpp
+@@ -0,0 +1,123 @@
++#pragma once
++
++#include <cstdint>
++#include <mutex>
++
++namespace vfdual_android {
++
++enum class ControlBlockerReason : std::uint8_t {
++  initializing,
++  runnable,
++  stale_stream_generation,
++  ticket_pending,
++  ticket_deadline_expired,
++  post_ack_visibility,
++  post_ack_visibility_timeout,
++  no_valid_target,
++  detected_not_control_eligible,
++  target_held,
++  switch_pending,
++  deadzone,
++  response_guard,
++  device_resolution_guard,
++  settle_guard,
++  direction_flip,
++  motion_invalid,
++  output_disabled,
++  dispatch_unavailable,
++  dispatch_rejected,
++  ticket_begin_failed,
++  transport_failure,
++  recovery_suspended,
++  user_disabled,
++};
++
++[[nodiscard]] constexpr const char* control_blocker_reason_name(
++    ControlBlockerReason reason) noexcept {
++  switch (reason) {
++    case ControlBlockerReason::initializing: return "initializing";
++    case ControlBlockerReason::runnable: return "runnable";
++    case ControlBlockerReason::stale_stream_generation:
++      return "stale_stream_generation";
++    case ControlBlockerReason::ticket_pending: return "ticket_pending";
++    case ControlBlockerReason::ticket_deadline_expired:
++      return "ticket_deadline_expired";
++    case ControlBlockerReason::post_ack_visibility:
++      return "post_ack_visibility";
++    case ControlBlockerReason::post_ack_visibility_timeout:
++      return "post_ack_visibility_timeout";
++    case ControlBlockerReason::no_valid_target: return "no_valid_target";
++    case ControlBlockerReason::detected_not_control_eligible:
++      return "detected_not_control_eligible";
++    case ControlBlockerReason::target_held: return "target_held";
++    case ControlBlockerReason::switch_pending: return "switch_pending";
++    case ControlBlockerReason::deadzone: return "deadzone";
++    case ControlBlockerReason::response_guard: return "response_guard";
++    case ControlBlockerReason::device_resolution_guard:
++      return "device_resolution_guard";
++    case ControlBlockerReason::settle_guard: return "settle_guard";
++    case ControlBlockerReason::direction_flip: return "direction_flip";
++    case ControlBlockerReason::motion_invalid: return "motion_invalid";
++    case ControlBlockerReason::output_disabled: return "output_disabled";
++    case ControlBlockerReason::dispatch_unavailable:
++      return "dispatch_unavailable";
++    case ControlBlockerReason::dispatch_rejected: return "dispatch_rejected";
++    case ControlBlockerReason::ticket_begin_failed:
++      return "ticket_begin_failed";
++    case ControlBlockerReason::transport_failure: return "transport_failure";
++    case ControlBlockerReason::recovery_suspended:
++      return "recovery_suspended";
++    case ControlBlockerReason::user_disabled: return "user_disabled";
++  }
++  return "unknown";
++}
++
++struct ControlBlockerSnapshot final {
++  ControlBlockerReason reason{ControlBlockerReason::initializing};
++  std::uint64_t since_us{};
++  std::uint64_t transition_id{};
++};
++
++/**
++ * Low-cardinality current-state diagnostic for the control hot path.
++ *
++ * Counters answer what happened in the past; this state answers why the current
++ * fresh frame cannot produce a move. Transitions are serialized so report()
++ * never combines a new reason with the previous reason's timestamp.
++ */
++class ControlBlockerState final {
++public:
++  void update(ControlBlockerReason reason, std::uint64_t now_us) noexcept {
++    std::scoped_lock lock(mutex_);
++    if (reason_ == reason) return;
++    reason_ = reason;
++    since_us_ = now_us;
++    ++transition_id_;
++    if (transition_id_ == 0U) ++transition_id_;
++  }
++
++  [[nodiscard]] ControlBlockerSnapshot snapshot() const noexcept {
++    std::scoped_lock lock(mutex_);
++    return {
++        .reason = reason_,
++        .since_us = since_us_,
++        .transition_id = transition_id_,
++    };
++  }
++
++  void reset(std::uint64_t now_us) noexcept {
++    std::scoped_lock lock(mutex_);
++    reason_ = ControlBlockerReason::initializing;
++    since_us_ = now_us;
++    ++transition_id_;
++    if (transition_id_ == 0U) ++transition_id_;
++  }
++
++private:
++  mutable std::mutex mutex_;
++  ControlBlockerReason reason_{ControlBlockerReason::initializing};
++  std::uint64_t since_us_{};
++  std::uint64_t transition_id_{};
++};
++
++}  // namespace vfdual_android
+diff --git a/android_inference_benchmark/app/src/main/cpp/ControlBlockerStateTests.cpp b/android_inference_benchmark/app/src/main/cpp/ControlBlockerStateTests.cpp
+new file mode 100644
+index 0000000..d6f791f
+--- /dev/null
++++ b/android_inference_benchmark/app/src/main/cpp/ControlBlockerStateTests.cpp
+@@ -0,0 +1,32 @@
++#include "ControlBlockerState.hpp"
++
++#include <cassert>
++#include <string_view>
++
++int main() {
++  vfdual_android::ControlBlockerState state;
++  auto snapshot = state.snapshot();
++  assert(snapshot.reason ==
++         vfdual_android::ControlBlockerReason::initializing);
++  assert(snapshot.transition_id == 0U);
++
++  state.update(vfdual_android::ControlBlockerReason::runnable, 100U);
++  snapshot = state.snapshot();
++  assert(snapshot.reason == vfdual_android::ControlBlockerReason::runnable);
++  assert(snapshot.since_us == 100U);
++  assert(snapshot.transition_id == 1U);
++
++  state.update(vfdual_android::ControlBlockerReason::runnable, 200U);
++  auto unchanged = state.snapshot();
++  assert(unchanged.since_us == 100U);
++  assert(unchanged.transition_id == 1U);
++
++  state.update(
++      vfdual_android::ControlBlockerReason::post_ack_visibility, 300U);
++  snapshot = state.snapshot();
++  assert(snapshot.since_us == 300U);
++  assert(snapshot.transition_id == 2U);
++  assert(std::string_view(vfdual_android::control_blocker_reason_name(
++             snapshot.reason)) == "post_ack_visibility");
++  return 0;
++}
+diff --git a/android_inference_benchmark/app/src/main/cpp/DualMachineReceiver.cpp b/android_inference_benchmark/app/src/main/cpp/DualMachineReceiver.cpp
+index 59659d5..97c9b4c 100644
+--- a/android_inference_benchmark/app/src/main/cpp/DualMachineReceiver.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/DualMachineReceiver.cpp
+@@ -82,6 +82,8 @@ struct ReceiverMetrics {
+   std::atomic_uint64_t reassembled_access_units{};
+   std::atomic_uint64_t decoder_accepted_access_units{};
+   std::atomic_uint64_t completed_access_units{};
++  std::atomic_uint64_t fresh_content_access_units{};
++  std::atomic_uint64_t non_actionable_completed_access_units{};
+   std::atomic_uint64_t repeated_content_access_units{};
+   std::atomic_uint64_t resync_rejected_repeats{};
+   std::atomic_uint64_t resync_actionable_acceptances{};
+@@ -107,6 +109,7 @@ struct ReceiverMetrics {
+   std::atomic_int64_t last_logical_frame_sequence{-1};
+   std::atomic_uint64_t last_reassembled_access_unit_us{};
+   std::atomic_uint64_t last_completed_access_unit_us{};
++  std::atomic_uint64_t last_fresh_content_access_unit_us{};
+ 
+   void reset() noexcept {
+     accepted_datagrams = 0;
+@@ -115,6 +118,8 @@ struct ReceiverMetrics {
+     reassembled_access_units = 0;
+     decoder_accepted_access_units = 0;
+     completed_access_units = 0;
++    fresh_content_access_units = 0;
++    non_actionable_completed_access_units = 0;
+     repeated_content_access_units = 0;
+     resync_rejected_repeats = 0;
+     resync_actionable_acceptances = 0;
+@@ -140,6 +145,7 @@ struct ReceiverMetrics {
+     last_logical_frame_sequence = -1;
+     last_reassembled_access_unit_us = 0;
+     last_completed_access_unit_us = 0;
++    last_fresh_content_access_unit_us = 0;
+   }
+ };
+ 
+@@ -324,12 +330,17 @@ public:
+     std::scoped_lock lock(mutex_);
+     const std::uint64_t last_reassembled_us = metrics_.last_reassembled_access_unit_us.load();
+     const std::uint64_t last_completed_us = metrics_.last_completed_access_unit_us.load();
++    const std::uint64_t last_fresh_content_us =
++        metrics_.last_fresh_content_access_unit_us.load();
+     const std::uint64_t reassembled_age_ms = last_reassembled_us == 0
+         ? std::numeric_limits<std::uint64_t>::max()
+         : (monotonic_microseconds() - last_reassembled_us) / 1'000U;
+     const std::uint64_t age_ms = last_completed_us == 0
+         ? std::numeric_limits<std::uint64_t>::max()
+         : (monotonic_microseconds() - last_completed_us) / 1'000U;
++    const std::uint64_t fresh_content_age_ms = last_fresh_content_us == 0
++        ? std::numeric_limits<std::uint64_t>::max()
++        : (monotonic_microseconds() - last_fresh_content_us) / 1'000U;
+     std::ostringstream result;
+     result << "UDP receiver running=" << running_
+            << " bind_ipv4=" << local_ipv4_
+@@ -347,6 +358,10 @@ public:
+            << " reassembled_access_units=" << metrics_.reassembled_access_units
+            << " decoder_accepted_access_units=" << metrics_.decoder_accepted_access_units
+            << " completed_access_units=" << metrics_.completed_access_units
++           << " fresh_content_access_units="
++           << metrics_.fresh_content_access_units
++           << " non_actionable_completed_access_units="
++           << metrics_.non_actionable_completed_access_units
+            << " repeated_content_access_units="
+            << metrics_.repeated_content_access_units
+            << " resync_rejected_repeats="
+@@ -384,6 +399,12 @@ public:
+     result << " last_completed_access_unit_age_ms=";
+     if (age_ms == std::numeric_limits<std::uint64_t>::max()) result << -1;
+     else result << age_ms;
++    result << " last_fresh_content_access_unit_age_ms=";
++    if (fresh_content_age_ms == std::numeric_limits<std::uint64_t>::max()) {
++      result << -1;
++    } else {
++      result << fresh_content_age_ms;
++    }
+     return result.str();
+   }
+ 
+@@ -394,6 +415,7 @@ public:
+ private:
+   struct CompletedSubmission final {
+     bool accepted{};
++    bool content_updated{};
+     bool fatal{};
+   };
+ 
+@@ -466,6 +488,7 @@ private:
+       if (restart_timed_out) record_source_restart_timeout();
+       return {
+           .accepted = false,
++          .content_updated = false,
+           .fatal = vfdual_android::decoder().has_fatal_decoder_failure() ||
+               restart_timed_out,
+       };
+@@ -473,9 +496,20 @@ private:
+ 
+     ++metrics_.decoder_accepted_access_units;
+     ++metrics_.completed_access_units;
++    if (admission.content_updated) {
++      ++metrics_.fresh_content_access_units;
++      metrics_.last_fresh_content_access_unit_us.store(
++          monotonic_microseconds());
++    } else {
++      ++metrics_.non_actionable_completed_access_units;
++    }
+     if (admission.resync_unlock) ++metrics_.resync_actionable_acceptances;
+     metrics_.last_completed_access_unit_us.store(monotonic_microseconds());
+-    return {.accepted = true, .fatal = false};
++    return {
++        .accepted = true,
++        .content_updated = admission.content_updated,
++        .fatal = false,
++    };
+   }
+ 
+   [[nodiscard]] bool request_idr(
+@@ -683,13 +717,14 @@ private:
+         reassembler =
+             vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
+       }
+-      bool accepted = false;
++      bool fresh_content_accepted = false;
+       bool submission_failed = false;
+       bool fatal_decoder_failure = false;
+       while (completed.has_value()) {
+         const CompletedSubmission submission =
+             submit_completed_access_unit(*completed, now_us);
+-        accepted = accepted || submission.accepted;
++        fresh_content_accepted = fresh_content_accepted ||
++            (submission.accepted && submission.content_updated);
+         submission_failed = submission_failed || !submission.accepted;
+         fatal_decoder_failure =
+             fatal_decoder_failure || submission.fatal;
+@@ -713,7 +748,7 @@ private:
+       }
+       if (!source_restart_pending &&
+           recovery_policy_.observe_fragment(
+-              now_us, accepted, source_port_restarted,
++              now_us, fresh_content_accepted, source_port_restarted,
+               reassembly_lost || submission_failed)) {
+         const auto pending_flushes = static_cast<std::uint64_t>(
+             reassembler.inflight_frame_count());
+diff --git a/android_inference_benchmark/app/src/main/cpp/MakcuMoveBridge.cpp b/android_inference_benchmark/app/src/main/cpp/MakcuMoveBridge.cpp
+index a738f68..0f418bf 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MakcuMoveBridge.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/MakcuMoveBridge.cpp
+@@ -1,5 +1,6 @@
+ #include "MakcuMoveBridge.hpp"
+ 
++#include "ControlBlockerState.hpp"
+ #include "MobileControlCore.hpp"
+ #include "MakcuOutputGate.hpp"
+ 
+@@ -19,7 +20,15 @@ constexpr std::int32_t kMinimumAxisDelta = 1;
+ constexpr std::int32_t kMaximumAxisDelta = 127;
+ constexpr std::uint32_t kMinimumSwitchConfirmationMs = 10U;
+ constexpr std::uint32_t kMaximumSwitchConfirmationMs = 100U;
+-constexpr std::uint64_t kMaximumMoveCompletionAgeUs = 100'000U;
++// Java delivery owns a bounded 25 ms USB write and 50 ms exact-response wait.
++// Include executor/JNI/USB scheduling headroom while keeping a short,
++// fail-closed end-to-end command lifetime. The remaining budget is forwarded
++// to Java so both layers enforce the same terminal deadline.
++constexpr std::uint64_t kMaximumMoveCompletionAgeUs = 250'000U;
++// Receiver fresh-content recovery requests an IDR after 150 ms and backs off
++// from 500 ms. Two seconds admits bounded recovery without allowing an ACK
++// barrier to remain armed for the lifetime of the process.
++constexpr std::uint64_t kMaximumPostAckVisibilityAgeUs = 2'000'000U;
+ 
+ std::mutex g_bridge_mutex;
+ std::mutex g_control_mutex;
+@@ -57,6 +66,16 @@ std::atomic_uint64_t g_bluetooth_hid_api_acceptances{};
+ std::atomic_uint64_t g_stale_bluetooth_hid_api_acceptances{};
+ std::atomic_uint64_t g_last_bluetooth_hid_api_acceptance_us{};
+ std::atomic_uint64_t g_post_completion_visibility_suppressed{};
++std::atomic_uint64_t g_post_completion_visibility_timeouts{};
++std::atomic_uint64_t g_no_move_suppressed{};
++std::atomic_uint64_t g_response_guard_suppressed{};
++std::atomic_uint64_t g_device_resolution_suppressed{};
++std::atomic_uint64_t g_settle_guard_suppressed{};
++std::atomic_uint64_t g_direction_flip_suppressed{};
++std::atomic_uint64_t g_motion_invalid_suppressed{};
++std::atomic_uint64_t g_detected_not_control_eligible_suppressed{};
++std::atomic_uint64_t g_last_detection_count{};
++std::atomic<float> g_last_max_detection_confidence{};
+ std::atomic<std::int32_t> g_last_offered_delta_x{};
+ std::atomic<std::int32_t> g_last_offered_delta_y{};
+ std::atomic<std::int32_t> g_last_nonzero_offered_direction_x{};
+@@ -75,6 +94,7 @@ std::atomic_bool g_java_bridge_ready{};
+ MakcuOutputGate g_output_gate{};
+ MakcuMoveCommitGate g_move_commit_gate{};
+ MakcuMoveVisibilityGate g_move_visibility_gate{};
++ControlBlockerState g_control_blocker{};
+ 
+ enum class JavaDeliveryCall {
+   suspend,
+@@ -88,6 +108,83 @@ std::uint64_t monotonic_microseconds() noexcept {
+           std::chrono::steady_clock::now().time_since_epoch()).count());
+ }
+ 
++void update_control_blocker(
++    ControlBlockerReason reason, std::uint64_t now_us = 0U) noexcept {
++  g_control_blocker.update(
++      reason, now_us == 0U ? monotonic_microseconds() : now_us);
++}
++
++ControlBlockerReason blocker_for_control_output(
++    const MobileControlOutput& output) noexcept {
++  switch (output.suppression_reason) {
++    case ControlSuppressionReason::none:
++      return output.has_move()
++          ? ControlBlockerReason::runnable
++          : ControlBlockerReason::response_guard;
++    case ControlSuppressionReason::invalid_time:
++    case ControlSuppressionReason::stale_frame:
++    case ControlSuppressionReason::non_monotonic_frame:
++    case ControlSuppressionReason::motion_invalid:
++      return ControlBlockerReason::motion_invalid;
++    case ControlSuppressionReason::no_valid_target:
++      return ControlBlockerReason::no_valid_target;
++    case ControlSuppressionReason::detected_not_control_eligible:
++      return ControlBlockerReason::detected_not_control_eligible;
++    case ControlSuppressionReason::lock_held:
++      return ControlBlockerReason::target_held;
++    case ControlSuppressionReason::switch_pending:
++      return ControlBlockerReason::switch_pending;
++    case ControlSuppressionReason::deadzone:
++      return ControlBlockerReason::deadzone;
++    case ControlSuppressionReason::settle_guard:
++      return ControlBlockerReason::settle_guard;
++    case ControlSuppressionReason::response_guard:
++      return ControlBlockerReason::response_guard;
++    case ControlSuppressionReason::device_resolution_guard:
++      return ControlBlockerReason::device_resolution_guard;
++    case ControlSuppressionReason::direction_flip:
++      return ControlBlockerReason::direction_flip;
++  }
++  return ControlBlockerReason::motion_invalid;
++}
++
++void observe_no_move(
++    const MobileControlOutput& output, std::uint64_t now_us) noexcept {
++  ++g_no_move_suppressed;
++  switch (output.suppression_reason) {
++    case ControlSuppressionReason::deadzone:
++      ++g_deadzone_suppressed;
++      break;
++    case ControlSuppressionReason::response_guard:
++      ++g_response_guard_suppressed;
++      break;
++    case ControlSuppressionReason::device_resolution_guard:
++      ++g_device_resolution_suppressed;
++      break;
++    case ControlSuppressionReason::settle_guard:
++      ++g_settle_guard_suppressed;
++      break;
++    case ControlSuppressionReason::direction_flip:
++      ++g_direction_flip_suppressed;
++      break;
++    case ControlSuppressionReason::invalid_time:
++    case ControlSuppressionReason::stale_frame:
++    case ControlSuppressionReason::non_monotonic_frame:
++    case ControlSuppressionReason::motion_invalid:
++      ++g_motion_invalid_suppressed;
++      break;
++    case ControlSuppressionReason::none:
++    case ControlSuppressionReason::no_valid_target:
++    case ControlSuppressionReason::lock_held:
++    case ControlSuppressionReason::switch_pending:
++      break;
++    case ControlSuppressionReason::detected_not_control_eligible:
++      ++g_detected_not_control_eligible_suppressed;
++      break;
++  }
++  update_control_blocker(blocker_for_control_output(output), now_us);
++}
++
+ std::uint64_t absolute_counts(std::int32_t delta) noexcept {
+   const std::int64_t widened = delta;
+   return static_cast<std::uint64_t>(widened < 0 ? -widened : widened);
+@@ -152,6 +249,17 @@ void observe_matching_device_ack() noexcept {
+       g_last_device_ack_interval_us);
+ }
+ 
++std::uint64_t remaining_move_budget_us(
++    std::uint64_t started_at_us, std::uint64_t now_us) noexcept {
++  if (started_at_us == 0U || now_us < started_at_us) {
++    return kMaximumMoveCompletionAgeUs;
++  }
++  const std::uint64_t elapsed = now_us - started_at_us;
++  return elapsed >= kMaximumMoveCompletionAgeUs
++      ? 0U
++      : kMaximumMoveCompletionAgeUs - elapsed;
++}
++
+ void reset_move_telemetry_continuity() noexcept {
+   g_last_offered_delta_x.store(0, std::memory_order_relaxed);
+   g_last_offered_delta_y.store(0, std::memory_order_relaxed);
+@@ -239,7 +347,10 @@ bool invoke_java_delivery_gate(JavaDeliveryCall call, std::uint64_t generation =
+   return call_succeeded;
+ }
+ 
+-void fail_closed_native_state(MakcuStreamCloseScope scope) noexcept {
++void fail_closed_native_state(
++    MakcuStreamCloseScope scope,
++    ControlBlockerReason blocker =
++        ControlBlockerReason::transport_failure) noexcept {
+   g_stream_generation_gate.fail_closed(scope);
+   if (scope == MakcuStreamCloseScope::delivery_failure) {
+     ++g_delivery_fail_close_requests;
+@@ -254,12 +365,18 @@ void fail_closed_native_state(MakcuStreamCloseScope scope) noexcept {
+     g_control_core.reset();
+   }
+   reset_move_telemetry_continuity();
++  update_control_blocker(
++      scope == MakcuStreamCloseScope::stream_lifecycle
++          ? ControlBlockerReason::user_disabled
++          : blocker);
+ }
+ 
+ void fail_closed_bridge(
+     MakcuStreamCloseScope scope =
+-        MakcuStreamCloseScope::delivery_failure) noexcept {
+-  fail_closed_native_state(scope);
++        MakcuStreamCloseScope::delivery_failure,
++    ControlBlockerReason blocker =
++        ControlBlockerReason::transport_failure) noexcept {
++  fail_closed_native_state(scope, blocker);
+   static_cast<void>(invoke_java_delivery_gate(JavaDeliveryCall::fail_closed));
+ }
+ 
+@@ -276,12 +393,16 @@ bool complete_matching_move(
+     ++stale_counter;
+     return false;
+   }
++  update_control_blocker(
++      ControlBlockerReason::post_ack_visibility, acknowledged_at_us);
+   return true;
+ }
+ }  // namespace
+ 
+ bool bind_makcu_move_bridge(JNIEnv* environment, jclass controller_class) {
+-  fail_closed_bridge();
++  fail_closed_bridge(
++      MakcuStreamCloseScope::delivery_failure,
++      ControlBlockerReason::initializing);
+   g_java_bridge_ready.store(false, std::memory_order_release);
+   if (environment == nullptr || controller_class == nullptr || environment->ExceptionCheck()) {
+     clear_jni_exception(environment);
+@@ -304,7 +425,8 @@ bool bind_makcu_move_bridge(JNIEnv* environment, jclass controller_class) {
+   }
+ 
+   const jmethodID candidate_offer =
+-      environment->GetStaticMethodID(candidate_class, "offerNativeMove", "(IIJ)Z");
++      environment->GetStaticMethodID(
++          candidate_class, "offerNativeMove", "(IIJJ)Z");
+   const jmethodID candidate_suspend = environment->ExceptionCheck() ? nullptr
+       : environment->GetStaticMethodID(
+           candidate_class, "suspendNativeDeliveryForRecovery", "(J)Z");
+@@ -502,6 +624,10 @@ bool configure_makcu_control_profile(const MakcuControlProfile& profile) {
+     g_move_visibility_gate.fail_closed();
+   }
+   if (!g_output_gate.set_user_requested(profile.output_enabled)) return false;
++  update_control_blocker(
++      profile.output_enabled
++          ? ControlBlockerReason::runnable
++          : ControlBlockerReason::user_disabled);
+   return true;
+ }
+ 
+@@ -517,6 +643,7 @@ void suspend_makcu_output_for_recovery(std::uint64_t generation) noexcept {
+   std::scoped_lock publish_lock(g_publish_mutex);
+   g_stream_generation_gate.activate(generation);
+   g_output_gate.suspend_for_recovery(generation);
++  update_control_blocker(ControlBlockerReason::recovery_suspended);
+   // Java suspension first closes its offer gate and waits for transport I/O
+   // already in progress. Keep the exact native ticket valid during that wait
+   // so a legitimate final ACK cannot be misclassified as stale and cancel an
+@@ -530,7 +657,11 @@ void suspend_makcu_output_for_recovery(std::uint64_t generation) noexcept {
+     g_control_core.reset();
+   }
+   if (!java_suspended ||
+-      !g_output_gate.recovery_suspended_for(generation)) fail_closed_bridge();
++      !g_output_gate.recovery_suspended_for(generation)) {
++    fail_closed_bridge(
++        MakcuStreamCloseScope::delivery_failure,
++        ControlBlockerReason::transport_failure);
++  }
+ }
+ 
+ bool resume_makcu_output_after_valid_frame(std::uint64_t generation) noexcept {
+@@ -539,8 +670,13 @@ bool resume_makcu_output_after_valid_frame(std::uint64_t generation) noexcept {
+   if (!completion.matched) return false;
+   const bool java_output_enabled =
+       invoke_java_delivery_gate(JavaDeliveryCall::resume, generation);
+-  if (completion.output_enabled && java_output_enabled) return true;
+-  fail_closed_bridge();
++  if (completion.output_enabled && java_output_enabled) {
++    update_control_blocker(ControlBlockerReason::runnable);
++    return true;
++  }
++  fail_closed_bridge(
++      MakcuStreamCloseScope::delivery_failure,
++      ControlBlockerReason::transport_failure);
+   return false;
+ }
+ 
+@@ -560,13 +696,29 @@ void publish_makcu_move_for_detections(
+   std::scoped_lock publish_lock(g_publish_mutex);
+   if (!g_stream_generation_gate.accepts(stream_generation)) {
+     ++g_stale_stream_generation_suppressed;
++    update_control_blocker(
++        ControlBlockerReason::stale_stream_generation, now_us);
+     return;
+   }
+   ++g_processed_frames;
++  g_last_detection_count.store(
++      static_cast<std::uint64_t>(detections.size()),
++      std::memory_order_relaxed);
++  float maximum_detection_confidence = 0.0F;
++  for (const YoloDetection& detection : detections) {
++    if (std::isfinite(detection.confidence)) {
++      maximum_detection_confidence = std::max(
++          maximum_detection_confidence, detection.confidence);
++    }
++  }
++  g_last_max_detection_confidence.store(
++      maximum_detection_confidence, std::memory_order_relaxed);
+   if (g_move_commit_gate.expire_if_older(
+           now_us, kMaximumMoveCompletionAgeUs)) {
+     ++g_move_completion_timeouts;
+-    fail_closed_bridge();
++    fail_closed_bridge(
++        MakcuStreamCloseScope::delivery_failure,
++        ControlBlockerReason::ticket_deadline_expired);
+     return;
+   }
+   if (g_move_commit_gate.pending()) {
+@@ -576,18 +728,31 @@ void publish_makcu_move_for_detections(
+           detections, {frame_sequence, observed_at_us, now_us}));
+     }
+     ++g_move_completion_pending_suppressed;
++    update_control_blocker(ControlBlockerReason::ticket_pending, now_us);
++    return;
++  }
++  const MakcuMoveVisibilityDecision visibility_decision =
++      g_move_visibility_gate.evaluate(
++          frame_sequence, observed_at_us, content_updated, now_us,
++          kMaximumPostAckVisibilityAgeUs);
++  if (visibility_decision == MakcuMoveVisibilityDecision::timed_out) {
++    ++g_post_completion_visibility_timeouts;
++    fail_closed_bridge(
++        MakcuStreamCloseScope::delivery_failure,
++        ControlBlockerReason::post_ack_visibility_timeout);
+     return;
+   }
+-  bool completed_move_became_visible = false;
+-  if (!g_move_visibility_gate.consume_if_visible(
+-          frame_sequence, observed_at_us, content_updated,
+-          &completed_move_became_visible)) {
++  const bool completed_move_became_visible =
++      visibility_decision == MakcuMoveVisibilityDecision::became_visible;
++  if (visibility_decision == MakcuMoveVisibilityDecision::waiting) {
+     {
+       std::scoped_lock lock(g_control_mutex);
+       static_cast<void>(g_control_core.observe_tracking_only(
+           detections, {frame_sequence, observed_at_us, now_us}));
+     }
+     ++g_post_completion_visibility_suppressed;
++    update_control_blocker(
++        ControlBlockerReason::post_ack_visibility, now_us);
+     return;
+   }
+ 
+@@ -605,23 +770,36 @@ void publish_makcu_move_for_detections(
+   if (output.held) ++g_held_targets;
+   if (output.switched) ++g_target_switches;
+   if (!output.has_move()) {
+-    ++g_deadzone_suppressed;
++    observe_no_move(output, now_us);
+     return;
+   }
+   ++g_candidates;
+   if (!g_output_gate.output_enabled()) {
+     ++g_output_disabled_suppressed;
++    update_control_blocker(ControlBlockerReason::output_disabled, now_us);
+     return;
+   }
+   const std::uint64_t ticket =
+       g_move_commit_gate.begin(now_us, frame_sequence);
+   if (ticket == 0U) {
+     ++g_move_completion_pending_suppressed;
++    update_control_blocker(ControlBlockerReason::ticket_begin_failed, now_us);
+     std::scoped_lock lock(g_control_mutex);
+     g_control_core.reset();
+     return;
+   }
+ 
++  const std::uint64_t dispatch_budget_us = remaining_move_budget_us(
++      now_us, monotonic_microseconds());
++  if (dispatch_budget_us == 0U) {
++    static_cast<void>(g_move_commit_gate.complete(ticket));
++    ++g_move_completion_timeouts;
++    fail_closed_bridge(
++        MakcuStreamCloseScope::delivery_failure,
++        ControlBlockerReason::ticket_deadline_expired);
++    return;
++  }
++
+   bool java_offer_accepted = false;
+   bool java_dispatch_completed = false;
+   bool offer_authorized = false;
+@@ -648,7 +826,8 @@ void publish_makcu_move_for_detections(
+     }
+     const jboolean accepted = environment->CallStaticBooleanMethod(
+         g_controller_class, g_offer_move, output.delta_x, output.delta_y,
+-        static_cast<jlong>(ticket));
++        static_cast<jlong>(ticket),
++        static_cast<jlong>(dispatch_budget_us));
+     if (environment->ExceptionCheck()) {
+       environment->ExceptionClear();
+       ++g_java_dispatch_failures;
+@@ -662,6 +841,7 @@ void publish_makcu_move_for_detections(
+   });
+   if (offer_authorized && java_dispatch_completed && java_offer_accepted) {
+     observe_accepted_move(output.delta_x, output.delta_y);
++    update_control_blocker(ControlBlockerReason::ticket_pending, now_us);
+     return;
+   }
+ 
+@@ -672,14 +852,27 @@ void publish_makcu_move_for_detections(
+   }
+   if (!offer_authorized) {
+     ++g_output_disabled_suppressed;
++    update_control_blocker(ControlBlockerReason::output_disabled, now_us);
+     return;
+   }
+-  fail_closed_bridge();
++  fail_closed_bridge(
++      MakcuStreamCloseScope::delivery_failure,
++      java_dispatch_completed
++          ? ControlBlockerReason::dispatch_rejected
++          : ControlBlockerReason::dispatch_unavailable);
+ }
+ 
+ void report_makcu_move_result(
+     std::uint64_t ticket, bool device_acknowledged,
+     std::uint64_t acknowledgement_us) noexcept {
++  if (g_move_commit_gate.expire_if_deadline_reached(
++          monotonic_microseconds(), kMaximumMoveCompletionAgeUs)) {
++    ++g_move_completion_timeouts;
++    fail_closed_bridge(
++        MakcuStreamCloseScope::delivery_failure,
++        ControlBlockerReason::ticket_deadline_expired);
++    return;
++  }
+   if (!device_acknowledged) {
+     // Claim the exact ticket and close native authorization before pending is
+     // cleared. Do not acquire g_publish_mutex here: the serial reader may hold
+@@ -711,6 +904,14 @@ void report_makcu_move_result(
+ 
+ bool report_bluetooth_hid_move_accepted(
+     std::uint64_t ticket, std::uint64_t api_acceptance_us) noexcept {
++  if (g_move_commit_gate.expire_if_deadline_reached(
++          monotonic_microseconds(), kMaximumMoveCompletionAgeUs)) {
++    ++g_move_completion_timeouts;
++    fail_closed_bridge(
++        MakcuStreamCloseScope::delivery_failure,
++        ControlBlockerReason::ticket_deadline_expired);
++    return false;
++  }
+   if (!complete_matching_move(
+           ticket, g_stale_bluetooth_hid_api_acceptances,
+           kPostAcknowledgementAdditionalDelayUs)) {
+@@ -723,6 +924,27 @@ bool report_bluetooth_hid_move_accepted(
+ }
+ 
+ std::string makcu_move_bridge_report() {
++  const std::uint64_t report_now_us = monotonic_microseconds();
++  const MakcuMoveCommitSnapshot commit_snapshot =
++      g_move_commit_gate.snapshot();
++  const MakcuMoveVisibilitySnapshot visibility_snapshot =
++      g_move_visibility_gate.snapshot();
++  const ControlBlockerSnapshot blocker_snapshot =
++      g_control_blocker.snapshot();
++  const std::uint64_t commit_age_us =
++      commit_snapshot.pending() && commit_snapshot.started_at_us != 0U &&
++              report_now_us >= commit_snapshot.started_at_us
++          ? report_now_us - commit_snapshot.started_at_us
++          : 0U;
++  const std::uint64_t visibility_age_us =
++      visibility_snapshot.armed && visibility_snapshot.armed_at_us != 0U &&
++              report_now_us >= visibility_snapshot.armed_at_us
++          ? report_now_us - visibility_snapshot.armed_at_us
++          : 0U;
++  const std::uint64_t blocker_age_us =
++      blocker_snapshot.since_us != 0U && report_now_us >= blocker_snapshot.since_us
++          ? report_now_us - blocker_snapshot.since_us
++          : 0U;
+   ControlCoreMetrics control_metrics{};
+   MobileTargetTrackerMetrics tracker_metrics{};
+   MobileMotionPlannerMetrics motion_metrics{};
+@@ -733,6 +955,8 @@ std::string makcu_move_bridge_report() {
+   float missing_switch_max_jump_pixels{};
+   std::uint64_t lost_target_hold_duration_us{};
+   std::uint64_t lost_track_duration_us{};
++  float tracker_new_track_confidence_threshold{};
++  float tracker_low_confidence_threshold{};
+   {
+     std::scoped_lock lock(g_control_mutex);
+     control_metrics = g_control_core.metrics();
+@@ -749,6 +973,10 @@ std::string makcu_move_bridge_report() {
+     lost_target_hold_duration_us =
+         g_control_core.lost_target_hold_duration_us();
+     lost_track_duration_us = g_control_core.lost_track_duration_us();
++    tracker_new_track_confidence_threshold =
++        g_control_core.tracker_new_track_confidence_threshold();
++    tracker_low_confidence_threshold =
++        g_control_core.tracker_low_confidence_threshold();
+   }
+   std::ostringstream value;
+   value << "processing_enabled=1"
+@@ -766,7 +994,12 @@ std::string makcu_move_bridge_report() {
+         << " java_offer_rejections=" << g_java_offer_rejections.load()
+         << " native_move_completion_pending=" << g_move_commit_gate.pending()
+         << " native_move_completion_pending_ticket="
+-        << g_move_commit_gate.pending_ticket()
++        << commit_snapshot.ticket
++        << " native_move_completion_pending_source_sequence="
++        << commit_snapshot.source_sequence
++        << " native_move_completion_pending_age_us=" << commit_age_us
++        << " native_move_completion_deadline_us="
++        << kMaximumMoveCompletionAgeUs
+         << " native_move_completion_pending_suppressed="
+         << g_move_completion_pending_suppressed.load()
+         << " native_move_completion_timeouts="
+@@ -801,13 +1034,25 @@ std::string makcu_move_bridge_report() {
+         << " bluetooth_hid_api_acceptance_semantics="
+            "android_hid_stack_accepted_not_host_or_physical_ack"
+         << " post_completion_visibility_armed="
+-        << g_move_visibility_gate.armed()
++        << visibility_snapshot.armed
++        << " post_completion_visibility_source_sequence="
++        << visibility_snapshot.source_sequence
++        << " post_completion_visibility_age_us=" << visibility_age_us
++        << " post_completion_visibility_timeout_us="
++        << kMaximumPostAckVisibilityAgeUs
++        << " post_completion_visibility_timeouts="
++        << g_post_completion_visibility_timeouts.load()
+         << " makcu_post_completion_visibility_min_us="
+         << kPostAcknowledgementAdditionalDelayUs
+         << " bluetooth_hid_post_completion_visibility_min_us="
+         << kPostAcknowledgementAdditionalDelayUs
+         << " post_completion_visibility_suppressed="
+         << g_post_completion_visibility_suppressed.load()
++        << " control_blocker="
++        << control_blocker_reason_name(blocker_snapshot.reason)
++        << " control_blocker_age_us=" << blocker_age_us
++        << " control_blocker_transition_id="
++        << blocker_snapshot.transition_id
+         << " java_bridge_ready=" << g_java_bridge_ready.load()
+         << " output_disabled_suppressed=" << g_output_disabled_suppressed.load()
+         << " output_requested=" << g_output_gate.user_requested()
+@@ -825,7 +1070,27 @@ std::string makcu_move_bridge_report() {
+         << " lost_target_hold_duration_us="
+         << lost_target_hold_duration_us
+         << " tracker_lost_duration_us=" << lost_track_duration_us
++        << " last_detection_count=" << g_last_detection_count.load()
++        << " last_max_detection_confidence="
++        << g_last_max_detection_confidence.load()
++        << " tracker_new_track_confidence_threshold="
++        << tracker_new_track_confidence_threshold
++        << " tracker_low_confidence_threshold="
++        << tracker_low_confidence_threshold
+         << " deadzone_suppressed=" << g_deadzone_suppressed.load()
++        << " no_move_suppressed=" << g_no_move_suppressed.load()
++        << " response_guard_suppressed="
++        << g_response_guard_suppressed.load()
++        << " device_resolution_suppressed="
++        << g_device_resolution_suppressed.load()
++        << " settle_guard_suppressed="
++        << g_settle_guard_suppressed.load()
++        << " direction_flip_suppressed="
++        << g_direction_flip_suppressed.load()
++        << " motion_invalid_suppressed="
++        << g_motion_invalid_suppressed.load()
++        << " detected_not_control_eligible_suppressed="
++        << g_detected_not_control_eligible_suppressed.load()
+         << " held_targets=" << g_held_targets.load()
+         << " target_switches=" << g_target_switches.load()
+         << " no_targets=" << g_no_targets.load()
+@@ -840,6 +1105,8 @@ std::string makcu_move_bridge_report() {
+         << " geometry_border_rejected=" << control_metrics.rejected_border
+         << " geometry_size_rejected=" << control_metrics.rejected_size
+         << " geometry_aspect_rejected=" << control_metrics.rejected_aspect_ratio
++        << " detected_not_control_eligible_frames="
++        << control_metrics.detected_not_control_eligible_frames
+         << " head_preemptions=" << control_metrics.head_preemptions
+         << " head_body_projection_continuations="
+         << control_metrics.head_body_projection_continuations
+@@ -965,6 +1232,8 @@ std::string makcu_move_bridge_report() {
+         << motion_metrics.direction_reorientations
+         << " motion_response_guard_suppressions="
+         << motion_metrics.response_guard_suppressions
++        << " motion_subcount_resolution_suppressions="
++        << motion_metrics.subcount_resolution_suppressions
+         << " motion_settle_guard_suppressions="
+         << motion_metrics.settle_guard_suppressions
+         << " motion_settle_quantization_rescues="
+diff --git a/android_inference_benchmark/app/src/main/cpp/MakcuOutputGate.hpp b/android_inference_benchmark/app/src/main/cpp/MakcuOutputGate.hpp
+index 22c72fd..47df8d8 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MakcuOutputGate.hpp
++++ b/android_inference_benchmark/app/src/main/cpp/MakcuOutputGate.hpp
+@@ -81,6 +81,14 @@ struct MakcuMoveCompletion final {
+   std::uint64_t source_sequence{};
+ };
+ 
++struct MakcuMoveCommitSnapshot final {
++  std::uint64_t ticket{};
++  std::uint64_t started_at_us{};
++  std::uint64_t source_sequence{};
++
++  [[nodiscard]] bool pending() const noexcept { return ticket != 0U; }
++};
++
+ enum class MakcuMoveFeedbackAction {
+   ignore_stale,
+   fail_current,
+@@ -172,6 +180,21 @@ public:
+     return true;
+   }
+ 
++  /** Expires at the exact absolute deadline boundary used by Java. */
++  [[nodiscard]] bool expire_if_deadline_reached(
++      std::uint64_t now_us, std::uint64_t maximum_age_us) noexcept {
++    std::scoped_lock lock(commit_mutex_);
++    if (pending_ticket_ == 0U || pending_started_at_us_ == 0U ||
++        now_us < pending_started_at_us_ ||
++        now_us - pending_started_at_us_ < maximum_age_us) {
++      return false;
++    }
++    pending_ticket_ = 0U;
++    pending_started_at_us_ = 0U;
++    pending_source_sequence_ = 0U;
++    return true;
++  }
++
+   void fail_closed() noexcept {
+     std::scoped_lock lock(commit_mutex_);
+     pending_ticket_ = 0U;
+@@ -189,6 +212,15 @@ public:
+     return pending_ticket_;
+   }
+ 
++  [[nodiscard]] MakcuMoveCommitSnapshot snapshot() const noexcept {
++    std::scoped_lock lock(commit_mutex_);
++    return {
++        .ticket = pending_ticket_,
++        .started_at_us = pending_started_at_us_,
++        .source_sequence = pending_source_sequence_,
++    };
++  }
++
+ private:
+   mutable std::mutex commit_mutex_;
+   std::uint64_t next_ticket_{};
+@@ -197,6 +229,20 @@ private:
+   std::uint64_t pending_source_sequence_{};
+ };
+ 
++enum class MakcuMoveVisibilityDecision : std::uint8_t {
++  open,
++  waiting,
++  became_visible,
++  timed_out,
++};
++
++struct MakcuMoveVisibilitySnapshot final {
++  bool armed{};
++  std::uint64_t source_sequence{};
++  std::uint64_t armed_at_us{};
++  std::uint64_t visible_not_before_us{};
++};
++
+ /**
+  * Holds further movement until a newer received content frame exists after the
+  * matching ACK. Callers may request an additional interval, but the realtime
+@@ -212,35 +258,62 @@ public:
+     constexpr std::uint64_t maximum =
+         std::numeric_limits<std::uint64_t>::max();
+     source_sequence_ = source_sequence;
++    armed_at_us_ = acknowledged_at_us;
+     visible_not_before_us_ =
+         acknowledged_at_us > maximum - minimum_visibility_us
+         ? maximum
+         : acknowledged_at_us + minimum_visibility_us;
+     armed_ = source_sequence != 0U && acknowledged_at_us != 0U;
++    if (!armed_) {
++      source_sequence_ = 0U;
++      armed_at_us_ = 0U;
++      visible_not_before_us_ = 0U;
++    }
++  }
++
++  /**
++   * Evaluates the post-ACK causal barrier and gives an otherwise permanent
++   * wait a bounded terminal state. A qualifying fresh frame always wins over
++   * the timeout at the same observation, because it is the exact evidence the
++   * barrier was waiting for. A timeout never authorizes movement; callers must
++   * fail closed and start their normal recovery path.
++   */
++  [[nodiscard]] MakcuMoveVisibilityDecision evaluate(
++      std::uint64_t frame_sequence, std::uint64_t observed_at_us,
++      bool content_updated, std::uint64_t now_us,
++      std::uint64_t maximum_wait_us) noexcept {
++    std::scoped_lock lock(visibility_mutex_);
++    if (!armed_) return MakcuMoveVisibilityDecision::open;
++    if (content_updated && frame_sequence > source_sequence_ &&
++        observed_at_us >= visible_not_before_us_) {
++      clear_locked();
++      return MakcuMoveVisibilityDecision::became_visible;
++    }
++    if (maximum_wait_us != 0U && armed_at_us_ != 0U &&
++        now_us >= armed_at_us_ &&
++        now_us - armed_at_us_ >= maximum_wait_us) {
++      clear_locked();
++      return MakcuMoveVisibilityDecision::timed_out;
++    }
++    return MakcuMoveVisibilityDecision::waiting;
+   }
+ 
+   [[nodiscard]] bool consume_if_visible(
+       std::uint64_t frame_sequence, std::uint64_t observed_at_us,
+       bool content_updated, bool* became_visible = nullptr) noexcept {
+-    std::scoped_lock lock(visibility_mutex_);
+     if (became_visible != nullptr) *became_visible = false;
+-    if (!armed_) return true;
+-    if (!content_updated || frame_sequence <= source_sequence_ ||
+-        observed_at_us < visible_not_before_us_) {
+-      return false;
++    const MakcuMoveVisibilityDecision decision = evaluate(
++        frame_sequence, observed_at_us, content_updated, 0U, 0U);
++    if (decision == MakcuMoveVisibilityDecision::became_visible) {
++      if (became_visible != nullptr) *became_visible = true;
++      return true;
+     }
+-    armed_ = false;
+-    source_sequence_ = 0U;
+-    visible_not_before_us_ = 0U;
+-    if (became_visible != nullptr) *became_visible = true;
+-    return true;
++    return decision == MakcuMoveVisibilityDecision::open;
+   }
+ 
+   void fail_closed() noexcept {
+     std::scoped_lock lock(visibility_mutex_);
+-    armed_ = false;
+-    source_sequence_ = 0U;
+-    visible_not_before_us_ = 0U;
++    clear_locked();
+   }
+ 
+   [[nodiscard]] bool armed() const noexcept {
+@@ -248,10 +321,28 @@ public:
+     return armed_;
+   }
+ 
++  [[nodiscard]] MakcuMoveVisibilitySnapshot snapshot() const noexcept {
++    std::scoped_lock lock(visibility_mutex_);
++    return {
++        .armed = armed_,
++        .source_sequence = source_sequence_,
++        .armed_at_us = armed_at_us_,
++        .visible_not_before_us = visible_not_before_us_,
++    };
++  }
++
+ private:
++  void clear_locked() noexcept {
++    armed_ = false;
++    source_sequence_ = 0U;
++    armed_at_us_ = 0U;
++    visible_not_before_us_ = 0U;
++  }
++
+   mutable std::mutex visibility_mutex_;
+   bool armed_{};
+   std::uint64_t source_sequence_{};
++  std::uint64_t armed_at_us_{};
+   std::uint64_t visible_not_before_us_{};
+ };
+ 
+diff --git a/android_inference_benchmark/app/src/main/cpp/MakcuOutputGateTests.cpp b/android_inference_benchmark/app/src/main/cpp/MakcuOutputGateTests.cpp
+index e2d26be..ea2977a 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MakcuOutputGateTests.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/MakcuOutputGateTests.cpp
+@@ -371,7 +371,13 @@ void verify_move_ack_timeout_is_strict_and_stale_safe() {
+   CHECK(gate.expire_if_older(101'001U, 100'000U));
+   CHECK(!gate.pending());
+ 
+-  const std::uint64_t current = gate.begin(102'000U, 2U);
++  const std::uint64_t boundary = gate.begin(200'000U, 8U);
++  CHECK(boundary != 0U);
++  CHECK(!gate.expire_if_deadline_reached(299'999U, 100'000U));
++  CHECK(gate.expire_if_deadline_reached(300'000U, 100'000U));
++  CHECK(!gate.pending());
++
++  const std::uint64_t current = gate.begin(302'000U, 2U);
+   CHECK(current != 0U && current != stale);
+   CHECK(!gate.complete(stale).matched);
+   CHECK(gate.pending_ticket() == current);
+@@ -405,6 +411,33 @@ void verify_post_ack_visibility_requires_newer_delayed_frame() {
+   CHECK(gate.consume_if_visible(60U, 20'000U, false));
+ }
+ 
++void verify_post_ack_visibility_timeout_is_bounded_and_fail_closed() {
++  using vfdual_android::MakcuMoveVisibilityDecision;
++  vfdual_android::MakcuMoveVisibilityGate gate;
++  gate.arm(100U, 1'000U, 0U);
++  const auto armed = gate.snapshot();
++  CHECK(armed.armed);
++  CHECK(armed.source_sequence == 100U);
++  CHECK(armed.armed_at_us == 1'000U);
++  CHECK(armed.visible_not_before_us == 1'000U);
++
++  CHECK(gate.evaluate(101U, 1'500U, false, 2'999U, 2'000U) ==
++        MakcuMoveVisibilityDecision::waiting);
++  CHECK(gate.armed());
++  CHECK(gate.evaluate(101U, 1'500U, false, 3'000U, 2'000U) ==
++        MakcuMoveVisibilityDecision::timed_out);
++  CHECK(!gate.armed());
++
++  // A qualifying fresh observation at the timeout boundary is the exact
++  // causal evidence being awaited and therefore wins over timeout.
++  gate.arm(200U, 10'000U, 0U);
++  CHECK(gate.evaluate(201U, 12'000U, true, 12'000U, 2'000U) ==
++        MakcuMoveVisibilityDecision::became_visible);
++  CHECK(!gate.armed());
++  CHECK(gate.evaluate(202U, 12'001U, true, 12'001U, 2'000U) ==
++        MakcuMoveVisibilityDecision::open);
++}
++
+ void verify_route_specific_post_completion_visibility() {
+   vfdual_android::MakcuMoveVisibilityGate makcu;
+   CHECK(vfdual_android::kPostAcknowledgementAdditionalDelayUs == 0U);
+@@ -512,6 +545,7 @@ int main() {
+   verify_concurrent_duplicate_device_ack_commits_once();
+   verify_move_ack_timeout_is_strict_and_stale_safe();
+   verify_post_ack_visibility_requires_newer_delayed_frame();
++  verify_post_ack_visibility_timeout_is_bounded_and_fail_closed();
+   verify_route_specific_post_completion_visibility();
+   verify_repeated_content_never_drives_control();
+   return 0;
+diff --git a/android_inference_benchmark/app/src/main/cpp/MobileControlCore.cpp b/android_inference_benchmark/app/src/main/cpp/MobileControlCore.cpp
+index 20e5b33..e4cb43d 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MobileControlCore.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/MobileControlCore.cpp
+@@ -90,6 +90,30 @@ float bounded_measured_ego_axis(
+ 
+ }  // namespace
+ 
++const char* control_suppression_reason_name(
++    ControlSuppressionReason reason) noexcept {
++  switch (reason) {
++    case ControlSuppressionReason::none: return "none";
++    case ControlSuppressionReason::invalid_time: return "invalid_time";
++    case ControlSuppressionReason::stale_frame: return "stale_frame";
++    case ControlSuppressionReason::non_monotonic_frame:
++      return "non_monotonic_frame";
++    case ControlSuppressionReason::no_valid_target: return "no_valid_target";
++    case ControlSuppressionReason::detected_not_control_eligible:
++      return "detected_not_control_eligible";
++    case ControlSuppressionReason::lock_held: return "lock_held";
++    case ControlSuppressionReason::switch_pending: return "switch_pending";
++    case ControlSuppressionReason::deadzone: return "deadzone";
++    case ControlSuppressionReason::settle_guard: return "settle_guard";
++    case ControlSuppressionReason::response_guard: return "response_guard";
++    case ControlSuppressionReason::device_resolution_guard:
++      return "device_resolution_guard";
++    case ControlSuppressionReason::direction_flip: return "direction_flip";
++    case ControlSuppressionReason::motion_invalid: return "motion_invalid";
++  }
++  return "unknown";
++}
++
+ MobileControlCore::MobileControlCore(const MobileControlConfig& config) {
+   (void)configure(config);
+ }
+@@ -1288,6 +1312,8 @@ ControlSuppressionReason MobileControlCore::control_suppression_reason(
+       return ControlSuppressionReason::settle_guard;
+     case MotionPlannerSuppressionReason::response_guard:
+       return ControlSuppressionReason::response_guard;
++    case MotionPlannerSuppressionReason::subcount_resolution:
++      return ControlSuppressionReason::device_resolution_guard;
+     case MotionPlannerSuppressionReason::direction_flip:
+       return ControlSuppressionReason::direction_flip;
+     case MotionPlannerSuppressionReason::invalid_input:
+@@ -1499,6 +1525,13 @@ MobileControlOutput MobileControlCore::process(
+     return active_output(frame, false);
+   }
+   clear_pending_switch();
++  if (!detections.empty()) {
++    ++metrics_.detected_not_control_eligible_frames;
++    return {
++        .suppression_reason =
++            ControlSuppressionReason::detected_not_control_eligible,
++    };
++  }
+   return {.suppression_reason = ControlSuppressionReason::no_valid_target};
+ }
+ 
+diff --git a/android_inference_benchmark/app/src/main/cpp/MobileControlCore.hpp b/android_inference_benchmark/app/src/main/cpp/MobileControlCore.hpp
+index 17675bc..6bc09fd 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MobileControlCore.hpp
++++ b/android_inference_benchmark/app/src/main/cpp/MobileControlCore.hpp
+@@ -37,15 +37,20 @@ enum class ControlSuppressionReason : std::uint8_t {
+   stale_frame,
+   non_monotonic_frame,
+   no_valid_target,
++  detected_not_control_eligible,
+   lock_held,
+   switch_pending,
+   deadzone,
+   settle_guard,
+   response_guard,
++  device_resolution_guard,
+   direction_flip,
+   motion_invalid,
+ };
+ 
++[[nodiscard]] const char* control_suppression_reason_name(
++    ControlSuppressionReason reason) noexcept;
++
+ struct ControlFrameContext {
+   std::uint64_t sequence{};
+   std::uint64_t observed_at_us{};
+@@ -186,6 +191,7 @@ struct ControlCoreMetrics {
+   std::uint64_t head_only_acceptances{};
+   std::uint64_t rejected_unvalidated_heads{};
+   std::uint64_t rejected_body_fallbacks{};
++  std::uint64_t detected_not_control_eligible_frames{};
+   std::uint64_t motion_invalid_suppressions{};
+   std::uint64_t lock_exact_track_matches{};
+   std::uint64_t lock_observation_track_matches{};
+@@ -285,6 +291,12 @@ class MobileControlCore final {
+   [[nodiscard]] std::uint64_t lost_track_duration_us() const noexcept {
+     return config_.tracker.lost_track_duration_us;
+   }
++  [[nodiscard]] float tracker_new_track_confidence_threshold() const noexcept {
++    return config_.tracker.new_track_confidence_threshold;
++  }
++  [[nodiscard]] float tracker_low_confidence_threshold() const noexcept {
++    return config_.tracker.low_confidence_threshold;
++  }
+   [[nodiscard]] const MobileMotionPlannerOutput& motion_snapshot() const noexcept {
+     return motion_planner_.last_output();
+   }
+diff --git a/android_inference_benchmark/app/src/main/cpp/MobileControlCoreTests.cpp b/android_inference_benchmark/app/src/main/cpp/MobileControlCoreTests.cpp
+index be4bfb4..7047b38 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MobileControlCoreTests.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/MobileControlCoreTests.cpp
+@@ -1912,7 +1912,9 @@ void test_overwatch_non_enemy_body_class_is_ignored() {
+       box(180.0F, 180.0F, 40.0F, 100.0F, 0.99F, 1U)};
+   const auto rejected = core.process(non_enemy_body, frame(1, 1'000));
+   assert(!rejected.has_target);
+-  assert(rejected.suppression_reason == ControlSuppressionReason::no_valid_target);
++  assert(rejected.suppression_reason ==
++         ControlSuppressionReason::detected_not_control_eligible);
++  assert(core.metrics().detected_not_control_eligible_frames == 1U);
+   assert(core.metrics().rejected_unsupported_class == 1U);
+ 
+   const std::array mixed{
+diff --git a/android_inference_benchmark/app/src/main/cpp/MobileMotionPlanner.cpp b/android_inference_benchmark/app/src/main/cpp/MobileMotionPlanner.cpp
+index ff8bb9a..53f9d1e 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MobileMotionPlanner.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/MobileMotionPlanner.cpp
+@@ -40,6 +40,8 @@ const char* motion_planner_suppression_name(
+     case MotionPlannerSuppressionReason::deadzone: return "deadzone";
+     case MotionPlannerSuppressionReason::direction_flip: return "direction_flip";
+     case MotionPlannerSuppressionReason::response_guard: return "response_guard";
++    case MotionPlannerSuppressionReason::subcount_resolution:
++      return "subcount_resolution";
+     case MotionPlannerSuppressionReason::settle_guard: return "settle_guard";
+   }
+   return "unknown";
+@@ -996,6 +998,16 @@ MobileMotionPlannerOutput MobileMotionPlanner::plan(
+     if (in_deadzone) {
+       reason = MotionPlannerSuppressionReason::deadzone;
+       ++metrics_.deadzone_suppressions;
++    } else if ((std::fabs(predicted_error_x) <= config_.deadzone_pixels ||
++                budget_x < 1.0F) &&
++               (std::fabs(predicted_error_y) <= config_.deadzone_pixels ||
++                budget_y < 1.0F)) {
++      // The target is outside the configured pixel deadzone, but the
++      // calibrated worst-case response says that one physical count would
++      // exceed the admissible correction on every active axis. This is a
++      // device-resolution terminal state, not an unexplained active stall.
++      reason = MotionPlannerSuppressionReason::subcount_resolution;
++      ++metrics_.subcount_resolution_suppressions;
+     } else if (settle_limited_x || settle_limited_y) {
+       reason = MotionPlannerSuppressionReason::settle_guard;
+       ++metrics_.settle_guard_suppressions;
+diff --git a/android_inference_benchmark/app/src/main/cpp/MobileMotionPlanner.hpp b/android_inference_benchmark/app/src/main/cpp/MobileMotionPlanner.hpp
+index dc1311f..8aecf5a 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MobileMotionPlanner.hpp
++++ b/android_inference_benchmark/app/src/main/cpp/MobileMotionPlanner.hpp
+@@ -20,6 +20,7 @@ enum class MotionPlannerSuppressionReason : std::uint8_t {
+   deadzone,
+   direction_flip,
+   response_guard,
++  subcount_resolution,
+   settle_guard,
+ };
+ 
+@@ -166,6 +167,7 @@ struct MobileMotionPlannerMetrics {
+   std::uint64_t direction_reorientations{};
+   std::uint64_t deadzone_suppressions{};
+   std::uint64_t response_guard_suppressions{};
++  std::uint64_t subcount_resolution_suppressions{};
+   std::uint64_t settle_guard_suppressions{};
+   std::uint64_t response_limited_axes{};
+   std::uint64_t jerk_limited_axes{};
+diff --git a/android_inference_benchmark/app/src/main/cpp/MobileMotionPlannerTests.cpp b/android_inference_benchmark/app/src/main/cpp/MobileMotionPlannerTests.cpp
+index 84d588f..11fd3ed 100644
+--- a/android_inference_benchmark/app/src/main/cpp/MobileMotionPlannerTests.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/MobileMotionPlannerTests.cpp
+@@ -157,7 +157,8 @@ void test_response_budget_and_residual_quantization() {
+       observation(2, 20'000, 4.0F, 0.0F, 0.0F, 0.0F, 1.0F));
+   assert(!near.has_move());
+   assert(near.suppression_reason ==
+-         MotionPlannerSuppressionReason::response_guard);
++         MotionPlannerSuppressionReason::subcount_resolution);
++  assert(guarded_planner.metrics().subcount_resolution_suppressions == 1U);
+ 
+   MobileMotionPlannerConfig residual = direct_config();
+   residual.response_gain = 0.10F;
+diff --git a/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicy.cpp b/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicy.cpp
+index 6d7f3cb..f66a754 100644
+--- a/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicy.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicy.cpp
+@@ -11,13 +11,13 @@ constexpr std::uint64_t kMaximumIdrRequestIntervalUs = 5'000'000;
+ constexpr std::uint32_t kMaximumConsecutiveIdleIdrRequests = 4;
+ }
+ 
+-bool ReceiverRecoveryPolicy::observe_fragment(std::uint64_t now_us, bool completed_access_unit,
++bool ReceiverRecoveryPolicy::observe_fragment(std::uint64_t now_us, bool fresh_content_accepted,
+                                               bool source_changed,
+                                               bool reassembly_expired) noexcept {
+   consecutive_idle_idr_requests_ = 0U;
+   if (first_fragment_us_ == 0U) first_fragment_us_ = now_us;
+   last_fragment_us_ = now_us;
+-  if (completed_access_unit) {
++  if (fresh_content_accepted) {
+     last_completed_us_ = now_us;
+     last_idr_request_us_ = 0U;
+     consecutive_idr_requests_ = 0U;
+diff --git a/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicy.hpp b/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicy.hpp
+index 79e40a3..fdbef86 100644
+--- a/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicy.hpp
++++ b/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicy.hpp
+@@ -7,7 +7,16 @@ namespace vfdual_android {
+ /** Pure timing policy for loss/reconnect recovery on the UDP video receiver. */
+ class ReceiverRecoveryPolicy final {
+ public:
+-  [[nodiscard]] bool observe_fragment(std::uint64_t now_us, bool completed_access_unit,
++  /**
++   * Records receiver progress.
++   *
++   * `fresh_content_accepted` deliberately does not mean merely "a complete
++   * access unit was decoded". Synthetic VFRR/repeat access units keep the
++   * H.264 reference chain alive but provide no new visual evidence for the
++   * closed-loop controller. Treating those repeats as recovery progress can
++   * reset the IDR stall timer forever after an acknowledged move.
++   */
++  [[nodiscard]] bool observe_fragment(std::uint64_t now_us, bool fresh_content_accepted,
+                                       bool source_changed, bool reassembly_expired) noexcept;
+   [[nodiscard]] bool observe_idle(std::uint64_t now_us, bool sender_known) noexcept;
+   void mark_idr_requested(std::uint64_t now_us) noexcept;
+diff --git a/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicyTests.cpp b/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicyTests.cpp
+index 0b831e4..027e3d7 100644
+--- a/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicyTests.cpp
++++ b/android_inference_benchmark/app/src/main/cpp/ReceiverRecoveryPolicyTests.cpp
+@@ -42,5 +42,21 @@ int main() {
+   assert(!policy.observe_fragment(20'001'000, true, false, false));
+   assert(!policy.observe_idle(20'300'999, true));
+   assert(policy.observe_idle(20'301'000, true));
++
++  // A stream of successfully decoded synthetic repeats is transport progress,
++  // but it is not closed-loop visual progress. It must not reset the bounded
++  // fresh-content/IDR recovery timer forever after a physical move.
++  policy.reset();
++  assert(!policy.observe_fragment(30'000'000, true, false, false));
++  assert(!policy.observe_fragment(30'100'000, false, false, false));
++  assert(!policy.observe_fragment(30'149'999, false, false, false));
++  assert(policy.observe_fragment(30'150'000, false, false, false));
++  policy.mark_idr_requested(30'150'000);
++  assert(!policy.observe_fragment(30'649'999, false, false, false));
++  assert(policy.observe_fragment(30'650'000, false, false, false));
++  // A genuine content update resets both stall age and request backoff.
++  assert(!policy.observe_fragment(30'651'000, true, false, false));
++  assert(!policy.observe_fragment(30'800'999, false, false, false));
++  assert(policy.observe_fragment(30'801'000, false, false, false));
+   return 0;
+ }
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AndroidBluetoothHidDeviceAdapter.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AndroidBluetoothHidDeviceAdapter.java
+index 9585c2a..5384707 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AndroidBluetoothHidDeviceAdapter.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AndroidBluetoothHidDeviceAdapter.java
+@@ -78,11 +78,13 @@ final class AndroidBluetoothHidDeviceAdapter
+     private long profileProxyRequestStartedNanos;
+     private long registerAppRequestStartedNanos;
+     private BluetoothHidOutputFailClosedPolicy.SessionState cachedSessionState;
++    private Runnable sessionStateListener;
+ 
+     private final BroadcastReceiver bluetoothReceiver = new BroadcastReceiver() {
+         @Override
+         public void onReceive(Context context, Intent intent) {
+             if (intent == null) return;
++            Runnable listener = null;
+             synchronized (AndroidBluetoothHidDeviceAdapter.this) {
+                 String action = intent.getAction();
+                 if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(action)) {
+@@ -96,6 +98,7 @@ final class AndroidBluetoothHidDeviceAdapter
+                             && foregroundSessionActive) {
+                         connectHostLocked(device);
+                     }
++                    listener = captureSessionStateListenerLocked();
+                 } else if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
+                     int state = intent.getIntExtra(
+                             BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+@@ -105,8 +108,10 @@ final class AndroidBluetoothHidDeviceAdapter
+                         registerMouseAppIfProfileReady();
+                         connectPreferredHostLocked();
+                     }
++                    listener = captureSessionStateListenerLocked();
+                 }
+             }
++            dispatchSessionStateChanged(listener);
+         }
+     };
+ 
+@@ -114,6 +119,7 @@ final class AndroidBluetoothHidDeviceAdapter
+             new BluetoothProfile.ServiceListener() {
+                 @Override
+                 public void onServiceConnected(int profile, BluetoothProfile proxy) {
++                    Runnable listener;
+                     synchronized (AndroidBluetoothHidDeviceAdapter.this) {
+                         profileProxyRequested = false;
+                         profileProxyRequestStartedNanos = 0L;
+@@ -129,33 +135,40 @@ final class AndroidBluetoothHidDeviceAdapter
+                             hidDevice = null;
+                             writeEvent("bluetooth_hid_profile_rejected",
+                                     "reason=unexpected_profile profile=" + profile);
+-                            return;
+-                        }
+-                        hidDevice = (BluetoothHidDevice) proxy;
+-                        profileProxyConnected = true;
+-                        if (foregroundSessionActive) {
+-                            registerMouseAppIfProfileReady();
+-                            connectPreferredHostLocked();
++                            listener = captureSessionStateListenerLocked();
++                        } else {
++                            hidDevice = (BluetoothHidDevice) proxy;
++                            profileProxyConnected = true;
++                            if (foregroundSessionActive) {
++                                registerMouseAppIfProfileReady();
++                                connectPreferredHostLocked();
++                            }
++                            listener = captureSessionStateListenerLocked();
+                         }
+                     }
++                    dispatchSessionStateChanged(listener);
+                 }
+ 
+                 @Override
+                 public void onServiceDisconnected(int profile) {
++                    Runnable listener = null;
+                     synchronized (AndroidBluetoothHidDeviceAdapter.this) {
+-                        if (profile != BluetoothProfile.HID_DEVICE) return;
+-                        writeEvent("bluetooth_hid_profile_disconnected",
+-                                "profile=" + profile
+-                                        + " app_registered=" + appRegistered
+-                                        + " host_connected=" + (connectedHost != null));
+-                        profileProxyConnected = false;
+-                        profileProxyRequested = false;
+-                        profileProxyRequestStartedNanos = 0L;
+-                        hidDevice = null;
+-                        connectedHost = null;
+-                        appRegistered = false;
+-                        registerAppAccepted = false;
++                        if (profile == BluetoothProfile.HID_DEVICE) {
++                            writeEvent("bluetooth_hid_profile_disconnected",
++                                    "profile=" + profile
++                                            + " app_registered=" + appRegistered
++                                            + " host_connected=" + (connectedHost != null));
++                            profileProxyConnected = false;
++                            profileProxyRequested = false;
++                            profileProxyRequestStartedNanos = 0L;
++                            hidDevice = null;
++                            connectedHost = null;
++                            appRegistered = false;
++                            registerAppAccepted = false;
++                            listener = captureSessionStateListenerLocked();
++                        }
+                     }
++                    dispatchSessionStateChanged(listener);
+                 }
+             };
+ 
+@@ -163,6 +176,7 @@ final class AndroidBluetoothHidDeviceAdapter
+             new BluetoothHidDevice.Callback() {
+                 @Override
+                 public void onAppStatusChanged(BluetoothDevice pluggedDevice, boolean registered) {
++                    Runnable listener;
+                     synchronized (AndroidBluetoothHidDeviceAdapter.this) {
+                         registerAppRequestStartedNanos = 0L;
+                         writeEvent("bluetooth_hid_app_status",
+@@ -179,11 +193,14 @@ final class AndroidBluetoothHidDeviceAdapter
+                             connectedHost = null;
+                             registerAppAccepted = false;
+                         }
++                        listener = captureSessionStateListenerLocked();
+                     }
++                    dispatchSessionStateChanged(listener);
+                 }
+ 
+                 @Override
+                 public void onConnectionStateChanged(BluetoothDevice device, int state) {
++                    Runnable listener;
+                     synchronized (AndroidBluetoothHidDeviceAdapter.this) {
+                         writeEvent("bluetooth_hid_connection_state",
+                                 "state=" + stateName(state)
+@@ -198,7 +215,9 @@ final class AndroidBluetoothHidDeviceAdapter
+                                 connectPreferredHostLocked();
+                             }
+                         }
++                        listener = captureSessionStateListenerLocked();
+                     }
++                    dispatchSessionStateChanged(listener);
+                 }
+             };
+ 
+@@ -222,23 +241,35 @@ final class AndroidBluetoothHidDeviceAdapter
+         preferences = appContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
+     }
+ 
+-    public synchronized void setForegroundSessionActive(boolean active) {
+-        boolean sessionStateChanged = foregroundSessionActive != active;
+-        foregroundSessionActive = active;
+-        if (sessionStateChanged) {
+-            writeEvent("bluetooth_hid_foreground_session",
+-                    "active=" + active
+-                            + " profile_connected=" + profileProxyConnected
+-                            + " app_registered=" + appRegistered);
+-        }
+-        if (active) {
+-            registerBluetoothReceiverLocked();
+-            requestHidProfile();
+-            registerMouseAppIfProfileReady();
+-            connectPreferredHostLocked();
+-        } else if (sessionStateChanged) {
+-            unregisterMouseApp();
++    public void setForegroundSessionActive(boolean active) {
++        Runnable listener = null;
++        synchronized (this) {
++            boolean sessionStateChanged = foregroundSessionActive != active;
++            foregroundSessionActive = active;
++            if (sessionStateChanged) {
++                writeEvent("bluetooth_hid_foreground_session",
++                        "active=" + active
++                                + " profile_connected=" + profileProxyConnected
++                                + " app_registered=" + appRegistered);
++            }
++            if (active) {
++                registerBluetoothReceiverLocked();
++                requestHidProfile();
++                registerMouseAppIfProfileReady();
++                connectPreferredHostLocked();
++            } else if (sessionStateChanged) {
++                unregisterMouseApp();
++            }
++            if (sessionStateChanged) {
++                listener = captureSessionStateListenerLocked();
++            }
+         }
++        dispatchSessionStateChanged(listener);
++    }
++
++    @Override
++    public synchronized void setSessionStateListener(Runnable listener) {
++        sessionStateListener = listener;
+     }
+ 
+     @Override
+@@ -509,6 +540,7 @@ final class AndroidBluetoothHidDeviceAdapter
+     @Override
+     @SuppressLint("MissingPermission")
+     public synchronized void close() {
++        sessionStateListener = null;
+         unregisterMouseApp();
+         unregisterBluetoothReceiverLocked();
+         BluetoothAdapter adapter = bluetoothAdapter();
+@@ -528,6 +560,21 @@ final class AndroidBluetoothHidDeviceAdapter
+         writeEvent("bluetooth_hid_adapter_closed", "closed=true");
+     }
+ 
++    private Runnable captureSessionStateListenerLocked() {
++        cachedSessionState = null;
++        return sessionStateListener;
++    }
++
++    private void dispatchSessionStateChanged(Runnable listener) {
++        if (listener == null) return;
++        try {
++            callbackExecutor.execute(listener);
++        } catch (RuntimeException exception) {
++            writeEvent("bluetooth_hid_state_listener_rejected",
++                    "type=" + safeToken(exception.getClass().getSimpleName()));
++        }
++    }
++
+     @SuppressLint("MissingPermission")
+     private void recoverTimedOutAppRegistrationLocked() {
+         BluetoothHidDevice targetHidDevice = hidDevice;
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCore.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCore.java
+index 67bb3d2..cc7f04b 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCore.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCore.java
+@@ -9,14 +9,23 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
+         boolean sendMouseReport(byte[] report);
+ 
+         void connectFirstSupportedHost();
++
++        /** Publishes asynchronous Android profile/app/host state transitions. */
++        default void setSessionStateListener(Runnable listener) {
++        }
+     }
+ 
+     interface MoveCompletionPort {
+         boolean reportApiAccepted(long ticket, long acceptanceMicros);
+     }
+ 
++    interface NanoClock {
++        long nowNanos();
++    }
++
+     private final SessionPort sessionPort;
+     private final MoveCompletionPort moveCompletionPort;
++    private final NanoClock nanoClock;
+     private final MakcuDeliveryCircuit deliveryCircuit = new MakcuDeliveryCircuit(1);
+     private final byte[] reusableMouseReport = new byte[4];
+     private boolean outputDeliveryAllowed;
+@@ -24,14 +33,29 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
+     private boolean nativeRecoverySuspended;
+     private long recoveryGeneration;
+     private ReconnectListener reconnectListener;
++    private String lastSessionDecisionReason = "";
++    private boolean disposed;
+ 
+     BluetoothHidMouseTransportCore(
+             SessionPort sessionPort,
+             MoveCompletionPort moveCompletionPort) {
++        this(sessionPort, moveCompletionPort, System::nanoTime);
++    }
++
++    BluetoothHidMouseTransportCore(
++            SessionPort sessionPort,
++            MoveCompletionPort moveCompletionPort,
++            NanoClock nanoClock) {
+         if (sessionPort == null) throw new IllegalArgumentException("sessionPort");
+         if (moveCompletionPort == null) throw new IllegalArgumentException("moveCompletionPort");
++        if (nanoClock == null) throw new IllegalArgumentException("nanoClock");
+         this.sessionPort = sessionPort;
+         this.moveCompletionPort = moveCompletionPort;
++        this.nanoClock = nanoClock;
++        BluetoothHidOutputFailClosedPolicy.Decision initialDecision =
++                BluetoothHidOutputFailClosedPolicy.evaluate(sessionPort.sessionState());
++        lastSessionDecisionReason = initialDecision.reason;
++        sessionPort.setSessionStateListener(this::onSessionStateChanged);
+     }
+ 
+     @Override
+@@ -51,9 +75,10 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
+         boolean ready;
+         synchronized (this) {
+             sessionPort.connectFirstSupportedHost();
+-            boolean sessionReady = BluetoothHidOutputFailClosedPolicy.evaluate(
+-                    sessionPort.sessionState()).outputAllowed;
+-            if (sessionReady) deliveryCircuit.resetAfterSuccessfulReconnect();
++            BluetoothHidOutputFailClosedPolicy.Decision decision =
++                    BluetoothHidOutputFailClosedPolicy.evaluate(sessionPort.sessionState());
++            lastSessionDecisionReason = decision.reason;
++            if (decision.outputAllowed) deliveryCircuit.resetAfterSuccessfulReconnect();
+             listener = reconnectListener;
+             ready = isReadyLocked();
+         }
+@@ -89,25 +114,36 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
+     }
+ 
+     @Override
+-    public synchronized boolean offerMoveFromNative(int deltaX, int deltaY, long ticket) {
+-        if (ticket <= 0L) return false;
+-        return sendMove(deltaX, deltaY, ticket, true);
++    public synchronized boolean offerMoveFromNative(
++            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
++        if (ticket <= 0L || remainingBudgetUs <= 0L) return false;
++        long deadlineNanos = ControlMoveDeadline.deadlineNanos(
++                nanoClock.nowNanos(), remainingBudgetUs);
++        return sendMove(deltaX, deltaY, ticket, true, deadlineNanos);
+     }
+ 
+     /** Debug-only direct HID send that never completes or mutates a native move ticket. */
+     synchronized boolean sendDiagnosticMove(int deltaX, int deltaY) {
+-        return sendMove(deltaX, deltaY, 0L, false);
++        return sendMove(deltaX, deltaY, 0L, false, Long.MAX_VALUE);
+     }
+ 
+     private boolean sendMove(
+             int deltaX,
+             int deltaY,
+             long ticket,
+-            boolean reportNativeApiAcceptance) {
++            boolean reportNativeApiAcceptance,
++            long deadlineNanos) {
+         int boundedX = clampMouseDelta(deltaX);
+         int boundedY = clampMouseDelta(deltaY);
+         if (boundedX == 0 && boundedY == 0) return false;
+         if (!outputDeliveryAllowed || nativeRecoverySuspended) return false;
++        if (reportNativeApiAcceptance
++                && ControlMoveDeadline.isExpired(nanoClock.nowNanos(), deadlineNanos)) {
++            recordDeliveryFailure(
++                    BluetoothHidOutputFailClosedPolicy
++                            .REASON_MOVE_DEADLINE_EXPIRED_BEFORE_SEND);
++            return false;
++        }
+ 
+         BluetoothHidOutputFailClosedPolicy.Decision decision =
+                 BluetoothHidOutputFailClosedPolicy.evaluate(sessionPort.sessionState());
+@@ -120,12 +156,20 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
+         reusableMouseReport[1] = (byte) boundedX;
+         reusableMouseReport[2] = (byte) boundedY;
+         reusableMouseReport[3] = 0;
+-        long started = System.nanoTime();
++        long started = nanoClock.nowNanos();
+         if (!sessionPort.sendMouseReport(reusableMouseReport)) {
+             recordDeliveryFailure(BluetoothHidOutputFailClosedPolicy.REASON_SEND_REPORT_FALSE);
+             return false;
+         }
+-        long acceptanceMicros = Math.max(1L, (System.nanoTime() - started) / 1_000L);
++        long completed = nanoClock.nowNanos();
++        if (reportNativeApiAcceptance
++                && ControlMoveDeadline.isExpired(completed, deadlineNanos)) {
++            recordDeliveryFailure(
++                    BluetoothHidOutputFailClosedPolicy
++                            .REASON_MOVE_DEADLINE_EXPIRED_AFTER_SEND);
++            return false;
++        }
++        long acceptanceMicros = Math.max(1L, (completed - started) / 1_000L);
+         deliveryCircuit.recordUsbWriteCompletion(acceptanceMicros);
+         if (reportNativeApiAcceptance
+                 && !moveCompletionPort.reportApiAccepted(ticket, acceptanceMicros)) {
+@@ -172,12 +216,56 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
+ 
+     private void recordDeliveryFailure(String reason) {
+         deliveryCircuit.recordFailure(reason);
++        lastSessionDecisionReason = reason == null ? "delivery_failure" : reason;
+         outputDeliveryAllowed = false;
+         deliveryAllowedBeforeRecovery = false;
+         nativeRecoverySuspended = false;
+         recoveryGeneration = 0L;
+     }
+ 
++    /**
++     * Android delivers HID profile and host changes asynchronously. Translate
++     * each effective state transition into the existing reconnect callback so
++     * the coordinator can reconcile immediately instead of waiting for its
++     * periodic health poll.
++     */
++    private void onSessionStateChanged() {
++        ReconnectListener listener;
++        boolean ready;
++        synchronized (this) {
++            if (disposed) return;
++            BluetoothHidOutputFailClosedPolicy.Decision decision =
++                    BluetoothHidOutputFailClosedPolicy.evaluate(sessionPort.sessionState());
++            if (decision.reason.equals(lastSessionDecisionReason)
++                    && !(decision.outputAllowed
++                    && deliveryCircuit.snapshot().circuitOpen)) {
++                return;
++            }
++            lastSessionDecisionReason = decision.reason;
++            if (decision.outputAllowed) {
++                deliveryCircuit.resetAfterSuccessfulReconnect();
++            } else if (outputDeliveryAllowed || nativeRecoverySuspended) {
++                recordDeliveryFailure(decision.reason);
++            }
++            listener = reconnectListener;
++            ready = isReadyLocked();
++        }
++        if (listener != null) listener.onReconnectResult(ready);
++    }
++
++    void dispose() {
++        synchronized (this) {
++            if (disposed) return;
++            disposed = true;
++            reconnectListener = null;
++            outputDeliveryAllowed = false;
++            deliveryAllowedBeforeRecovery = false;
++            nativeRecoverySuspended = false;
++            recoveryGeneration = 0L;
++        }
++        sessionPort.setSessionStateListener(null);
++    }
++
+     private static int clampMouseDelta(int value) {
+         return Math.max(-127, Math.min(127, value));
+     }
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/BluetoothHidOutputFailClosedPolicy.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/BluetoothHidOutputFailClosedPolicy.java
+index 261144a..62f9607 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/BluetoothHidOutputFailClosedPolicy.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/BluetoothHidOutputFailClosedPolicy.java
+@@ -14,6 +14,10 @@ final class BluetoothHidOutputFailClosedPolicy {
+     static final String REASON_SEND_REPORT_FALSE = "send_report_false";
+     static final String REASON_NATIVE_MOVE_COMPLETION_REJECTED =
+             "native_move_completion_rejected";
++    static final String REASON_MOVE_DEADLINE_EXPIRED_BEFORE_SEND =
++            "move_deadline_expired_before_send";
++    static final String REASON_MOVE_DEADLINE_EXPIRED_AFTER_SEND =
++            "move_deadline_expired_after_send";
+ 
+     private static final Decision READY_DECISION =
+             new Decision(true, REASON_READY);
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlMoveDeadline.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlMoveDeadline.java
+new file mode 100644
+index 0000000..317a8e7
+--- /dev/null
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlMoveDeadline.java
+@@ -0,0 +1,58 @@
++package com.visionforge.inferencebenchmark;
++
++/** Shared bounded lifetime helpers for one native control-move ticket. */
++final class ControlMoveDeadline {
++    static final long DEFAULT_BUDGET_US = 250_000L;
++    private static final long NANOS_PER_MICRO = 1_000L;
++    private static final long NANOS_PER_MILLI = 1_000_000L;
++
++    private ControlMoveDeadline() {
++    }
++
++    static long deadlineNanos(long nowNanos, long remainingBudgetUs) {
++        if (remainingBudgetUs <= 0L) return nowNanos;
++        if (remainingBudgetUs > Long.MAX_VALUE / NANOS_PER_MICRO) {
++            return Long.MAX_VALUE;
++        }
++        long deltaNanos = remainingBudgetUs * NANOS_PER_MICRO;
++        if (nowNanos > Long.MAX_VALUE - deltaNanos) return Long.MAX_VALUE;
++        return nowNanos + deltaNanos;
++    }
++
++    static long boundedDeadlineNanos(long startedNanos, long maximumDurationNanos) {
++        if (maximumDurationNanos <= 0L) return startedNanos;
++        if (startedNanos > Long.MAX_VALUE - maximumDurationNanos) {
++            return Long.MAX_VALUE;
++        }
++        return startedNanos + maximumDurationNanos;
++    }
++
++    static long earlierDeadline(long first, long second) {
++        if (first <= 0L) return second;
++        if (second <= 0L) return first;
++        return Math.min(first, second);
++    }
++
++    static boolean isExpired(long nowNanos, long deadlineNanos) {
++        return deadlineNanos <= 0L || nowNanos >= deadlineNanos;
++    }
++
++    static long remainingNanos(long nowNanos, long deadlineNanos) {
++        return isExpired(nowNanos, deadlineNanos) ? 0L : deadlineNanos - nowNanos;
++    }
++
++    /**
++     * Converts the remaining absolute deadline into a bounded blocking API
++     * timeout. A positive sub-millisecond budget is rounded up to one
++     * millisecond so callers do not accidentally request an unbounded or
++     * immediate operation from APIs where zero has special semantics.
++     */
++    static int boundedTimeoutMillis(
++            long nowNanos, long deadlineNanos, int maximumMillis) {
++        if (maximumMillis <= 0) return 0;
++        long remaining = remainingNanos(nowNanos, deadlineNanos);
++        if (remaining <= 0L) return 0;
++        long roundedUpMillis = ((remaining - 1L) / NANOS_PER_MILLI) + 1L;
++        return (int) Math.max(1L, Math.min((long) maximumMillis, roundedUpMillis));
++    }
++}
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveDispatcher.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveDispatcher.java
+index 60436a0..e4c64f6 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveDispatcher.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveDispatcher.java
+@@ -25,8 +25,15 @@ final class ControlOutputMoveDispatcher {
+     }
+ 
+     static boolean offerNativeMove(int deltaX, int deltaY, long ticket) {
++        return offerNativeMove(
++                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
++    }
++
++    static boolean offerNativeMove(
++            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
+         ControlOutputMoveSink current = sink.get();
+-        return current != null && current.offerMoveFromNative(deltaX, deltaY, ticket);
++        return current != null && current.offerMoveFromNative(
++                deltaX, deltaY, ticket, remainingBudgetUs);
+     }
+ 
+     private static boolean suspendNativeDeliveryForRecovery(long generation) {
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveSink.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveSink.java
+index 5b9e33b..4cbae98 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveSink.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputMoveSink.java
+@@ -2,7 +2,13 @@ package com.visionforge.inferencebenchmark;
+ 
+ /** Native move callback sink owned by the selected phone-side output transport. */
+ interface ControlOutputMoveSink {
+-    boolean offerMoveFromNative(int deltaX, int deltaY, long ticket);
++    boolean offerMoveFromNative(
++            int deltaX, int deltaY, long ticket, long remainingBudgetUs);
++
++    default boolean offerMoveFromNative(int deltaX, int deltaY, long ticket) {
++        return offerMoveFromNative(
++                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
++    }
+ 
+     boolean suspendMoveDeliveryForNativeRecovery(long generation);
+ 
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MakcuPendingMoveSlot.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MakcuPendingMoveSlot.java
+index 199221f..cf7cccf 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MakcuPendingMoveSlot.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MakcuPendingMoveSlot.java
+@@ -5,6 +5,7 @@ final class MakcuPendingMoveSlot {
+     static final class PendingMove {
+         long packed;
+         long ticket;
++        long deadlineNanos;
+ 
+         PendingMove() {
+         }
+@@ -12,13 +13,22 @@ final class MakcuPendingMoveSlot {
+ 
+     private long packed;
+     private long ticket;
++    private long deadlineNanos;
+ 
+     synchronized void offer(long packed, long ticket) {
++        offer(packed, ticket, Long.MAX_VALUE);
++    }
++
++    synchronized void offer(long packed, long ticket, long deadlineNanos) {
+         if (packed == 0L || ticket <= 0L) {
+             throw new IllegalArgumentException("MAKCU move and ticket must be non-zero");
+         }
++        if (deadlineNanos <= 0L) {
++            throw new IllegalArgumentException("MAKCU move deadline must be positive");
++        }
+         this.packed = packed;
+         this.ticket = ticket;
++        this.deadlineNanos = deadlineNanos;
+     }
+ 
+     synchronized boolean takeInto(PendingMove destination) {
+@@ -26,8 +36,10 @@ final class MakcuPendingMoveSlot {
+         if (packed == 0L) return false;
+         destination.packed = packed;
+         destination.ticket = ticket;
++        destination.deadlineNanos = deadlineNanos;
+         packed = 0L;
+         ticket = 0L;
++        deadlineNanos = 0L;
+         return true;
+     }
+ 
+@@ -35,6 +47,7 @@ final class MakcuPendingMoveSlot {
+         long rejectedTicket = ticket;
+         packed = 0L;
+         ticket = 0L;
++        deadlineNanos = 0L;
+         return rejectedTicket;
+     }
+ 
+@@ -44,6 +57,7 @@ final class MakcuPendingMoveSlot {
+         }
+         this.packed = 0L;
+         this.ticket = 0L;
++        this.deadlineNanos = 0L;
+         return true;
+     }
+ 
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MakcuSerialController.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MakcuSerialController.java
+index c8530c0..19a7395 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MakcuSerialController.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MakcuSerialController.java
+@@ -65,6 +65,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+     private final AtomicLong offeredMoves = new AtomicLong();
+     private final AtomicLong droppedDisconnected = new AtomicLong();
+     private final AtomicLong droppedOutputDisabled = new AtomicLong();
++    private final AtomicLong droppedMoveDeadlineExpired = new AtomicLong();
+     private final AtomicLong deviceCommandAcknowledgements = new AtomicLong();
+     private final AtomicLong moveCommandAcknowledgements = new AtomicLong();
+     private final AtomicLong deviceAcknowledgementFailures = new AtomicLong();
+@@ -118,6 +119,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+     private volatile long expectedResponseConnectionGeneration;
+     private volatile long expectedResponseReaderLease;
+     private volatile boolean expectedResponseAcknowledged;
++    private volatile long expectedResponseAcknowledgedAtNanos;
+ 
+     MakcuSerialController(Context ownerContext, MobileRuntimeEventSink events) {
+         this.context = ownerContext.getApplicationContext();
+@@ -427,19 +429,41 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+     }
+ 
+     static boolean offerNativeMove(int deltaX, int deltaY, long ticket) {
++        return offerNativeMove(
++                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
++    }
++
++    static boolean offerNativeMove(
++            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
+         MakcuSerialController controller = instance;
+-        return controller != null && controller.offerMove(deltaX, deltaY, ticket);
++        return controller != null && controller.offerMove(
++                deltaX, deltaY, ticket, remainingBudgetUs);
+     }
+ 
+     @Override
+-    public boolean offerMoveFromNative(int deltaX, int deltaY, long ticket) {
+-        return offerMove(deltaX, deltaY, ticket);
++    public boolean offerMoveFromNative(
++            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
++        return offerMove(deltaX, deltaY, ticket, remainingBudgetUs);
+     }
+ 
+-    private boolean offerMove(int deltaX, int deltaY, long ticket) {
++    private boolean offerMove(
++            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
+         int boundedX = Math.max(-127, Math.min(127, deltaX));
+         int boundedY = Math.max(-127, Math.min(127, deltaY));
+-        if ((boundedX == 0 && boundedY == 0) || ticket <= 0L) return false;
++        if ((boundedX == 0 && boundedY == 0) || ticket <= 0L
++                || remainingBudgetUs <= 0L) {
++            if (ticket > 0L && remainingBudgetUs <= 0L) {
++                droppedMoveDeadlineExpired.incrementAndGet();
++            }
++            return false;
++        }
++        long deadlineNanos = ControlMoveDeadline.deadlineNanos(
++                SystemClock.elapsedRealtimeNanos(), remainingBudgetUs);
++        if (ControlMoveDeadline.isExpired(
++                SystemClock.elapsedRealtimeNanos(), deadlineNanos)) {
++            droppedMoveDeadlineExpired.incrementAndGet();
++            return false;
++        }
+         if (!deliveryGate.isDeliveryAllowed()
+                 || !deliveryGate.isPhysicalTriggerSatisfied()) {
+             droppedOutputDisabled.incrementAndGet();
+@@ -447,7 +471,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+         }
+         offeredMoves.incrementAndGet();
+         long packed = packMove(boundedX, boundedY);
+-        pendingMoveSlot.offer(packed, ticket);
++        pendingMoveSlot.offer(packed, ticket, deadlineNanos);
+         if (!deliveryGate.isDeliveryAllowed()
+                 || !deliveryGate.isPhysicalTriggerSatisfied()) {
+             if (pendingMoveSlot.clearIfMatches(packed, ticket)) {
+@@ -473,13 +497,20 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+             if (!pendingMoveSlot.takeInto(reusablePendingMove)) return;
+             long packed = reusablePendingMove.packed;
+             ticket = reusablePendingMove.ticket;
++            long deadlineNanos = reusablePendingMove.deadlineNanos;
++            if (ControlMoveDeadline.isExpired(
++                    SystemClock.elapsedRealtimeNanos(), deadlineNanos)) {
++                droppedMoveDeadlineExpired.incrementAndGet();
++                QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
++                return;
++            }
+             if (!deliveryGate.isDeliveryAllowed()
+                     || !deliveryGate.isPhysicalTriggerSatisfied()) {
+                 droppedOutputDisabled.incrementAndGet();
+                 reportUndeliveredMoveUnlessRecoveryCancelled(ticket);
+                 return;
+             }
+-            writeMoveIfStillAllowed(packed, ticket);
++            writeMoveIfStillAllowed(packed, ticket, deadlineNanos);
+         } catch (Throwable exception) {
+             if (ticket > 0L) {
+                 QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
+@@ -507,8 +538,16 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+         }
+     }
+ 
+-    private void writeMoveIfStillAllowed(long packed, long ticket) {
++    private void writeMoveIfStillAllowed(
++            long packed, long ticket, long deadlineNanos) {
+         synchronized (serialIoLock) {
++            long beforeAuthorizationNanos = SystemClock.elapsedRealtimeNanos();
++            if (ControlMoveDeadline.isExpired(
++                    beforeAuthorizationNanos, deadlineNanos)) {
++                droppedMoveDeadlineExpired.incrementAndGet();
++                QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
++                return;
++            }
+             if (!deliveryGate.isDeliveryAllowed()
+                     || !deliveryGate.isPhysicalTriggerSatisfied()) {
+                 droppedOutputDisabled.incrementAndGet();
+@@ -527,11 +566,18 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+                     "km.move(" + unpackX(packed) + "," + unpackY(packed) + ")\r\n";
+             byte[] command = commandText.getBytes(StandardCharsets.US_ASCII);
+             long started = SystemClock.elapsedRealtimeNanos();
++            int writeTimeoutMillis = ControlMoveDeadline.boundedTimeoutMillis(
++                    started, deadlineNanos, 25);
++            if (writeTimeoutMillis <= 0) {
++                droppedMoveDeadlineExpired.incrementAndGet();
++                QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
++                return;
++            }
+             long commandConnectionGeneration = activeConnectionGeneration;
+             long commandReaderLease = responseReaderLeaseGeneration.get();
+             beginExpectedResponse(
+                     commandText, commandConnectionGeneration, commandReaderLease);
+-            int wrote = target.write(command, 25);
++            int wrote = target.write(command, writeTimeoutMillis);
+             long writeMicros = (SystemClock.elapsedRealtimeNanos() - started) / 1_000L;
+             if (wrote == command.length) {
+                 deliveryCircuit.recordUsbWriteCompletion(writeMicros);
+@@ -541,7 +587,8 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+                                 commandText,
+                                 started,
+                                 commandConnectionGeneration,
+-                                commandReaderLease);
++                                commandReaderLease,
++                                deadlineNanos);
+                 if (acknowledgementMicros >= 0L) {
+                     deviceCommandAcknowledgements.incrementAndGet();
+                     moveCommandAcknowledgements.incrementAndGet();
+@@ -551,9 +598,16 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+                             ticket, true, acknowledgementMicros);
+                 } else {
+                     deviceAcknowledgementFailures.incrementAndGet();
++                    boolean moveDeadlineExpired = ControlMoveDeadline.isExpired(
++                            SystemClock.elapsedRealtimeNanos(), deadlineNanos);
++                    if (moveDeadlineExpired) {
++                        droppedMoveDeadlineExpired.incrementAndGet();
++                    }
+                     QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
+                     invalidateProtocolAfterDeliveryFailureLocked(
+-                            "device_ack_timeout_or_mismatch");
++                            moveDeadlineExpired
++                                    ? "move_deadline_expired_after_write"
++                                    : "device_ack_timeout_or_mismatch");
+                     lastStatus =
+                             "MAKCU command acknowledgement failed; reconnect required";
+                     events.write("makcu_device_ack_failed",
+@@ -579,12 +633,31 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+             long startedNanos,
+             long connectionGeneration,
+             long readerLease) {
++        return awaitExecutedAcknowledgement(
++                target,
++                expectedCommand,
++                startedNanos,
++                connectionGeneration,
++                readerLease,
++                Long.MAX_VALUE);
++    }
++
++    private long awaitExecutedAcknowledgement(
++            RawUsbTransport target,
++            String expectedCommand,
++            long startedNanos,
++            long connectionGeneration,
++            long readerLease,
++            long moveDeadlineNanos) {
+         if (target == null) {
+             cancelExpectedResponse(
+                     expectedCommand, connectionGeneration, readerLease);
+             return -1L;
+         }
+-        long deadline = startedNanos + COMMAND_RESPONSE_TIMEOUT_NANOS;
++        long responseDeadline = ControlMoveDeadline.boundedDeadlineNanos(
++                startedNanos, COMMAND_RESPONSE_TIMEOUT_NANOS);
++        long deadline = ControlMoveDeadline.earlierDeadline(
++                responseDeadline, moveDeadlineNanos);
+         synchronized (responseLock) {
+             while (isExpectedResponseLocked(
+                     expectedCommand, connectionGeneration, readerLease)
+@@ -602,7 +675,9 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+             }
+             boolean acknowledged = isExpectedResponseLocked(
+                     expectedCommand, connectionGeneration, readerLease)
+-                    && expectedResponseAcknowledged;
++                    && expectedResponseAcknowledged
++                    && expectedResponseAcknowledgedAtNanos > 0L
++                    && expectedResponseAcknowledgedAtNanos <= deadline;
+             clearExpectedResponseLocked();
+             if (!acknowledged) return -1L;
+         }
+@@ -644,6 +719,8 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+                             && MakcuResponseStreamParser.isExecutedAcknowledgement(
+                             response, expected)) {
+                         expectedResponseAcknowledged = true;
++                        expectedResponseAcknowledgedAtNanos =
++                                SystemClock.elapsedRealtimeNanos();
+                         responseLock.notifyAll();
+                     } else {
+                         unexpectedDeviceResponses.incrementAndGet();
+@@ -791,6 +868,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+             expectedResponseConnectionGeneration = connectionGeneration;
+             expectedResponseReaderLease = readerLease;
+             expectedResponseAcknowledged = false;
++            expectedResponseAcknowledgedAtNanos = 0L;
+         }
+     }
+ 
+@@ -817,6 +895,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+         expectedResponseConnectionGeneration = 0L;
+         expectedResponseReaderLease = 0L;
+         expectedResponseAcknowledged = false;
++        expectedResponseAcknowledgedAtNanos = 0L;
+     }
+ 
+     private void scheduleButtonStreamConfiguration() {
+@@ -976,6 +1055,8 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput,
+                 + " physical_execution_verified=0"
+                 + " dropped_disconnected=" + droppedDisconnected.get()
+                 + " dropped_output_disabled=" + droppedOutputDisabled.get()
++                + " dropped_move_deadline_expired="
++                + droppedMoveDeadlineExpired.get()
+                 + " delivery_failures=" + delivery.failureCount
+                 + " consecutive_delivery_failures=" + delivery.consecutiveFailures
+                 + " delivery_circuit_open=" + (delivery.circuitOpen ? 1 : 0)
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileControlHealthSummary.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileControlHealthSummary.java
+index 6c3dc97..7750ca2 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileControlHealthSummary.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileControlHealthSummary.java
+@@ -10,6 +10,11 @@ final class MobileControlHealthSummary {
+         return "processed_frames=" + value(decoderReport, "processed_frames")
+                 + " active_stream_generation="
+                 + value(decoderReport, "active_stream_generation")
++                + " control_blocker=" + value(decoderReport, "control_blocker")
++                + " blocker_age_us="
++                + value(decoderReport, "control_blocker_age_us")
++                + " blocker_transition_id="
++                + value(decoderReport, "control_blocker_transition_id")
+                 + " delivery_fail_closes="
+                 + value(decoderReport, "native_delivery_fail_close_requests")
+                 + " stream_lifecycle_closes="
+@@ -71,6 +76,12 @@ final class MobileControlHealthSummary {
+                 + value(decoderReport, "lost_target_hold_duration_us")
+                 + " pending_suppressed="
+                 + value(decoderReport, "native_move_completion_pending_suppressed")
++                + " pending_age_us="
++                + value(decoderReport, "native_move_completion_pending_age_us")
++                + " pending_deadline_us="
++                + value(decoderReport, "native_move_completion_deadline_us")
++                + " pending_timeouts="
++                + value(decoderReport, "native_move_completion_timeouts")
+                 + " ack_completions="
+                 + value(decoderReport, "native_device_ack_completions")
+                 + " ack_failures=" + value(decoderReport, "native_device_ack_failures")
+@@ -92,6 +103,19 @@ final class MobileControlHealthSummary {
+                 + value(decoderReport, "native_last_offer_interval_us")
+                 + " visibility_min_us="
+                 + value(decoderReport, "makcu_post_completion_visibility_min_us")
++                + " visibility_armed="
++                + value(decoderReport, "post_completion_visibility_armed")
++                + " visibility_age_us="
++                + value(decoderReport, "post_completion_visibility_age_us")
++                + " visibility_timeouts="
++                + value(decoderReport, "post_completion_visibility_timeouts")
++                + " detections=" + value(decoderReport, "last_detection_count")
++                + " max_confidence="
++                + value(decoderReport, "last_max_detection_confidence")
++                + " new_track_threshold="
++                + value(decoderReport, "tracker_new_track_confidence_threshold")
++                + " low_track_threshold="
++                + value(decoderReport, "tracker_low_confidence_threshold")
+                 + " output_requested=" + value(decoderReport, "output_requested")
+                 + " output_enabled=" + value(decoderReport, "output_enabled")
+                 + " user_max_axis=" + value(decoderReport, "maximum_axis_delta")
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileControlRuntime.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileControlRuntime.java
+index 08a7e7c..3177a7a 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileControlRuntime.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileControlRuntime.java
+@@ -526,6 +526,7 @@ final class MobileControlRuntime {
+     private void closeBluetoothHidRoute() {
+         if (bluetoothHidTransport != null) {
+             bluetoothHidTransport.setReconnectListener(null);
++            bluetoothHidTransport.dispose();
+         }
+         if (bluetoothHidAdapter != null) {
+             bluetoothHidAdapter.setForegroundSessionActive(false);
+diff --git a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/QnnHtpBridge.java b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/QnnHtpBridge.java
+index 2ccdf99..ba33d2c 100644
+--- a/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/QnnHtpBridge.java
++++ b/android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/QnnHtpBridge.java
+@@ -127,7 +127,14 @@ final class QnnHtpBridge {
+ 
+     /** Stable JNI callback wrapper; the native bridge binds ControlOutputMoveDispatcher. */
+     static boolean offerNativeMove(int deltaX, int deltaY, long ticket) {
+-        return ControlOutputMoveDispatcher.offerNativeMove(deltaX, deltaY, ticket);
++        return offerNativeMove(
++                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
++    }
++
++    static boolean offerNativeMove(
++            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
++        return ControlOutputMoveDispatcher.offerNativeMove(
++                deltaX, deltaY, ticket, remainingBudgetUs);
+     }
+ 
+     /** Firmware echo + prompt result for the exact native move ticket. */
+diff --git a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCoreSelfTest.java b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCoreSelfTest.java
+index e4a00d6..f412340 100644
+--- a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCoreSelfTest.java
++++ b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCoreSelfTest.java
+@@ -16,6 +16,9 @@ final class BluetoothHidMouseTransportCoreSelfTest {
+         verifiesNativeRecoverySuspendsAndResumesDelivery();
+         verifiesSynchronousMoveBufferIsReused();
+         verifiesReconnectListenerRunsOutsideTransportMonitor();
++        verifiesExpiredMoveIsRejectedBeforeSend();
++        verifiesDeadlineCrossedAfterSendFailsClosed();
++        verifiesAsynchronousSessionRecoveryNotifiesCoordinatorImmediately();
+     }
+ 
+     private static void verifiesMoveOnlyReportAndClamping() {
+@@ -201,6 +204,57 @@ final class BluetoothHidMouseTransportCoreSelfTest {
+         require(stateReadCompleted.get());
+     }
+ 
++    private static void verifiesExpiredMoveIsRejectedBeforeSend() {
++        FakeSessionPort port = new FakeSessionPort();
++        FakeNanoClock clock = new FakeNanoClock();
++        BluetoothHidMouseTransportCore transport =
++                new BluetoothHidMouseTransportCore(
++                        port, new FakeMoveCompletionPort(), clock);
++        require(transport.setOutputDeliveryAllowed(true));
++        require(!transport.offerMoveFromNative(1, 0, 91L, 0L));
++        require(port.sentReports == 0);
++    }
++
++    private static void verifiesDeadlineCrossedAfterSendFailsClosed() {
++        FakeSessionPort port = new FakeSessionPort();
++        FakeNanoClock clock = new FakeNanoClock();
++        port.onSend = () -> clock.advanceNanos(20_000L);
++        FakeMoveCompletionPort completionPort = new FakeMoveCompletionPort();
++        BluetoothHidMouseTransportCore transport =
++                new BluetoothHidMouseTransportCore(port, completionPort, clock);
++        require(transport.setOutputDeliveryAllowed(true));
++        require(!transport.offerMoveFromNative(1, 0, 92L, 10L));
++        require(port.sentReports == 1);
++        require(completionPort.attempts == 0);
++        require(transport.deliveryState().circuitOpen);
++        require(BluetoothHidOutputFailClosedPolicy
++                .REASON_MOVE_DEADLINE_EXPIRED_AFTER_SEND.equals(
++                        transport.deliveryState().lastFailure));
++    }
++
++    private static void verifiesAsynchronousSessionRecoveryNotifiesCoordinatorImmediately() {
++        FakeSessionPort port = new FakeSessionPort();
++        port.nextSendResult = false;
++        BluetoothHidMouseTransportCore transport = createTransport(port);
++        require(transport.setOutputDeliveryAllowed(true));
++        require(!transport.offerMoveFromNative(1, 0, 93L));
++        require(transport.deliveryState().circuitOpen);
++
++        AtomicBoolean notifiedReady = new AtomicBoolean();
++        transport.setReconnectListener(notifiedReady::set);
++        port.nextSendResult = true;
++        port.publishSessionState();
++
++        require(notifiedReady.get());
++        require(!transport.deliveryState().circuitOpen);
++        require(transport.setOutputDeliveryAllowed(true));
++        require(transport.offerMoveFromNative(1, 0, 94L));
++        transport.dispose();
++        notifiedReady.set(false);
++        port.publishSessionState();
++        require(!notifiedReady.get());
++    }
++
+     private static void assertSessionLossFailsClosed(
+             BluetoothHidOutputFailClosedPolicy.SessionState failedState, String expectedReason) {
+         FakeSessionPort port = new FakeSessionPort();
+@@ -251,6 +305,8 @@ final class BluetoothHidMouseTransportCoreSelfTest {
+         byte[] lastReport = new byte[0];
+         byte[] firstInputReport;
+         byte[] lastInputReport;
++        Runnable onSend;
++        Runnable stateListener;
+ 
+         @Override
+         public BluetoothHidOutputFailClosedPolicy.SessionState sessionState() {
+@@ -263,11 +319,36 @@ final class BluetoothHidMouseTransportCoreSelfTest {
+             if (firstInputReport == null) firstInputReport = report;
+             lastInputReport = report;
+             lastReport = report.clone();
++            if (onSend != null) onSend.run();
+             return nextSendResult;
+         }
+ 
+         @Override
+         public void connectFirstSupportedHost() {
+         }
++
++        @Override
++        public void setSessionStateListener(Runnable listener) {
++            stateListener = listener;
++        }
++
++        void publishSessionState() {
++            Runnable listener = stateListener;
++            if (listener != null) listener.run();
++        }
++    }
++
++    private static final class FakeNanoClock
++            implements BluetoothHidMouseTransportCore.NanoClock {
++        long nowNanos = 1_000_000L;
++
++        @Override
++        public long nowNanos() {
++            return nowNanos;
++        }
++
++        void advanceNanos(long delta) {
++            nowNanos += delta;
++        }
+     }
+ }
+diff --git a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/ControlMoveDeadlineSelfTest.java b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/ControlMoveDeadlineSelfTest.java
+new file mode 100644
+index 0000000..db68154
+--- /dev/null
++++ b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/ControlMoveDeadlineSelfTest.java
+@@ -0,0 +1,34 @@
++package com.visionforge.inferencebenchmark;
++
++/** Pure JVM boundary tests for the shared native-move deadline helpers. */
++public final class ControlMoveDeadlineSelfTest {
++    private ControlMoveDeadlineSelfTest() {
++    }
++
++    public static void main(String[] args) {
++        run();
++    }
++
++    static void run() {
++        require(ControlMoveDeadline.deadlineNanos(1_000L, 250L) == 251_000L);
++        require(ControlMoveDeadline.deadlineNanos(1_000L, 0L) == 1_000L);
++        require(ControlMoveDeadline.deadlineNanos(Long.MAX_VALUE - 10L, 1L)
++                == Long.MAX_VALUE);
++        require(ControlMoveDeadline.boundedDeadlineNanos(
++                Long.MAX_VALUE - 10L, 20L) == Long.MAX_VALUE);
++        require(ControlMoveDeadline.earlierDeadline(10L, 20L) == 10L);
++        require(ControlMoveDeadline.isExpired(10L, 10L));
++        require(!ControlMoveDeadline.isExpired(9L, 10L));
++        require(ControlMoveDeadline.remainingNanos(9L, 10L) == 1L);
++        require(ControlMoveDeadline.boundedTimeoutMillis(0L, 1L, 25) == 1);
++        require(ControlMoveDeadline.boundedTimeoutMillis(
++                0L, 24_000_001L, 25) == 25);
++        require(ControlMoveDeadline.boundedTimeoutMillis(
++                1L, Long.MAX_VALUE, 25) == 25);
++        require(ControlMoveDeadline.boundedTimeoutMillis(10L, 10L, 25) == 0);
++    }
++
++    private static void require(boolean condition) {
++        if (!condition) throw new AssertionError("Control move deadline contract failed");
++    }
++}
+diff --git a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MakcuDeliveryGateSelfTest.java b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MakcuDeliveryGateSelfTest.java
+index fc7a824..577522b 100644
+--- a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MakcuDeliveryGateSelfTest.java
++++ b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MakcuDeliveryGateSelfTest.java
+@@ -139,16 +139,18 @@ final class MakcuDeliveryGateSelfTest {
+         MakcuPendingMoveSlot slot = new MakcuPendingMoveSlot();
+         MakcuPendingMoveSlot.PendingMove snapshot =
+                 new MakcuPendingMoveSlot.PendingMove();
+-        slot.offer(17L, 23L);
++        slot.offer(17L, 23L, 31L);
+         require(slot.takeInto(snapshot));
+-        require(snapshot.packed == 17L && snapshot.ticket == 23L);
++        require(snapshot.packed == 17L && snapshot.ticket == 23L
++                && snapshot.deadlineNanos == 31L);
+ 
+         // A stale failure for an identical displacement must not erase the
+         // newer native ticket that replaced it.
+-        slot.offer(17L, 29L);
++        slot.offer(17L, 29L, 37L);
+         require(!slot.clearIfMatches(17L, 23L));
+         require(slot.takeInto(snapshot));
+-        require(snapshot.packed == 17L && snapshot.ticket == 29L);
++        require(snapshot.packed == 17L && snapshot.ticket == 29L
++                && snapshot.deadlineNanos == 37L);
+     }
+ 
+     private static void verifiesHotPathCanReuseOnePendingMoveSnapshot() {
+@@ -157,14 +159,16 @@ final class MakcuDeliveryGateSelfTest {
+                 new MakcuPendingMoveSlot.PendingMove();
+         require(!slot.takeInto(destination));
+ 
+-        slot.offer(31L, 37L);
++        slot.offer(31L, 37L, 41L);
+         require(slot.takeInto(destination));
+-        require(destination.packed == 31L && destination.ticket == 37L);
++        require(destination.packed == 31L && destination.ticket == 37L
++                && destination.deadlineNanos == 41L);
+         require(!slot.hasPending());
+ 
+-        slot.offer(41L, 43L);
++        slot.offer(41L, 43L, 47L);
+         require(slot.takeInto(destination));
+-        require(destination.packed == 41L && destination.ticket == 43L);
++        require(destination.packed == 41L && destination.ticket == 43L
++                && destination.deadlineNanos == 47L);
+     }
+ 
+     private static void waitUntil(Condition condition) {
+diff --git a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MakcuJniContractSelfTest.java b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MakcuJniContractSelfTest.java
+index 271efd1..c7fd6c6 100644
+--- a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MakcuJniContractSelfTest.java
++++ b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MakcuJniContractSelfTest.java
+@@ -24,6 +24,9 @@ final class MakcuJniContractSelfTest {
+         String dispatcher = readUtf8(sourceRoot.resolve(Paths.get(
+                 "java", "com", "visionforge", "inferencebenchmark",
+                 "ControlOutputMoveDispatcher.java")));
++        String moveDeadline = readUtf8(sourceRoot.resolve(Paths.get(
++                "java", "com", "visionforge", "inferencebenchmark",
++                "ControlMoveDeadline.java")));
+         String nativeBridge = readUtf8(sourceRoot.resolve(Paths.get(
+                 "cpp", "QnnHtpBridge.cpp")));
+         String moveBridge = readUtf8(sourceRoot.resolve(Paths.get(
+@@ -38,17 +41,34 @@ final class MakcuJniContractSelfTest {
+         require(Pattern.compile("final\\s+class\\s+MakcuSerialController\\s+implements\\s+"
+                 + "MakcuConnection\\s*,\\s*MakcuButtonInput\\s*,\\s*ControlOutputMoveSink")
+                 .matcher(controller).find());
++        java.util.regex.Matcher javaBudget = Pattern.compile(
++                "DEFAULT_BUDGET_US\\s*=\\s*([0-9_]+)L")
++                .matcher(moveDeadline);
++        java.util.regex.Matcher nativeBudget = Pattern.compile(
++                "kMaximumMoveCompletionAgeUs\\s*=\\s*([0-9']+)U")
++                .matcher(moveBridge);
++        require(javaBudget.find() && nativeBudget.find());
++        require(parseNumericLiteral(javaBudget.group(1))
++                == parseNumericLiteral(nativeBudget.group(1)));
++
+         require(Pattern.compile("static\\s+boolean\\s+offerNativeMove\\s*\\("
+                         + "\\s*int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
+-                        + "\\s*long\\s+ticket\\s*\\).*?"
+-                        + "current\\.offerMoveFromNative\\(deltaX,\\s*deltaY,\\s*ticket\\)",
++                        + "\\s*long\\s+ticket\\s*,"
++                        + "\\s*long\\s+remainingBudgetUs\\s*\\).*?"
++                        + "current\\.offerMoveFromNative\\("
++                        + "\\s*deltaX,\\s*deltaY,\\s*ticket,"
++                        + "\\s*remainingBudgetUs\\s*\\)",
+                 Pattern.DOTALL).matcher(dispatcher).find());
+         require(dispatcher.contains(
+                 "current.suspendMoveDeliveryForNativeRecovery(generation)"));
+         require(dispatcher.contains(
+                 "current.resumeMoveDeliveryAfterNativeRecovery(generation)"));
+         require(dispatcher.contains("current.failClosedNativeMoveDelivery()"));
+-        require(controller.contains("offerMoveFromNative(int deltaX, int deltaY, long ticket)"));
++        require(Pattern.compile("offerMoveFromNative\\s*\\("
++                        + "\\s*int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
++                        + "\\s*long\\s+ticket\\s*,"
++                        + "\\s*long\\s+remainingBudgetUs\\s*\\)")
++                .matcher(controller).find());
+         require(controller.contains("suspendMoveDeliveryForNativeRecovery(long generation)"));
+         require(controller.contains("resumeMoveDeliveryAfterNativeRecovery(long generation)"));
+         require(controller.contains("failClosedNativeMoveDelivery()"));
+@@ -59,12 +79,14 @@ final class MakcuJniContractSelfTest {
+         require(controller.contains("handleDeviceAttached(device)"));
+         require(controller.contains("automatic_connect=true"));
+         require(Pattern.compile("offerNativeMove\\s*\\("
+-                        + "int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
+-                        + "\\s*long\\s+ticket\\s*\\)")
++                        + "\\s*int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
++                        + "\\s*long\\s+ticket\\s*,"
++                        + "\\s*long\\s+remainingBudgetUs\\s*\\)")
+                 .matcher(controller).find());
+         require(Pattern.compile("private\\s+boolean\\s+offerMove\\s*\\(.*?"
+                         + "!deliveryGate\\.isPhysicalTriggerSatisfied\\(\\).*?"
+-                        + "pendingMoveSlot\\.offer\\(packed,\\s*ticket\\).*?"
++                        + "pendingMoveSlot\\.offer\\("
++                        + "packed,\\s*ticket,\\s*deadlineNanos\\).*?"
+                         + "!deliveryGate\\.isPhysicalTriggerSatisfied\\(\\)",
+                 Pattern.DOTALL).matcher(controller).find());
+         require(controller.contains(
+@@ -276,15 +298,15 @@ final class MakcuJniContractSelfTest {
+         require(moveBridge.contains("environment->NewGlobalRef(controller_class)"));
+         require(moveBridge.contains("environment->GetStaticMethodID"));
+         require(moveBridge.contains(
+-                "GetStaticMethodID(candidate_class, \"offerNativeMove\", \"(IIJ)Z\")"));
++                "candidate_class, \"offerNativeMove\", \"(IIJJ)Z\""));
+         require(moveBridge.contains("environment->ExceptionCheck()"));
+         require(moveBridge.contains("g_java_bridge_ready.store(false"));
+         require(moveBridge.contains("g_move_commit_gate.pending()"));
+         require(moveBridge.contains("g_move_commit_gate.expire_if_older("));
+-        require(moveBridge.contains("g_move_visibility_gate.consume_if_visible("));
++        require(moveBridge.contains("g_move_visibility_gate.evaluate("));
+         require(moveBridge.indexOf("g_move_commit_gate.pending()")
+                 < moveBridge.indexOf("g_control_core.process("));
+-        require(moveBridge.indexOf("g_move_visibility_gate.consume_if_visible(")
++        require(moveBridge.indexOf("g_move_visibility_gate.evaluate(")
+                 < moveBridge.indexOf("g_control_core.process("));
+         require(moveBridge.contains("completed_move_became_visible"));
+         require(moveBridge.contains("g_control_core.apply_visible_ego_motion("));
+@@ -430,8 +452,8 @@ final class MakcuJniContractSelfTest {
+         require(moveBridge.contains(
+                 "native_stream_lifecycle_close_requests="));
+         require(Pattern.compile(
+-                "void\\s+fail_closed_native_state\\s*\\("
+-                        + "MakcuStreamCloseScope\\s+scope\\)\\s*noexcept"
++                "void\\s+fail_closed_native_state\\s*\\(.*?"
++                        + "MakcuStreamCloseScope\\s+scope.*?\\)\\s*noexcept"
+                         + ".*?g_stream_generation_gate\\.fail_closed\\(scope\\)"
+                         + ".*?scope\\s*==\\s*MakcuStreamCloseScope::delivery_failure"
+                         + ".*?\\+\\+g_delivery_fail_close_requests"
+@@ -472,6 +494,10 @@ final class MakcuJniContractSelfTest {
+         require(bluetoothCompletion.matcher(moveBridge).find());
+     }
+ 
++    private static long parseNumericLiteral(String value) {
++        return Long.parseLong(value.replace("_", "").replace("'", ""));
++    }
++
+     private static void require(boolean condition) {
+         if (!condition) throw new AssertionError("MAKCU JNI controller-class contract failed");
+     }
+diff --git a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileControlHealthSummarySelfTest.java b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileControlHealthSummarySelfTest.java
+index e4a2d98..2f789dd 100644
+--- a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileControlHealthSummarySelfTest.java
++++ b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileControlHealthSummarySelfTest.java
+@@ -6,6 +6,8 @@ final class MobileControlHealthSummarySelfTest {
+     static void run() {
+         String decoderReport = "configured=1 makcu_bridge{"
+                 + "processed_frames=912 active_stream_generation=73 "
++                + "control_blocker=post_ack_visibility control_blocker_age_us=225000 "
++                + "control_blocker_transition_id=19 "
+                 + "native_delivery_fail_close_requests=4 "
+                 + "native_stream_lifecycle_close_requests=1 "
+                 + "stale_stream_generation_suppressed=2 "
+@@ -32,6 +34,9 @@ final class MobileControlHealthSummarySelfTest {
+                 + "switch_confirmation_duration_us=25000 "
+                 + "lost_target_hold_duration_us=25000 "
+                 + "native_move_completion_pending_suppressed=9 "
++                + "native_move_completion_pending_age_us=37000 "
++                + "native_move_completion_deadline_us=250000 "
++                + "native_move_completion_timeouts=2 "
+                 + "native_device_ack_completions=22 native_device_ack_failures=1 "
+                 + "native_last_device_ack_latency_us=735 "
+                 + "native_last_device_ack_interval_us=18400 "
+@@ -42,12 +47,20 @@ final class MobileControlHealthSummarySelfTest {
+                 + "native_offered_direction_flips_x=5 "
+                 + "native_offered_direction_flips_y=2 "
+                 + "native_last_offer_interval_us=17600 "
+-                + "makcu_post_completion_visibility_min_us=0 output_requested=1 "
++                + "makcu_post_completion_visibility_min_us=0 "
++                + "post_completion_visibility_armed=1 "
++                + "post_completion_visibility_age_us=225000 "
++                + "post_completion_visibility_timeouts=1 "
++                + "last_detection_count=2 last_max_detection_confidence=0.46 "
++                + "tracker_new_track_confidence_threshold=0.5 "
++                + "tracker_low_confidence_threshold=0.25 output_requested=1 "
+                 + "output_enabled=1 maximum_axis_delta=127 "
+                 + "motion_uncalibrated_maximum_axis_delta=32}";
+         String summary = MobileControlHealthSummary.format(decoderReport);
+         require(summary.equals(
+                 "processed_frames=912 active_stream_generation=73 "
++                        + "control_blocker=post_ack_visibility blocker_age_us=225000 "
++                        + "blocker_transition_id=19 "
+                         + "delivery_fail_closes=4 stream_lifecycle_closes=1 "
+                         + "stale_generation_suppressed=2 output_disabled_suppressed=17 "
+                         + "candidate_moves=41 no_targets=7 unsupported_class=3 tracks_created=5 "
+@@ -66,12 +79,15 @@ final class MobileControlHealthSummarySelfTest {
+                         + "time_velocity_updates=27 max_observation_interval_us=31000 "
+                         + "filter_max_innovation_px=18.5 tracking_lock_updates=13 "
+                         + "switch_confirm_us=25000 lost_hold_us=25000 "
+-                        + "pending_suppressed=9 "
+-                        + "ack_completions=22 ack_failures=1 last_ack_us=735 "
++                        + "pending_suppressed=9 pending_age_us=37000 pending_deadline_us=250000 "
++                        + "pending_timeouts=2 ack_completions=22 ack_failures=1 last_ack_us=735 "
+                         + "last_ack_interval_us=18400 last_move=-4,3 "
+                         + "absolute_move=182,97 maximum_absolute_axis=12 "
+                         + "direction_flips=5,2 last_offer_interval_us=17600 "
+-                        + "visibility_min_us=0 output_requested=1 output_enabled=1 "
++                        + "visibility_min_us=0 visibility_armed=1 visibility_age_us=225000 "
++                        + "visibility_timeouts=1 detections=2 max_confidence=0.46 "
++                        + "new_track_threshold=0.5 low_track_threshold=0.25 "
++                        + "output_requested=1 output_enabled=1 "
+                         + "user_max_axis=127 effective_uncalibrated_max_axis=32"));
+ 
+         String missing = MobileControlHealthSummary.format(null);
+diff --git a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeSnapshotSelfTest.java b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeSnapshotSelfTest.java
+index b4a4a1e..a09ddbd 100644
+--- a/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeSnapshotSelfTest.java
++++ b/android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeSnapshotSelfTest.java
+@@ -44,6 +44,7 @@ public final class MobileRuntimeSnapshotSelfTest {
+         MakcuConnectionAttemptTrackerSelfTest.run();
+         MakcuDeliveryCircuitSelfTest.run();
+         MakcuDeliveryGateSelfTest.run();
++        ControlMoveDeadlineSelfTest.run();
+         MakcuResponseStreamParserSelfTest.run();
+         ControlTriggerSelfTest.run();
+         MakcuJniContractSelfTest.run();
+diff --git a/dual_machine_runtime/CMakeLists.txt b/dual_machine_runtime/CMakeLists.txt
+index 1d3449e..1f35fd1 100644
+--- a/dual_machine_runtime/CMakeLists.txt
++++ b/dual_machine_runtime/CMakeLists.txt
+@@ -442,6 +442,14 @@ if(WIN32)
+         ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp)
+     add_test(NAME vfdual_makcu_output_gate_tests COMMAND vfdual_makcu_output_gate_tests)
+ 
++    add_executable(vfdual_control_blocker_state_tests
++        ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp/ControlBlockerStateTests.cpp
++    )
++    target_include_directories(vfdual_control_blocker_state_tests PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp)
++    add_test(NAME vfdual_control_blocker_state_tests
++        COMMAND vfdual_control_blocker_state_tests)
++
+     add_executable(vfdual_yolo_postprocessor_tests
+         ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp/YoloPostprocessorTests.cpp
+         ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp/YoloPostprocessor.cpp
+-- 
+2.47.3
+

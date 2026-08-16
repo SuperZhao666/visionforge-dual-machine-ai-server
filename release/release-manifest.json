@@ -1,0 +1,46 @@
+{
+  "schema": "visionforge-dual-machine-release-manifest-v1",
+  "manifest_kind": "source",
+  "release_id": "visionforge-dual-machine-1.0.8",
+  "commit": "${GIT_COMMIT}",
+  "client_protocol_version": "1.0.0",
+  "wire_protocol_version": 2,
+  "components": {
+    "server": {
+      "version": "1.0.8",
+      "minimum_supported_version": "1.0.0"
+    },
+    "host": {
+      "version": "1.0.8",
+      "minimum_supported_version": "1.0.0"
+    },
+    "android": {
+      "version": "1.0.8",
+      "version_code": 11,
+      "previous_version_code": 10,
+      "minimum_supported_version": "1.0.0",
+      "package_name": "com.visionforge.mobile"
+    }
+  },
+  "artifacts": {
+    "android_apk": {
+      "url": "/static/dual-machine-mobile/<sha256>.apk",
+      "size": null,
+      "sha256": null
+    },
+    "host_exe": {
+      "url": "/static/dual-machine-host/<sha256>.exe",
+      "size": null,
+      "sha256": null
+    }
+  },
+  "signature": {
+    "algorithm": "Ed25519",
+    "key_id": "${RELEASE_MANIFEST_KEY_ID}",
+    "signature_b64": "${RELEASE_MANIFEST_SIGNATURE_B64}"
+  },
+  "publication": {
+    "status": "unpublished",
+    "immutable": true
+  }
+}

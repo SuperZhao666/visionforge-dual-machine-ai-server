@@ -526,6 +526,7 @@ final class MobileControlRuntime {
     private void closeBluetoothHidRoute() {
         if (bluetoothHidTransport != null) {
             bluetoothHidTransport.setReconnectListener(null);
+            bluetoothHidTransport.dispose();
         }
         if (bluetoothHidAdapter != null) {
             bluetoothHidAdapter.setForegroundSessionActive(false);

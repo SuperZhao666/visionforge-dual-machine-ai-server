@@ -7,7 +7,16 @@ namespace vfdual_android {
 /** Pure timing policy for loss/reconnect recovery on the UDP video receiver. */
 class ReceiverRecoveryPolicy final {
 public:
-  [[nodiscard]] bool observe_fragment(std::uint64_t now_us, bool completed_access_unit,
+  /**
+   * Records receiver progress.
+   *
+   * `fresh_content_accepted` deliberately does not mean merely "a complete
+   * access unit was decoded". Synthetic VFRR/repeat access units keep the
+   * H.264 reference chain alive but provide no new visual evidence for the
+   * closed-loop controller. Treating those repeats as recovery progress can
+   * reset the IDR stall timer forever after an acknowledged move.
+   */
+  [[nodiscard]] bool observe_fragment(std::uint64_t now_us, bool fresh_content_accepted,
                                       bool source_changed, bool reassembly_expired) noexcept;
   [[nodiscard]] bool observe_idle(std::uint64_t now_us, bool sender_known) noexcept;
   void mark_idr_requested(std::uint64_t now_us) noexcept;

@@ -8,6 +8,7 @@
 #include "vfdual/host_preferred_probe_log_policy.hpp"
 #include "vfdual/host_recovery_policy.hpp"
 #include "vfdual/h264_encoder_config.hpp"
+#include "vfdual/video_transport_contract.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -435,8 +436,10 @@ std::string describe_native_error(std::int32_t code) {
 HostRuntimeConfig create_runtime_config(
     const HostStreamSettings& settings,
     const std::string& metrics_path,
+    std::uint64_t stream_epoch,
     VideoDataPlanePermitSource data_plane_permit) {
     HostRuntimeConfig config{};
+    config.video.stream_epoch = stream_epoch;
     config.video.local_host = settings.local_host;
     config.video.local_port = kWiredVideoSourcePort;
     config.video.phone_host = settings.phone_host;
@@ -462,7 +465,7 @@ HostRuntimeConfig create_runtime_config(
 }
 
 HostStreamMetrics copy_metrics(const HostApplicationStats& source, std::uint64_t published_offset,
-                               std::uint64_t timeout_offset, std::uint32_t stream_epoch,
+                               std::uint64_t timeout_offset, std::uint64_t stream_epoch,
                                std::uint32_t recovery_count,
                                const Cat6SessionSnapshot& transport_session,
                                const HostCat6MonitorSnapshot& monitor,
@@ -714,6 +717,7 @@ std::string describe_video_failure(const DesktopVideoStepMetrics& video) {
             case DesktopVideoStepStatus::data_plane_closed: return "data_plane_closed";
             case DesktopVideoStepStatus::capture_timeout: return "capture_timeout";
             case DesktopVideoStepStatus::capture_access_lost: return "capture_access_lost";
+            case DesktopVideoStepStatus::capture_device_removed: return "capture_device_removed";
             case DesktopVideoStepStatus::capture_failed: return "capture";
             case DesktopVideoStepStatus::bridge_failed: return "frame_bridge";
             case DesktopVideoStepStatus::encode_failed: return "encode";
@@ -978,7 +982,8 @@ bool refresh_capture_geometry(HostStreamSettings& settings) {
     settings.width = geometry.encoder_width;
     settings.height = geometry.encoder_height;
     settings.capture_region = DesktopCaptureRegion{
-        geometry.local_roi_x, geometry.local_roi_y,
+        static_cast<std::int32_t>(geometry.local_roi_x),
+        static_cast<std::int32_t>(geometry.local_roi_y),
         geometry.local_roi_width, geometry.local_roi_height};
     settings.display_id = narrow_display_id(output->device_name);
     settings.display_left = geometry.display_rect.left;
@@ -1029,14 +1034,19 @@ HostRuntimeService::~HostRuntimeService() { stop(); }
 
 bool HostRuntimeService::start(const HostStreamSettings& settings, std::string& error) {
     stop();
-    const std::uint64_t roi_right = static_cast<std::uint64_t>(settings.capture_region.x) +
+    const std::int64_t roi_right =
+        static_cast<std::int64_t>(settings.capture_region.x) +
         settings.capture_region.width;
-    const std::uint64_t roi_bottom = static_cast<std::uint64_t>(settings.capture_region.y) +
+    const std::int64_t roi_bottom =
+        static_cast<std::int64_t>(settings.capture_region.y) +
         settings.capture_region.height;
     if (settings.width != kAiCaptureEdge || settings.height != kAiCaptureEdge ||
         settings.encoder_timing_fps == 0 ||
+        settings.capture_region.x < 0 || settings.capture_region.y < 0 ||
         settings.capture_region.width == 0 || settings.capture_region.height == 0 ||
         settings.source_width == 0 || settings.source_height == 0 ||
+        roi_right <= settings.capture_region.x ||
+        roi_bottom <= settings.capture_region.y ||
         roi_right > settings.source_width || roi_bottom > settings.source_height) {
         std::ostringstream detail;
         detail << "invalid host stream settings"
@@ -1387,8 +1397,14 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
         return;
     }
     HostApplication application;
+    const std::uint64_t stream_epoch_seed =
+        derive_video_stream_epoch(
+            (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32U) ^
+                static_cast<std::uint64_t>(GetTickCount64()),
+            static_cast<std::uint64_t>(GetTickCount64()) * 1'000ULL);
+    std::uint64_t stream_epoch = stream_epoch_seed;
     if (!application.start(create_runtime_config(
-            settings, metrics_path,
+            settings, metrics_path, stream_epoch,
             []() noexcept {
                 return true;
             }))) {
@@ -1422,7 +1438,6 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
         start_finished_ = true;
     }
     start_condition_.notify_all();
-    std::uint32_t stream_epoch = 1U;
     write_host_event("host_stream_started",
                      "stream_epoch=" + std::to_string(stream_epoch) + " " +
                      describe_cat6_session(active_session));
@@ -2022,8 +2037,16 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
                 continue;
             }
             write_host_capture_geometry_event(settings);
+            std::uint64_t next_stream_epoch{};
+            if (stream_epoch >= kVideoStreamEpochMax) {
+                next_stream_epoch = derive_video_stream_epoch(
+                    stream_epoch_seed ^ decision.total_failures,
+                    static_cast<std::uint64_t>(GetTickCount64()) * 1'000ULL);
+            } else {
+                next_stream_epoch = stream_epoch + 1U;
+            }
             if (!application.start(create_runtime_config(
-                    settings, metrics_path,
+                    settings, metrics_path, next_stream_epoch,
                     []() noexcept {
                         return true;
                     }))) {
@@ -2045,7 +2068,7 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
             }
             write_host_encoder_selected_event(application);
             video_forward_progress_policy.reset();
-            ++stream_epoch;
+            stream_epoch = next_stream_epoch;
             if (successful_recoveries !=
                 (std::numeric_limits<std::uint32_t>::max)()) {
                 ++successful_recoveries;

@@ -1,0 +1,11 @@
+git_worktree	PASS	clean worktree; diff check passed
+git_fsck	PASS	git object database valid
+cpp_control_tests	PASS	8 binaries compiled and passed
+makcu_bridge_syntax	PASS	syntax valid; OpenJDK-only JNI conversion warnings retained in log
+java_runtime_snapshot	PASS	164 Java sources compiled; aggregate self-test passed
+cmake_portable	PASS	full build passed; 6/6 ctests passed
+release_manifest_python	PASS	manifest validator, 3 unit tests, compileall and direct identity passed
+gradle_wrapper	NOT_RUN	Gradle 9.2.1 distribution not cached and network unavailable; manual equivalent passed
+server_targeted_pytest	NOT_RUN	environment lacks locked bcrypt/slowapi dependencies; source compile and direct manifest tests passed
+android_apk_build	NOT_RUN	Android SDK/NDK and physical QNN target unavailable in execution environment
+physical_usb_bluetooth	NOT_RUN	requires user's Android device, MAKCU USB adapter/Bluetooth host and live video source

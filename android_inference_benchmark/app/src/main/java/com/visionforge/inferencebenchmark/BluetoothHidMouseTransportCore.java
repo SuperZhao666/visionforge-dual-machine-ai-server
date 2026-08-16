@@ -9,14 +9,23 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
         boolean sendMouseReport(byte[] report);
 
         void connectFirstSupportedHost();
+
+        /** Publishes asynchronous Android profile/app/host state transitions. */
+        default void setSessionStateListener(Runnable listener) {
+        }
     }
 
     interface MoveCompletionPort {
         boolean reportApiAccepted(long ticket, long acceptanceMicros);
     }
 
+    interface NanoClock {
+        long nowNanos();
+    }
+
     private final SessionPort sessionPort;
     private final MoveCompletionPort moveCompletionPort;
+    private final NanoClock nanoClock;
     private final MakcuDeliveryCircuit deliveryCircuit = new MakcuDeliveryCircuit(1);
     private final byte[] reusableMouseReport = new byte[4];
     private boolean outputDeliveryAllowed;
@@ -24,14 +33,29 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
     private boolean nativeRecoverySuspended;
     private long recoveryGeneration;
     private ReconnectListener reconnectListener;
+    private String lastSessionDecisionReason = "";
+    private boolean disposed;
 
     BluetoothHidMouseTransportCore(
             SessionPort sessionPort,
             MoveCompletionPort moveCompletionPort) {
+        this(sessionPort, moveCompletionPort, System::nanoTime);
+    }
+
+    BluetoothHidMouseTransportCore(
+            SessionPort sessionPort,
+            MoveCompletionPort moveCompletionPort,
+            NanoClock nanoClock) {
         if (sessionPort == null) throw new IllegalArgumentException("sessionPort");
         if (moveCompletionPort == null) throw new IllegalArgumentException("moveCompletionPort");
+        if (nanoClock == null) throw new IllegalArgumentException("nanoClock");
         this.sessionPort = sessionPort;
         this.moveCompletionPort = moveCompletionPort;
+        this.nanoClock = nanoClock;
+        BluetoothHidOutputFailClosedPolicy.Decision initialDecision =
+                BluetoothHidOutputFailClosedPolicy.evaluate(sessionPort.sessionState());
+        lastSessionDecisionReason = initialDecision.reason;
+        sessionPort.setSessionStateListener(this::onSessionStateChanged);
     }
 
     @Override
@@ -51,9 +75,10 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
         boolean ready;
         synchronized (this) {
             sessionPort.connectFirstSupportedHost();
-            boolean sessionReady = BluetoothHidOutputFailClosedPolicy.evaluate(
-                    sessionPort.sessionState()).outputAllowed;
-            if (sessionReady) deliveryCircuit.resetAfterSuccessfulReconnect();
+            BluetoothHidOutputFailClosedPolicy.Decision decision =
+                    BluetoothHidOutputFailClosedPolicy.evaluate(sessionPort.sessionState());
+            lastSessionDecisionReason = decision.reason;
+            if (decision.outputAllowed) deliveryCircuit.resetAfterSuccessfulReconnect();
             listener = reconnectListener;
             ready = isReadyLocked();
         }
@@ -89,25 +114,36 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
     }
 
     @Override
-    public synchronized boolean offerMoveFromNative(int deltaX, int deltaY, long ticket) {
-        if (ticket <= 0L) return false;
-        return sendMove(deltaX, deltaY, ticket, true);
+    public synchronized boolean offerMoveFromNative(
+            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
+        if (ticket <= 0L || remainingBudgetUs <= 0L) return false;
+        long deadlineNanos = ControlMoveDeadline.deadlineNanos(
+                nanoClock.nowNanos(), remainingBudgetUs);
+        return sendMove(deltaX, deltaY, ticket, true, deadlineNanos);
     }
 
     /** Debug-only direct HID send that never completes or mutates a native move ticket. */
     synchronized boolean sendDiagnosticMove(int deltaX, int deltaY) {
-        return sendMove(deltaX, deltaY, 0L, false);
+        return sendMove(deltaX, deltaY, 0L, false, Long.MAX_VALUE);
     }
 
     private boolean sendMove(
             int deltaX,
             int deltaY,
             long ticket,
-            boolean reportNativeApiAcceptance) {
+            boolean reportNativeApiAcceptance,
+            long deadlineNanos) {
         int boundedX = clampMouseDelta(deltaX);
         int boundedY = clampMouseDelta(deltaY);
         if (boundedX == 0 && boundedY == 0) return false;
         if (!outputDeliveryAllowed || nativeRecoverySuspended) return false;
+        if (reportNativeApiAcceptance
+                && ControlMoveDeadline.isExpired(nanoClock.nowNanos(), deadlineNanos)) {
+            recordDeliveryFailure(
+                    BluetoothHidOutputFailClosedPolicy
+                            .REASON_MOVE_DEADLINE_EXPIRED_BEFORE_SEND);
+            return false;
+        }
 
         BluetoothHidOutputFailClosedPolicy.Decision decision =
                 BluetoothHidOutputFailClosedPolicy.evaluate(sessionPort.sessionState());
@@ -120,12 +156,20 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
         reusableMouseReport[1] = (byte) boundedX;
         reusableMouseReport[2] = (byte) boundedY;
         reusableMouseReport[3] = 0;
-        long started = System.nanoTime();
+        long started = nanoClock.nowNanos();
         if (!sessionPort.sendMouseReport(reusableMouseReport)) {
             recordDeliveryFailure(BluetoothHidOutputFailClosedPolicy.REASON_SEND_REPORT_FALSE);
             return false;
         }
-        long acceptanceMicros = Math.max(1L, (System.nanoTime() - started) / 1_000L);
+        long completed = nanoClock.nowNanos();
+        if (reportNativeApiAcceptance
+                && ControlMoveDeadline.isExpired(completed, deadlineNanos)) {
+            recordDeliveryFailure(
+                    BluetoothHidOutputFailClosedPolicy
+                            .REASON_MOVE_DEADLINE_EXPIRED_AFTER_SEND);
+            return false;
+        }
+        long acceptanceMicros = Math.max(1L, (completed - started) / 1_000L);
         deliveryCircuit.recordUsbWriteCompletion(acceptanceMicros);
         if (reportNativeApiAcceptance
                 && !moveCompletionPort.reportApiAccepted(ticket, acceptanceMicros)) {
@@ -172,10 +216,54 @@ final class BluetoothHidMouseTransportCore implements ControlOutputTransport, Co
 
     private void recordDeliveryFailure(String reason) {
         deliveryCircuit.recordFailure(reason);
+        lastSessionDecisionReason = reason == null ? "delivery_failure" : reason;
         outputDeliveryAllowed = false;
         deliveryAllowedBeforeRecovery = false;
         nativeRecoverySuspended = false;
         recoveryGeneration = 0L;
+    }
+
+    /**
+     * Android delivers HID profile and host changes asynchronously. Translate
+     * each effective state transition into the existing reconnect callback so
+     * the coordinator can reconcile immediately instead of waiting for its
+     * periodic health poll.
+     */
+    private void onSessionStateChanged() {
+        ReconnectListener listener;
+        boolean ready;
+        synchronized (this) {
+            if (disposed) return;
+            BluetoothHidOutputFailClosedPolicy.Decision decision =
+                    BluetoothHidOutputFailClosedPolicy.evaluate(sessionPort.sessionState());
+            if (decision.reason.equals(lastSessionDecisionReason)
+                    && !(decision.outputAllowed
+                    && deliveryCircuit.snapshot().circuitOpen)) {
+                return;
+            }
+            lastSessionDecisionReason = decision.reason;
+            if (decision.outputAllowed) {
+                deliveryCircuit.resetAfterSuccessfulReconnect();
+            } else if (outputDeliveryAllowed || nativeRecoverySuspended) {
+                recordDeliveryFailure(decision.reason);
+            }
+            listener = reconnectListener;
+            ready = isReadyLocked();
+        }
+        if (listener != null) listener.onReconnectResult(ready);
+    }
+
+    void dispose() {
+        synchronized (this) {
+            if (disposed) return;
+            disposed = true;
+            reconnectListener = null;
+            outputDeliveryAllowed = false;
+            deliveryAllowedBeforeRecovery = false;
+            nativeRecoverySuspended = false;
+            recoveryGeneration = 0L;
+        }
+        sessionPort.setSessionStateListener(null);
     }
 
     private static int clampMouseDelta(int value) {

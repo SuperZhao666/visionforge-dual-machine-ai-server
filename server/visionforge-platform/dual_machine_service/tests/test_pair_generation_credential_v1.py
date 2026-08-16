@@ -67,6 +67,12 @@ class _NoOpVerifyPublicKey(rsa.RSAPublicKey):
     def __eq__(self, other: object) -> bool:
         return self is other
 
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
 
 class _NoOpSignPrivateKey(rsa.RSAPrivateKey):
     def __init__(self, delegate: rsa.RSAPrivateKey) -> None:
@@ -96,6 +102,12 @@ class _NoOpSignPrivateKey(rsa.RSAPrivateKey):
     def sign(self, data, padding, algorithm) -> bytes:
         self.sign_calls += 1
         return b"\x00"
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
 
 
 @pytest.fixture(scope="module")

@@ -1,0 +1,6 @@
+* e33d08b390a7fbc74032f33aea37744c84ce4f6d 2026-08-16T03:02:42Z OpenAI VisionForge Recovery
+|     feat(e2e): complete app-host architecture, simulation, and validation
+* d7b42ecb00c26dc99b6f9f61f7cbc4cf76c55b6e 2026-08-16T02:37:57Z OpenAI VisionForge Recovery
+|     feat(e2e): restore production video identity, recovery, and UI boundaries
+* bb262cdcb0f58063c416763764edf4493de52aa3 2026-08-16T02:08:49Z OpenAI VisionForge Recovery
+      baseline: verified complete_repair source tree

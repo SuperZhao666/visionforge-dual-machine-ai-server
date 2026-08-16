@@ -16,13 +16,21 @@ enum class CaptureStatus {
     pointer_only_skipped,
     outside_region_skipped,
     access_lost,
+    device_removed,
     initialization_failed,
     failed,
 };
 
+/**
+ * Region in the selected output's local coordinate space.
+ *
+ * Coordinates are signed on purpose: Windows virtual desktops permit outputs
+ * to live left of or above the primary display.  DXGI copy coordinates are
+ * converted to unsigned only after range and overflow validation.
+ */
 struct DesktopCaptureRegion {
-    std::uint32_t x{};
-    std::uint32_t y{};
+    std::int32_t x{};
+    std::int32_t y{};
     std::uint32_t width{};
     std::uint32_t height{};
 };

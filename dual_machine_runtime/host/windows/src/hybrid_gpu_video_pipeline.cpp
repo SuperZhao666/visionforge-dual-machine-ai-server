@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -404,11 +405,23 @@ struct HybridGpuVideoPipeline::State final {
         std::uint64_t upload_us,
         NvencH264Encoder& encoder,
         UdpVideoPublisher& publisher,
-        std::uint32_t& next_frame_id,
+        std::uint32_t& next_frame_sequence,
         std::uint64_t& consumed_idr_generation,
         std::uint64_t& last_keyframe_us) noexcept {
         HybridGpuCompletionMetrics metrics{};
         metrics.source_sequence = frame.source_sequence;
+        // Never emit the terminal sequence when no successor can exist in the
+        // same epoch. Failing before encode/publish lets HostRuntimeService
+        // rotate the epoch without placing an ambiguous tail frame on wire.
+        if (next_frame_sequence == (std::numeric_limits<std::uint32_t>::max)()) {
+            metrics.status = HybridGpuCompletionStatus::publish_failed;
+            metrics.native_status = E_BOUNDS;
+            push_completion(metrics);
+            record_fatal(
+                HybridGpuFatalStage::publish, E_BOUNDS,
+                metrics.source_sequence);
+            return false;
+        }
         metrics.capture_present_us = frame.capture_present_us;
         metrics.capture_us = frame.capture_us;
         metrics.accumulated_frames = frame.accumulated_frames;
@@ -445,19 +458,30 @@ struct HybridGpuVideoPipeline::State final {
                 metrics.source_sequence);
             return false;
         }
-        if (explicit_idr) consumed_idr_generation = requested_generation;
-        if (encoded.keyframe) last_keyframe_us = encode_started;
-
         metrics.repeated_content = wire_frame_repeats_content(
             metrics.repeated_content,
             explicit_idr && encoded.keyframe);
         const std::span<const std::byte> access_unit = encoder.access_unit();
         describe_access_unit(access_unit, metrics);
-        metrics.frame_id = next_frame_id;
-        next_frame_id = next_video_logical_frame_sequence(next_frame_id);
+        metrics.frame_id = next_frame_sequence;
+        const VideoFrameIdentity identity{
+            config.stream_epoch, next_frame_sequence};
+        std::uint32_t following_sequence{};
+        const bool sequence_available = advance_video_frame_sequence(
+            next_frame_sequence, following_sequence);
+        if (!sequence_available) {
+            metrics.status = HybridGpuCompletionStatus::publish_failed;
+            metrics.native_status = E_BOUNDS;
+            push_completion(metrics);
+            record_fatal(
+                HybridGpuFatalStage::publish, E_BOUNDS,
+                metrics.source_sequence);
+            return false;
+        }
+        next_frame_sequence = following_sequence;
         const std::uint64_t publish_started = monotonic_microseconds();
         const VideoPublishResult sent = publisher.publish(
-            metrics.frame_id, access_unit, publish_started,
+            identity, access_unit, publish_started,
             metrics.repeated_content);
         const std::uint64_t publish_completed = monotonic_microseconds();
         metrics.publish_us = publish_completed - publish_started;
@@ -468,7 +492,16 @@ struct HybridGpuVideoPipeline::State final {
             metrics.capture_to_publish_age_us =
                 publish_completed - frame.capture_present_us;
         }
-        if (!sent.success) {
+        const bool complete_publication = sent.completely_published();
+        if (complete_publication && encoded.keyframe) {
+            last_keyframe_us = encode_started;
+        }
+        if (complete_publication && explicit_idr && encoded.keyframe) {
+            // Consume the generation only after every fragment of the real IDR
+            // has crossed the socket boundary.
+            consumed_idr_generation = requested_generation;
+        }
+        if (!complete_publication) {
             if (sent.stage ==
                 VideoPublishResult::Stage::authorization_check) {
                 metrics.status =
@@ -1265,6 +1298,7 @@ bool HybridGpuVideoPipeline::initialize(
         config.encoder.width != kHybridGpuFrameWidth ||
         config.encoder.height != kHybridGpuFrameHeight ||
         config.encoder.frames_per_second == 0U ||
+        !valid_video_stream_epoch(config.stream_epoch) ||
         config.local_host.empty() || config.local_port == 0U ||
         config.phone_host.empty() || config.phone_port == 0U ||
         !config.data_plane_permit || !valid_transfer_mode) {

@@ -1,0 +1,17 @@
+{
+  "schema_version": "visionforge.video-transport-contract-audit.v2",
+  "status": "PASS",
+  "contract": {
+    "header_bytes": 20,
+    "data_magic": "VF2G",
+    "repeat_magic": "VF2R",
+    "identity": "(stream_epoch:uint63-positive, frame_sequence:uint32)",
+    "byte_order": "big-endian/network order",
+    "publication": "IDR success requires every fragment",
+    "epoch_change": "candidate two-phase commit; retired epochs never reactivate"
+  },
+  "java_video_codec_owners": [
+    "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/video/VideoFragmentHeader.java"
+  ],
+  "failures": []
+}

@@ -1,0 +1,50 @@
+{
+  "schema_version": "visionforge.app-host-architecture-audit.v2",
+  "status": "PASS",
+  "required_files_checked": 15,
+  "mobile_layer_files_checked": 24,
+  "app_video_files_checked": 6,
+  "host_layer_files_checked": 23,
+  "complexity_budgets": {
+    "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileRuntimeService.java": {
+      "lines": 6362,
+      "budget": 6500,
+      "status": "PASS"
+    },
+    "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MainActivity.java": {
+      "lines": 1205,
+      "budget": 1250,
+      "status": "PASS"
+    },
+    "android_inference_benchmark/app/src/main/cpp/DualMachineReceiver.cpp": {
+      "lines": 1387,
+      "budget": 1450,
+      "status": "PASS"
+    },
+    "dual_machine_runtime/host/windows/src/streamer_desktop_app.cpp": {
+      "lines": 2082,
+      "budget": 2150,
+      "status": "PASS"
+    },
+    "dual_machine_runtime/host/windows/src/host_runtime_service.cpp": {
+      "lines": 2113,
+      "budget": 2180,
+      "status": "PASS"
+    },
+    "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/MobileRuntimeCompositionRoot.java": {
+      "lines": 453,
+      "budget": 500,
+      "status": "PASS"
+    },
+    "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/VideoPreflightReassemblyWindow.java": {
+      "lines": 399,
+      "budget": 450,
+      "status": "PASS"
+    }
+  },
+  "dependency_direction": {
+    "android": "UI -> stable ports/read model -> application -> domain/ports -> adapters",
+    "host": "UI -> facade/DTO -> application -> domain/ports -> infrastructure"
+  },
+  "failures": []
+}

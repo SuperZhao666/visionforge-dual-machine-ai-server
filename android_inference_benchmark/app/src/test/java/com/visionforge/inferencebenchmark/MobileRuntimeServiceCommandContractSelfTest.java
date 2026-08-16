@@ -398,6 +398,11 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 .matcher(controlRuntime).find());
         require(controlRuntime.contains("if (destroyed) return \"runtime_destroyed\";"));
         require(activity.contains("MobileRuntimeService.ensureRunning(this);"));
+        require(activity.contains("MobileRuntimeBinding runtimeBinder"));
+        require(activity.contains("MobileRuntimeReadModelStore.snapshot()"));
+        require(!activity.contains("MobileRuntimeService.LocalBinder"));
+        require(!activity.contains("MobileRuntimeService.Phase"));
+        require(!activity.contains("MobileRuntimeService.RuntimeStatus"));
         require(activity.contains("MobilePreviousExitInspector.inspect(this)"));
         require(activity.contains("showTaskCleanedGuidanceIfNeeded()"));
         require(strings.contains("不要上滑清理 VF Mobile"));
@@ -406,7 +411,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(activity.contains("ACTIVE_STATUS_REFRESH_MILLIS = 250L"));
         require(activity.contains("IDLE_STATUS_REFRESH_MILLIS = 1_500L"));
         require(activity.contains("nextStatusRefreshDelayMillis()"));
-        require(activity.contains("runtimeStatus.phase == MobileRuntimeService.Phase.RUNNING"));
+        require(activity.contains("runtimeStatus.phase == MobileRuntimePhase.RUNNING"));
         require(!activity.contains("STATUS_REFRESH_MILLIS = 500L"));
         require(ionField.contains("import android.view.Choreographer;"));
         require(ionField.contains("postFrameCallbackDelayed("));
@@ -1057,7 +1062,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         int qnnPrepareIndex = formalBoundary.indexOf(
                 "prepareModelDataPlaneClosed(");
         int pipelineStartingStatusIndex = formalBoundary.indexOf(
-                "updateStatus(Phase.STARTING,");
+                "updateStatus(MobileRuntimePhase.STARTING,");
         int preparationAttemptedIndex = formalBoundary.indexOf(
                 "pipelinePreparationAttempted = true;");
         int channelBindingIndex = formalBoundary.indexOf(
@@ -1146,7 +1151,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(!hotReloadPermitContinuation.contains(
                 "pipeline.openPreparedDataPlane("));
         require(!hotReloadPermitContinuation.contains(
-                "updateStatus(Phase.RUNNING"));
+                "updateStatus(MobileRuntimePhase.RUNNING"));
         require(!hotReloadPermitContinuation.contains(
                 "runtimeStatus.phase"));
         require(formalOpenDataPlaneMethod.contains(
@@ -1349,9 +1354,13 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(hostVideoPresenceProbeSource.contains(
                 "cancellationObserved(cancellationRequested, generation)"));
         require(hostVideoPresenceProbeSource.contains(
-                "isFrameStartDatagram(bytes, datagram.getLength())"));
+                "header.isFrameStart()"));
         require(hostVideoPresenceProbeSource.contains(
-                "isForwardFrameSequence("));
+                "VideoWireProtocol.isForwardFrameStart("));
+        require(hostVideoPresenceProbeSource.contains(
+                "VideoWireProtocol.parse("));
+        require(!hostVideoPresenceProbeSource.contains("VFRG"));
+        require(!hostVideoPresenceProbeSource.contains("VFRR"));
         require(source.contains("WifiManager.WIFI_MODE_FULL_HIGH_PERF"));
         require(source.contains("wifiLock.setReferenceCounted(false);"));
         require(activity.contains(
@@ -1898,7 +1907,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(source.contains("PortableModelAssetInstaller.ensureInstalled("));
         require(source.contains("mobile_inference_backend_plan"));
         require(source.contains("mobile_inference_backend_attempt"));
-        require(source.contains("final String failureCode;"));
+        require(source.contains("MobileRuntimeReadModel"));
         require(source.contains("result.failureCode);"));
         require(activity.contains("runtimeStatus.failureCode"));
         require(!source.contains("qnn_htp_architecture_not_packaged "));
@@ -1962,7 +1971,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "private boolean pipelineResourcesMayBeRunning()",
                 "private boolean pipelineSessionIsCurrentLocked(");
         require(pipelineResourcesMethod.contains("pipelineStarted"));
-        require(pipelineResourcesMethod.contains("runtimeStatus.phase == Phase.STARTING"));
+        require(pipelineResourcesMethod.contains("runtimeStatus.phase == MobileRuntimePhase.STARTING"));
         require(pipelineResourcesMethod.contains(
                 "pipeline.isPreparedDataPlaneClosed()"));
         require(pipelineResourcesMethod.contains(
@@ -2132,7 +2141,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "changed ? previousRevision + 1L : previousRevision"));
         require(activity.contains(
                 "MobileRuntimePresentationUpdatePolicy.enteredPhase("));
-        require(activity.contains("MobileRuntimeService.ethernetDiagnostics()"));
+        require(activity.contains("MobileRuntimeReadModelStore.ethernetDiagnostics()"));
         require(activity.contains("ethernetStatusDetail(runtimeStatus, ethernetDiagnostics)"));
         require(activity.contains("containsDiagnostic(diagnostics, \"has_ipv4=false\")"));
         require(activity.contains("connection_ethernet_no_ipv4_detail"));

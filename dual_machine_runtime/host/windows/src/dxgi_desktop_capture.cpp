@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 namespace vfdual {
@@ -182,7 +183,15 @@ CaptureStatus DxgiDesktopCapture::acquire_next(CapturedDesktopFrame& destination
         last_hresult_ = result;
         return CaptureStatus::timeout;
     }
-    if (result == DXGI_ERROR_ACCESS_LOST) { last_hresult_ = result; return CaptureStatus::access_lost; }
+    if (result == DXGI_ERROR_ACCESS_LOST) {
+        // ACCESS_LOST covers display-mode/topology changes and duplication invalidation.
+        last_hresult_ = result;
+        return CaptureStatus::access_lost;
+    }
+    if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
+        last_hresult_ = result;
+        return CaptureStatus::device_removed;
+    }
     if (FAILED(result)) { last_hresult_ = result; return CaptureStatus::failed; }
     AcquiredFrameGuard acquired_frame(state_->duplication.Get());
     const auto finish = [this, &acquired_frame](CaptureStatus status) noexcept {
@@ -217,13 +226,24 @@ CaptureStatus DxgiDesktopCapture::acquire_next(CapturedDesktopFrame& destination
     if (region.width == 0 || region.height == 0) {
         region = DesktopCaptureRegion{0, 0, source_description.Width, source_description.Height};
     }
-    if (region.x >= source_description.Width || region.y >= source_description.Height) {
+    // The requested region is signed so virtual-desktop coordinates cannot wrap.
+    // This capture object, however, copies from one selected DXGI output and
+    // therefore accepts only non-negative output-local coordinates.
+    const std::int64_t region_right =
+        static_cast<std::int64_t>(region.x) + region.width;
+    const std::int64_t region_bottom =
+        static_cast<std::int64_t>(region.y) + region.height;
+    if (region.x < 0 || region.y < 0 || region.width == 0U || region.height == 0U ||
+        region_right <= region.x || region_bottom <= region.y ||
+        region_right > source_description.Width || region_bottom > source_description.Height) {
         last_hresult_ = E_INVALIDARG;
         (void)finish(CaptureStatus::failed);
         return CaptureStatus::failed;
     }
-    region.width = (std::min)(region.width, source_description.Width - region.x);
-    region.height = (std::min)(region.height, source_description.Height - region.y);
+    const auto source_left = static_cast<std::uint32_t>(region.x);
+    const auto source_top = static_cast<std::uint32_t>(region.y);
+    const auto source_right = static_cast<std::uint32_t>(region_right);
+    const auto source_bottom = static_cast<std::uint32_t>(region_bottom);
 
     const DesktopMetadataView metadata = query_metadata_changes(
         *state_->duplication.Get(), frame_info.TotalMetadataBufferSize,
@@ -235,8 +255,8 @@ CaptureStatus DxgiDesktopCapture::acquire_next(CapturedDesktopFrame& destination
             DesktopChangeRect{
                 region.x,
                 region.y,
-                static_cast<std::int64_t>(region.x) + region.width,
-                static_cast<std::int64_t>(region.y) + region.height,
+                region_right,
+                region_bottom,
             },
             metadata.state,
             metadata.dirty_rects,
@@ -268,8 +288,8 @@ CaptureStatus DxgiDesktopCapture::acquire_next(CapturedDesktopFrame& destination
         state_->width = region.width; state_->height = region.height;
     }
     const D3D11_BOX source_box{
-        region.x, region.y, 0U,
-        region.x + region.width, region.y + region.height, 1U,
+        source_left, source_top, 0U,
+        source_right, source_bottom, 1U,
     };
     state_->context->CopySubresourceRegion(
         state_->copy_texture.Get(), 0, 0, 0, 0, source.Get(), 0, &source_box);

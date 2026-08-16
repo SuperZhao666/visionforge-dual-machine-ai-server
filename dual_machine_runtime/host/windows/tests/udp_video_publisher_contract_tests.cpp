@@ -20,9 +20,7 @@ int main() {
     bool permit_open = false;
     if (!publisher.connect_to(
             "127.0.0.1", receiver.local_port(), production_defaults.local_port,
-            "127.0.0.2", [&permit_open]() noexcept {
-                return permit_open;
-            })) {
+            "127.0.0.2", [&permit_open]() noexcept { return permit_open; })) {
         return 3;
     }
     if (publisher.local_port() != production_defaults.local_port) return 8;
@@ -31,52 +29,61 @@ int main() {
             "127.0.0.1", receiver.local_port(), production_defaults.local_port,
             "127.0.0.2", []() noexcept { return true; })) return 7;
     concurrent_publisher.reset();
+
     constexpr std::array<std::byte, 5> access_unit{
-        std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1}, std::byte{0x65}};
-    const auto denied = publisher.publish(0, access_unit, 0);
+        std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1},
+        std::byte{0x65}};
+    constexpr std::uint64_t epoch = 0x1020'3040'5060ULL;
+    const auto denied = publisher.publish({epoch, 0U}, access_unit, 0U);
     if (denied.success || denied.fragments_sent != 0U ||
-        denied.stage !=
-            vfdual::VideoPublishResult::Stage::authorization_check) {
+        denied.expected_fragments != 1U ||
+        denied.stage != vfdual::VideoPublishResult::Stage::authorization_check) {
         return 13;
     }
     permit_open = true;
-    const auto published = publisher.publish(1, access_unit, 1);
-    if (!published.success || published.fragments_sent == 0) return 4;
+    const auto published = publisher.publish({epoch, 1U}, access_unit, 1U);
+    if (!published.completely_published() || published.fragments_sent != 1U) return 4;
 
-    std::array<std::byte, 1500> datagram{};
+    std::array<std::byte, vfdual::kMaxDatagramBytes> datagram{};
     std::string source_ipv4;
     std::uint16_t source_port{};
-    for (int attempt = 0; attempt < 100; ++attempt) {
-        if (receiver.receive_from(datagram, 0, source_ipv4, source_port) > 0) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    if (source_ipv4 != "127.0.0.2" || source_port != production_defaults.local_port) return 5;
-
-    publisher.reset();
-    if (!publisher.connect_to(
-            "127.0.0.1", receiver.local_port(), production_defaults.local_port,
-            "127.0.0.2", []() noexcept { return true; })) return 9;
-    const auto republished = publisher.publish(2, access_unit, 2, true);
-    if (!republished.success || publisher.local_port() != production_defaults.local_port) return 10;
-    source_ipv4.clear();
-    source_port = 0;
     std::size_t received{};
     for (int attempt = 0; attempt < 100; ++attempt) {
         received = receiver.receive_from(datagram, 0, source_ipv4, source_port);
-        if (received > 0) break;
+        if (received > 0U) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     vfdual::VideoFragment decoded;
     if (received == 0U ||
         !vfdual::decode_video_packet(
-            std::span<const std::byte>{
-                datagram.data(), static_cast<std::size_t>(received)},
-            decoded) ||
-        !vfdual::video_repeats_content(decoded.frame_id) ||
-        vfdual::video_logical_frame_sequence(decoded.frame_id) != 2U) {
+            std::span<const std::byte>{datagram.data(), received}, decoded) ||
+        decoded.identity != vfdual::VideoFrameIdentity{epoch, 1U} ||
+        decoded.repeated_content) {
+        return 5;
+    }
+
+    publisher.reset();
+    if (!publisher.connect_to(
+            "127.0.0.1", receiver.local_port(), production_defaults.local_port,
+            "127.0.0.2", []() noexcept { return true; })) return 9;
+    const auto republished = publisher.publish({epoch, 2U}, access_unit, 2U, true);
+    if (!republished.completely_published() ||
+        publisher.local_port() != production_defaults.local_port) return 10;
+    source_ipv4.clear();
+    source_port = 0;
+    received = 0U;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        received = receiver.receive_from(datagram, 0, source_ipv4, source_port);
+        if (received > 0U) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (received == 0U ||
+        !vfdual::decode_video_packet(
+            std::span<const std::byte>{datagram.data(), received}, decoded) ||
+        !decoded.repeated_content ||
+        decoded.identity != vfdual::VideoFrameIdentity{epoch, 2U}) {
         return 12;
     }
     return source_ipv4 == "127.0.0.2" &&
-            source_port == production_defaults.local_port
-        ? 0 : 11;
+            source_port == production_defaults.local_port ? 0 : 11;
 }

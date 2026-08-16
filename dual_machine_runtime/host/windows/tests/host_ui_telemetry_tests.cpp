@@ -44,10 +44,10 @@ void require_idle_contract(const vfdual::HostIdleUiText& text) {
     VFDUAL_TEST_REQUIRE(!contains(text.link, L"\u4f20\u8f93\u4e2d"));
 }
 
-vfdual::HostStreamMetrics metrics(std::uint64_t published, std::uint64_t capture_us,
-                                  std::uint64_t encode_us, std::uint64_t publish_us,
-                                  double rtt_ms) {
-    vfdual::HostStreamMetrics value{};
+vfdual::host::application::HostRuntimeReadModel metrics(
+    std::uint64_t published, std::uint64_t capture_us,
+    std::uint64_t encode_us, std::uint64_t publish_us, double rtt_ms) {
+    vfdual::host::application::HostRuntimeReadModel value{};
     value.published_frames = published;
     value.capture_us = capture_us;
     value.bridge_us = 1000U;

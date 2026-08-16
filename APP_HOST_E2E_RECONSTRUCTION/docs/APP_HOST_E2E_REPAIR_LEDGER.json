@@ -1,0 +1,258 @@
+{
+  "schema_version": "visionforge.app-host-e2e-repair-ledger.v1",
+  "baseline_tag": "verified-complete-repair-baseline",
+  "summary": {
+    "closed_source_and_tested": 15,
+    "not_run_environment_or_external": 3
+  },
+  "entries": [
+    {
+      "id": "APP-001",
+      "claim": "UI 不再依赖 Service 私有实现",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MainActivity.java",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeBinding.java",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeReadModel.java"
+      ],
+      "evidence": [
+        "tools/check_app_host_architecture.py",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/app_host_architecture_audit_final.json",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/java_full_regression_final.log"
+      ]
+    },
+    {
+      "id": "APP-002",
+      "claim": "Service 作为组合根，命令与只读状态稳定化",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeCompositionRoot.java",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeCommandProtocol.java",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeReadModelStore.java"
+      ],
+      "evidence": [
+        "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeArchitectureSelfTest.java",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/java_full_regression_final.log"
+      ]
+    },
+    {
+      "id": "APP-003",
+      "claim": "Java 视频协议收口为唯一 20 字节实现",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/video/VideoFragmentHeader.java",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/VideoWireProtocol.java"
+      ],
+      "evidence": [
+        "tools/check_video_transport_contract.py",
+        "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/video/VideoWireProtocolSelfTest.java"
+      ]
+    },
+    {
+      "id": "HOST-001",
+      "claim": "Host UI 只依赖 facade 与稳定 DTO",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "dual_machine_runtime/host/windows/include/vfdual/host/application/host_runtime_facade.hpp",
+        "dual_machine_runtime/host/windows/include/vfdual/host/application/host_runtime_models.hpp",
+        "dual_machine_runtime/host/windows/src/host_runtime_facade.cpp"
+      ],
+      "evidence": [
+        "tools/check_app_host_architecture.py",
+        "dual_machine_runtime/e2e_core/tests/host_runtime_facade_tests.cpp"
+      ]
+    },
+    {
+      "id": "HOST-002",
+      "claim": "截图区域支持负坐标并拒绝溢出/无效区域",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "dual_machine_runtime/host/windows/include/vfdual/host/domain/capture_region.hpp",
+        "dual_machine_runtime/host/windows/tests/host_capture_region_tests.cpp",
+        "dual_machine_runtime/e2e_core/src/host/domain/virtual_desktop_mapper.cpp"
+      ],
+      "evidence": [
+        "vfdual_host_capture_region_tests",
+        "vfdual_e2e_domain_virtual_desktop_tests",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/ctest_final_release_v2.log"
+      ]
+    },
+    {
+      "id": "WIRE-001",
+      "claim": "完整帧身份为 (stream_epoch, frame_sequence)",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "dual_machine_runtime/shared/include/vfdual/protocol.hpp",
+        "dual_machine_runtime/shared/src/protocol.cpp",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/video/VideoFragmentHeader.java"
+      ],
+      "evidence": [
+        "vfdual_protocol_tests",
+        "tools/check_video_transport_contract.py"
+      ]
+    },
+    {
+      "id": "WIRE-002",
+      "claim": "最大访问单元/分片预算跨语言一致",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "dual_machine_runtime/shared/include/vfdual/protocol.hpp",
+        "dual_machine_runtime/e2e_core/include/vf/video_transport_contract.hpp",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/video/VideoFragmentHeader.java"
+      ],
+      "evidence": [
+        "static_assert 1498",
+        "VideoWireProtocolSelfTest",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/video_transport_contract_audit_final.json"
+      ]
+    },
+    {
+      "id": "STREAM-001",
+      "claim": "IDR 只有全部分片成功后才确认",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "dual_machine_runtime/shared/include/vfdual/video_delivery_ledger.hpp",
+        "dual_machine_runtime/host/windows/src/udp_video_publisher.cpp",
+        "dual_machine_runtime/host/windows/src/desktop_video_agent.cpp"
+      ],
+      "evidence": [
+        "vfdual_video_delivery_ledger_tests",
+        "dual_machine_runtime/host/windows/tests/udp_video_publisher_contract_tests.cpp"
+      ]
+    },
+    {
+      "id": "STREAM-002",
+      "claim": "有界重组、重复幂等、冲突拒绝和超时回收",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "dual_machine_runtime/shared/include/vfdual/access_unit_reassembler.hpp",
+        "dual_machine_runtime/shared/src/access_unit_reassembler.cpp",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/VideoPreflightReassemblyWindow.java"
+      ],
+      "evidence": [
+        "vfdual_protocol_tests",
+        "vfdual_video_transport_simulation_tests",
+        "MobileArchitectureSelfTest"
+      ]
+    },
+    {
+      "id": "STREAM-003",
+      "claim": "候选 epoch 两阶段提交且退休 epoch 不恢复",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "android_inference_benchmark/app/src/main/cpp/DualMachineReceiver.cpp",
+        "dual_machine_runtime/shared/include/vfdual/receiver_epoch_session.hpp",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/video/StreamEpochGuard.java"
+      ],
+      "evidence": [
+        "vfdual_receiver_epoch_session_tests",
+        "vfdual_e2e_domain_native_tests",
+        "MobileArchitectureSelfTest"
+      ]
+    },
+    {
+      "id": "DECODER-001",
+      "claim": "MediaCodec/decoder restart 合并到最新 epoch",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/DecoderRestartCoordinator.java",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/core/DecoderRestartCoordinator.java",
+        "android_inference_benchmark/app/src/main/cpp/NativeH264Decoder.cpp"
+      ],
+      "evidence": [
+        "DecoderRestartCoordinatorSelfTest",
+        "MobileCoreSelfTest",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/java_strict_regression_final.log"
+      ]
+    },
+    {
+      "id": "CONTROL-001",
+      "claim": "ticket 单一终态、late ACK 隔离、ACK 后新鲜画面门禁",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/control/ExactCommandTicket.java",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/control/PostAckVisibilityGate.java",
+        "dual_machine_runtime/e2e_core/src/host/application/control_command_coordinator.cpp"
+      ],
+      "evidence": [
+        "MobileCoreSelfTest",
+        "vfdual_e2e_domain_control_ticket_tests",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/ctest_final_release_v2.log"
+      ]
+    },
+    {
+      "id": "CONTROL-002",
+      "claim": "Bluetooth 恢复幂等 reconcile 与稳定 blocker",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/control/BluetoothReconcileCoordinator.java",
+        "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/control/ControlDecisionEngine.java"
+      ],
+      "evidence": [
+        "MobileCoreSelfTest",
+        "MobileArchitectureSelfTest"
+      ]
+    },
+    {
+      "id": "QUALITY-001",
+      "claim": "架构门禁、复杂度预算与 CI 防回退",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "tools/check_app_host_architecture.py",
+        "tools/check_video_transport_contract.py",
+        ".github/workflows/app-host-e2e-architecture.yml",
+        "tools/run_app_host_e2e_portable_checks.sh"
+      ],
+      "evidence": [
+        "APP_HOST_E2E_RECONSTRUCTION/logs/architecture_checker_selftests_final.log",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/app_host_portable_gate_final.log"
+      ]
+    },
+    {
+      "id": "QUALITY-002",
+      "claim": "随机化网络仿真与 sanitizer 回归",
+      "status": "CLOSED_SOURCE_AND_TESTED",
+      "implementation": [
+        "dual_machine_runtime/tests/video_transport_simulation_tests.cpp",
+        "dual_machine_runtime/CMakeLists.txt"
+      ],
+      "evidence": [
+        "APP_HOST_E2E_RECONSTRUCTION/logs/ctest_final_release_v2.log",
+        "APP_HOST_E2E_RECONSTRUCTION/logs/ctest_sanitized.log"
+      ]
+    },
+    {
+      "id": "ENV-ANDROID",
+      "claim": "Android Gradle/SDK/NDK/MediaCodec/QNN 真机构建运行",
+      "status": "NOT_RUN_ENVIRONMENT_OR_EXTERNAL",
+      "implementation": [],
+      "evidence": [
+        "APP_HOST_E2E_RECONSTRUCTION/logs/gradle_compile_debug_java.log",
+        "APP_HOST_E2E_RECONSTRUCTION/docs/EXTERNAL_ACCEPTANCE.md"
+      ]
+    },
+    {
+      "id": "ENV-WINDOWS",
+      "claim": "Windows DXGI/NVENC/Media Foundation 真机",
+      "status": "NOT_RUN_EXTERNAL",
+      "implementation": [
+        ".github/workflows/app-host-e2e-architecture.yml"
+      ],
+      "evidence": [
+        "APP_HOST_E2E_RECONSTRUCTION/docs/EXTERNAL_ACCEPTANCE.md"
+      ]
+    },
+    {
+      "id": "ENV-SERVER",
+      "claim": "Server/Sidecar 全量 pytest 在锁定 Python 3.11 环境",
+      "status": "NOT_RUN_ENVIRONMENT",
+      "implementation": [
+        "server/visionforge-platform/requirements-dev.lock",
+        ".github/workflows/ci.yml"
+      ],
+      "evidence": [
+        "APP_HOST_E2E_RECONSTRUCTION/logs/server_dependency_install.log"
+      ]
+    }
+  ]
+}

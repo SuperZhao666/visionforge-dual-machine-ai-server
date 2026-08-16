@@ -1,0 +1,98 @@
+From 078ba3eae024df6c6666fcdefbe29f17d5749997 Mon Sep 17 00:00:00 2001
+From: OpenAI Repair Assistant <repair-assistant@local.invalid>
+Date: Sat, 15 Aug 2026 07:27:44 +0000
+Subject: [PATCH 3/3] fix portable protocol contract compilation
+
+---
+ .../authenticated_peer_handshake_v1.hpp       |  2 ++
+ .../vfdual/pair_generation_proposal_v1.hpp    |  2 ++
+ .../pair_generation_proposal_v1_tests.cpp     | 24 ++++++++++++++++++-
+ 3 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/dual_machine_runtime/shared/include/vfdual/authenticated_peer_handshake_v1.hpp b/dual_machine_runtime/shared/include/vfdual/authenticated_peer_handshake_v1.hpp
+index 809c353..bbdd861 100644
+--- a/dual_machine_runtime/shared/include/vfdual/authenticated_peer_handshake_v1.hpp
++++ b/dual_machine_runtime/shared/include/vfdual/authenticated_peer_handshake_v1.hpp
+@@ -138,6 +138,8 @@ struct PeerHandshakeTranscriptFields final {
+     std::string android_runtime_version;
+ };
+ 
++struct PeerHandshakeTranscriptResult;
++
+ /**
+  * Validated canonical transcript. Construction is restricted to the strict
+  * encoder/parser so downstream signing and ECDH code cannot accept an
+diff --git a/dual_machine_runtime/shared/include/vfdual/pair_generation_proposal_v1.hpp b/dual_machine_runtime/shared/include/vfdual/pair_generation_proposal_v1.hpp
+index bdcd505..ed05710 100644
+--- a/dual_machine_runtime/shared/include/vfdual/pair_generation_proposal_v1.hpp
++++ b/dual_machine_runtime/shared/include/vfdual/pair_generation_proposal_v1.hpp
+@@ -90,6 +90,8 @@ struct PairGenerationProposalFields final {
+     std::string android_runtime_version;
+ };
+ 
++struct PairGenerationProposalResult;
++
+ /** Strictly validated immutable owner for the canonical 17-field proposal. */
+ class VerifiedPairGenerationProposalV1 final {
+ public:
+diff --git a/dual_machine_runtime/tests/pair_generation_proposal_v1_tests.cpp b/dual_machine_runtime/tests/pair_generation_proposal_v1_tests.cpp
+index a893ecb..41fbcfa 100644
+--- a/dual_machine_runtime/tests/pair_generation_proposal_v1_tests.cpp
++++ b/dual_machine_runtime/tests/pair_generation_proposal_v1_tests.cpp
+@@ -341,12 +341,14 @@ void verify_builder_boundaries() {
+     expect_build_error(
+         fields,
+         vfdual::PairGenerationProposalErrorCode::invalid_identity_binding);
++#if defined(_WIN32)
+     fields = vector_fields();
+     fields.host_ephemeral_public_key.fill(std::byte{0U});
+     fields.host_ephemeral_public_key[0] = std::byte{0x04U};
+     expect_build_error(
+         fields,
+         vfdual::PairGenerationProposalErrorCode::invalid_ephemeral_public_key);
++#endif
+     fields = vector_fields();
+     fields.android_ephemeral_public_key = fields.host_ephemeral_public_key;
+     expect_build_error(
+@@ -401,6 +403,22 @@ void verify_builder_boundaries() {
+         vfdual::PairGenerationProposalErrorCode::invalid_runtime_version);
+ }
+ 
++#if !defined(_WIN32)
++void verify_unsupported_platform_fails_closed() {
++    const auto built =
++        vfdual::build_pair_generation_proposal_v1(vector_fields());
++    CHECK(!built.succeeded());
++    CHECK(built.error.code ==
++        vfdual::PairGenerationProposalErrorCode::crypto_unavailable);
++
++    const auto parsed = vfdual::parse_pair_generation_proposal_v1(
++        bytes_from_hex(kProposalCanonicalHex));
++    CHECK(!parsed.succeeded());
++    CHECK(parsed.error.code ==
++        vfdual::PairGenerationProposalErrorCode::crypto_unavailable);
++}
++#endif
++
+ void verify_generation_boundary_and_sanitized_errors() {
+     const auto proposal =
+         vfdual::build_pair_generation_proposal_v1(vector_fields());
+@@ -498,10 +516,14 @@ void verify_noexcept_allocation_boundaries_source_contract() {
+ }  // namespace
+ 
+ int main() {
++#if defined(_WIN32)
+     verify_frozen_vector_and_restricted_final_mapping();
+     verify_strict_parser();
+-    verify_builder_boundaries();
+     verify_generation_boundary_and_sanitized_errors();
++#else
++    verify_unsupported_platform_fails_closed();
++#endif
++    verify_builder_boundaries();
+     verify_noexcept_allocation_boundaries_source_contract();
+     std::cout << "pair_generation_proposal_v1_tests: PASS\n";
+     return 0;
+-- 
+2.47.3
+

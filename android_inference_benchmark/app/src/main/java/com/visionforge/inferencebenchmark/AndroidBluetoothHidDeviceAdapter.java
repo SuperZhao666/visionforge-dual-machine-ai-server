@@ -78,11 +78,13 @@ final class AndroidBluetoothHidDeviceAdapter
     private long profileProxyRequestStartedNanos;
     private long registerAppRequestStartedNanos;
     private BluetoothHidOutputFailClosedPolicy.SessionState cachedSessionState;
+    private Runnable sessionStateListener;
 
     private final BroadcastReceiver bluetoothReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent == null) return;
+            Runnable listener = null;
             synchronized (AndroidBluetoothHidDeviceAdapter.this) {
                 String action = intent.getAction();
                 if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(action)) {
@@ -96,6 +98,7 @@ final class AndroidBluetoothHidDeviceAdapter
                             && foregroundSessionActive) {
                         connectHostLocked(device);
                     }
+                    listener = captureSessionStateListenerLocked();
                 } else if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
                     int state = intent.getIntExtra(
                             BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
@@ -105,8 +108,10 @@ final class AndroidBluetoothHidDeviceAdapter
                         registerMouseAppIfProfileReady();
                         connectPreferredHostLocked();
                     }
+                    listener = captureSessionStateListenerLocked();
                 }
             }
+            dispatchSessionStateChanged(listener);
         }
     };
 
@@ -114,6 +119,7 @@ final class AndroidBluetoothHidDeviceAdapter
             new BluetoothProfile.ServiceListener() {
                 @Override
                 public void onServiceConnected(int profile, BluetoothProfile proxy) {
+                    Runnable listener;
                     synchronized (AndroidBluetoothHidDeviceAdapter.this) {
                         profileProxyRequested = false;
                         profileProxyRequestStartedNanos = 0L;
@@ -129,33 +135,40 @@ final class AndroidBluetoothHidDeviceAdapter
                             hidDevice = null;
                             writeEvent("bluetooth_hid_profile_rejected",
                                     "reason=unexpected_profile profile=" + profile);
-                            return;
-                        }
-                        hidDevice = (BluetoothHidDevice) proxy;
-                        profileProxyConnected = true;
-                        if (foregroundSessionActive) {
-                            registerMouseAppIfProfileReady();
-                            connectPreferredHostLocked();
+                            listener = captureSessionStateListenerLocked();
+                        } else {
+                            hidDevice = (BluetoothHidDevice) proxy;
+                            profileProxyConnected = true;
+                            if (foregroundSessionActive) {
+                                registerMouseAppIfProfileReady();
+                                connectPreferredHostLocked();
+                            }
+                            listener = captureSessionStateListenerLocked();
                         }
                     }
+                    dispatchSessionStateChanged(listener);
                 }
 
                 @Override
                 public void onServiceDisconnected(int profile) {
+                    Runnable listener = null;
                     synchronized (AndroidBluetoothHidDeviceAdapter.this) {
-                        if (profile != BluetoothProfile.HID_DEVICE) return;
-                        writeEvent("bluetooth_hid_profile_disconnected",
-                                "profile=" + profile
-                                        + " app_registered=" + appRegistered
-                                        + " host_connected=" + (connectedHost != null));
-                        profileProxyConnected = false;
-                        profileProxyRequested = false;
-                        profileProxyRequestStartedNanos = 0L;
-                        hidDevice = null;
-                        connectedHost = null;
-                        appRegistered = false;
-                        registerAppAccepted = false;
+                        if (profile == BluetoothProfile.HID_DEVICE) {
+                            writeEvent("bluetooth_hid_profile_disconnected",
+                                    "profile=" + profile
+                                            + " app_registered=" + appRegistered
+                                            + " host_connected=" + (connectedHost != null));
+                            profileProxyConnected = false;
+                            profileProxyRequested = false;
+                            profileProxyRequestStartedNanos = 0L;
+                            hidDevice = null;
+                            connectedHost = null;
+                            appRegistered = false;
+                            registerAppAccepted = false;
+                            listener = captureSessionStateListenerLocked();
+                        }
                     }
+                    dispatchSessionStateChanged(listener);
                 }
             };
 
@@ -163,6 +176,7 @@ final class AndroidBluetoothHidDeviceAdapter
             new BluetoothHidDevice.Callback() {
                 @Override
                 public void onAppStatusChanged(BluetoothDevice pluggedDevice, boolean registered) {
+                    Runnable listener;
                     synchronized (AndroidBluetoothHidDeviceAdapter.this) {
                         registerAppRequestStartedNanos = 0L;
                         writeEvent("bluetooth_hid_app_status",
@@ -179,11 +193,14 @@ final class AndroidBluetoothHidDeviceAdapter
                             connectedHost = null;
                             registerAppAccepted = false;
                         }
+                        listener = captureSessionStateListenerLocked();
                     }
+                    dispatchSessionStateChanged(listener);
                 }
 
                 @Override
                 public void onConnectionStateChanged(BluetoothDevice device, int state) {
+                    Runnable listener;
                     synchronized (AndroidBluetoothHidDeviceAdapter.this) {
                         writeEvent("bluetooth_hid_connection_state",
                                 "state=" + stateName(state)
@@ -198,7 +215,9 @@ final class AndroidBluetoothHidDeviceAdapter
                                 connectPreferredHostLocked();
                             }
                         }
+                        listener = captureSessionStateListenerLocked();
                     }
+                    dispatchSessionStateChanged(listener);
                 }
             };
 
@@ -222,23 +241,35 @@ final class AndroidBluetoothHidDeviceAdapter
         preferences = appContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
     }
 
-    public synchronized void setForegroundSessionActive(boolean active) {
-        boolean sessionStateChanged = foregroundSessionActive != active;
-        foregroundSessionActive = active;
-        if (sessionStateChanged) {
-            writeEvent("bluetooth_hid_foreground_session",
-                    "active=" + active
-                            + " profile_connected=" + profileProxyConnected
-                            + " app_registered=" + appRegistered);
+    public void setForegroundSessionActive(boolean active) {
+        Runnable listener = null;
+        synchronized (this) {
+            boolean sessionStateChanged = foregroundSessionActive != active;
+            foregroundSessionActive = active;
+            if (sessionStateChanged) {
+                writeEvent("bluetooth_hid_foreground_session",
+                        "active=" + active
+                                + " profile_connected=" + profileProxyConnected
+                                + " app_registered=" + appRegistered);
+            }
+            if (active) {
+                registerBluetoothReceiverLocked();
+                requestHidProfile();
+                registerMouseAppIfProfileReady();
+                connectPreferredHostLocked();
+            } else if (sessionStateChanged) {
+                unregisterMouseApp();
+            }
+            if (sessionStateChanged) {
+                listener = captureSessionStateListenerLocked();
+            }
         }
-        if (active) {
-            registerBluetoothReceiverLocked();
-            requestHidProfile();
-            registerMouseAppIfProfileReady();
-            connectPreferredHostLocked();
-        } else if (sessionStateChanged) {
-            unregisterMouseApp();
-        }
+        dispatchSessionStateChanged(listener);
+    }
+
+    @Override
+    public synchronized void setSessionStateListener(Runnable listener) {
+        sessionStateListener = listener;
     }
 
     @Override
@@ -509,6 +540,7 @@ final class AndroidBluetoothHidDeviceAdapter
     @Override
     @SuppressLint("MissingPermission")
     public synchronized void close() {
+        sessionStateListener = null;
         unregisterMouseApp();
         unregisterBluetoothReceiverLocked();
         BluetoothAdapter adapter = bluetoothAdapter();
@@ -526,6 +558,21 @@ final class AndroidBluetoothHidDeviceAdapter
         profileProxyRequestStartedNanos = 0L;
         registerAppRequestStartedNanos = 0L;
         writeEvent("bluetooth_hid_adapter_closed", "closed=true");
+    }
+
+    private Runnable captureSessionStateListenerLocked() {
+        cachedSessionState = null;
+        return sessionStateListener;
+    }
+
+    private void dispatchSessionStateChanged(Runnable listener) {
+        if (listener == null) return;
+        try {
+            callbackExecutor.execute(listener);
+        } catch (RuntimeException exception) {
+            writeEvent("bluetooth_hid_state_listener_rejected",
+                    "type=" + safeToken(exception.getClass().getSimpleName()));
+        }
     }
 
     @SuppressLint("MissingPermission")

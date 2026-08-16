@@ -29,7 +29,7 @@ void HostUiTelemetry::reset() noexcept {
     output_fps_.clear();
 }
 
-HostUiTelemetrySnapshot HostUiTelemetry::observe(const HostStreamMetrics& metrics,
+HostUiTelemetrySnapshot HostUiTelemetry::observe(const host::application::HostRuntimeReadModel& metrics,
                                                  std::uint64_t monotonic_ms) {
     const auto observed_rate = outbound_rate_tracker_.observe(metrics.published_frames, monotonic_ms);
     if (observed_rate.has_value() && std::isfinite(*observed_rate)) {

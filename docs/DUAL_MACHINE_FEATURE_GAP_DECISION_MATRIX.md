@@ -85,7 +85,13 @@ Android
 - 无线视频传输或无线回退不恢复。
 - 不为了名称一致而强行替换当前已验证的两阶段跟踪和有界预测实现。
 
-## 5. 当前可复核产物
+## 5. 历史可复核产物（SUPERSEDED）
+
+The hashes and paths below belong to the historical acceptance evidence and
+are not the current release identity. The current source of truth is
+`release/release-manifest.json`; this checkout does not contain those ignored
+or externally staged binaries, so they must not be treated as current
+artifacts.
 
 - 最终 APK：`android_inference_benchmark/app/build/outputs/apk/release/app-release.apk`
 - APK 字节数：`128707847`

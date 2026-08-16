@@ -11,7 +11,7 @@ FastAPI + Jinja2 + SQLite，单文件数据库，无需额外运维。
 ### 1. 安装依赖
 
 python -m venv venv
-venv\Scripts\pip install -r requirements.txt
+venv\Scripts\pip install --require-hashes -r requirements.lock
 
 ### 2. 配置环境变量
 
@@ -97,7 +97,7 @@ print('Admin created')
 git clone <repo> /home/ubuntu/vf-platform
 cd /home/ubuntu/vf-platform
 python -m venv venv
-venv/bin/pip install -r requirements.txt
+venv/bin/pip install --require-hashes -r requirements.lock
 
 ### 配置Nginx
 

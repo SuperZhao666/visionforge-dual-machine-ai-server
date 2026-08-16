@@ -2,16 +2,17 @@
 
 #include "vfdual/protocol.hpp"
 
-#include <cstdint>
+#include <cstddef>
 #include <span>
 #include <vector>
 
 namespace vfdual {
 
-/** Splits one encoded H.264 access unit into v5.0 UDP payloads of at most 1400 bytes. */
+/** Splits one encoded H.264 access unit into bounded v6.0 UDP fragments. */
 [[nodiscard]] std::vector<VideoFragment> fragment_access_unit(
-    std::uint32_t frame_id,
+    VideoFrameIdentity identity,
     std::span<const std::byte> access_unit,
+    bool repeated_content = false,
     std::size_t max_payload_bytes = kVideoPacketPayloadBytes);
 
 }  // namespace vfdual

@@ -922,9 +922,15 @@ void test_provider_failures_and_invalid_provider_signatures_fail_closed() {
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     CHECK(input.good());
-    return {
+    std::string text{
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>()};
+    for (std::size_t offset = text.find("\r\n");
+         offset != std::string::npos;
+         offset = text.find("\r\n", offset + 1U)) {
+        text.replace(offset, 2U, "\n");
+    }
+    return text;
 }
 
 void test_public_api_and_cmake_remain_restricted_foundations() {

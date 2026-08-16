@@ -25,8 +25,15 @@ final class ControlOutputMoveDispatcher {
     }
 
     static boolean offerNativeMove(int deltaX, int deltaY, long ticket) {
+        return offerNativeMove(
+                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
+    }
+
+    static boolean offerNativeMove(
+            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
         ControlOutputMoveSink current = sink.get();
-        return current != null && current.offerMoveFromNative(deltaX, deltaY, ticket);
+        return current != null && current.offerMoveFromNative(
+                deltaX, deltaY, ticket, remainingBudgetUs);
     }
 
     private static boolean suspendNativeDeliveryForRecovery(long generation) {

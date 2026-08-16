@@ -1,0 +1,113 @@
+{
+  "count": 12,
+  "passed": 11,
+  "failed": 0,
+  "not_run_environment": 1,
+  "results": [
+    {
+      "class": "com.visionforge.inferencebenchmark.ControlMoveDeadlineSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/ControlMoveDeadlineSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.022,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.MobileLogSanitizerSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileLogSanitizerSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.065,
+      "stdout": "MOBILE_LOG_SANITIZER_OK\n",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.MobileProcessLoggingSourceContractSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileProcessLoggingSourceContractSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.042,
+      "stdout": "MOBILE_PROCESS_LOGGING_SOURCE_CONTRACT_OK\n",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.MobileReleaseElfPageAlignmentSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileReleaseElfPageAlignmentSelfTest.java",
+      "status": "NOT_RUN_ENVIRONMENT",
+      "reason": "release APK and Android toolchain unavailable"
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.MobileRuntimeSnapshotSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeSnapshotSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.61,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.MobileTransportCatalogSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileTransportCatalogSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.039,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.runtime.MobileRuntimeArchitectureSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeArchitectureSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.024,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.video.DecoderRestartCoordinatorSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/video/DecoderRestartCoordinatorSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.023,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.video.VideoPreflightReassemblyWindowSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/video/VideoPreflightReassemblyWindowSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.031,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.inferencebenchmark.video.VideoWireProtocolSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/video/VideoWireProtocolSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.026,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.mobile.application.MobileArchitectureSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/mobile/application/MobileArchitectureSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.083,
+      "stdout": "VISIONFORGE_MOBILE_ARCHITECTURE_TESTS_OK\n",
+      "stderr": ""
+    },
+    {
+      "class": "com.visionforge.mobile.core.MobileCoreSelfTest",
+      "source": "android_inference_benchmark/app/src/test/java/com/visionforge/mobile/core/MobileCoreSelfTest.java",
+      "status": "PASS",
+      "returncode": 0,
+      "seconds": 0.068,
+      "stdout": "VISIONFORGE_MOBILE_CORE_TESTS_OK\n",
+      "stderr": ""
+    }
+  ]
+}

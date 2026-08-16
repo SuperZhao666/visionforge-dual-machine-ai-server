@@ -1,0 +1,399 @@
+package com.visionforge.mobile.application;
+
+import com.visionforge.mobile.domain.video.VideoFragmentHeader;
+import com.visionforge.mobile.domain.video.VideoPacketKind;
+
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Objects;
+import java.util.OptionalLong;
+
+/**
+ * MediaCodec 之前的有界分片重组窗口。
+ *
+ * <p>该类集中执行 epoch 高水位、分片冲突、重复、超时和内存上限规则。新 epoch
+ * 先进入单一候选槽；只有组合根确认完整访问单元是新鲜 IDR 后，才通过
+ * {@link #commitCandidateEpoch(long)} 获得会话所有权。高 epoch 半帧、冲突帧、
+ * malformed 帧和 REPEAT 因而都不能退休正在工作的流。</p>
+ */
+public final class VideoPreflightReassemblyWindow {
+    public record Config(
+            int maxInflightFrames,
+            long maxTotalBytes,
+            int maxAccessUnitBytes,
+            long frameTimeoutNanos) {
+        public Config {
+            if (maxInflightFrames < 1 || maxTotalBytes < 1L || maxAccessUnitBytes < 1
+                    || frameTimeoutNanos < 1L) {
+                throw new IllegalArgumentException("all reassembly limits must be positive");
+            }
+            if (maxAccessUnitBytes > maxTotalBytes) {
+                throw new IllegalArgumentException("one access unit cannot exceed the global byte budget");
+            }
+        }
+
+        public static Config productionDefaults() {
+            return new Config(16, 8L * 1024L * 1024L, 2 * 1024 * 1024, 500_000_000L);
+        }
+    }
+
+    public enum Code {
+        ACCEPTED,
+        COMPLETE,
+        DUPLICATE,
+        CONFLICT,
+        INVALID,
+        STALE_EPOCH,
+        RESOURCE_LIMIT,
+        CANDIDATE_REJECTED,
+        GAP_DETECTED,
+        REPEAT
+    }
+
+    public record Result(
+            Code code,
+            long streamEpoch,
+            long frameSequence,
+            byte[] accessUnit,
+            boolean requiresEpochCommit,
+            boolean repeatedContent) {
+        public Result {
+            Objects.requireNonNull(code, "code");
+            accessUnit = accessUnit == null ? new byte[0] : accessUnit.clone();
+        }
+
+        @Override
+        public byte[] accessUnit() {
+            return accessUnit.clone();
+        }
+    }
+
+    private record FrameKey(long epoch, long sequence) {}
+
+    private static final class FrameAssembly {
+        private final byte[][] fragments;
+        private final long createdAtNanos;
+        private int receivedCount;
+        private int bytes;
+
+        private FrameAssembly(int fragmentCount, long createdAtNanos) {
+            fragments = new byte[fragmentCount][];
+            this.createdAtNanos = createdAtNanos;
+        }
+    }
+
+    private final Config config;
+    private final Map<FrameKey, FrameAssembly> frames = new HashMap<>();
+    private Long currentEpoch;
+    private Long candidateEpoch;
+    private boolean candidateReady;
+    private long totalBytes;
+    private boolean gapDetected;
+
+    public VideoPreflightReassemblyWindow(Config config) {
+        this.config = Objects.requireNonNull(config, "config");
+    }
+
+    public synchronized Result ingest(
+            VideoFragmentHeader header,
+            byte[] payload,
+            long nowNanos) {
+        Objects.requireNonNull(header, "header");
+        Objects.requireNonNull(payload, "payload");
+        if (nowNanos < 0L) {
+            return result(Code.INVALID, header);
+        }
+
+        expire(nowNanos);
+        if (isStale(header.streamEpoch())) {
+            return result(Code.STALE_EPOCH, header);
+        }
+        if (gapDetected && currentEpoch != null
+                && header.streamEpoch() == currentEpoch.longValue()) {
+            gapDetected = false;
+            clearInflight();
+            return result(Code.GAP_DETECTED, header);
+        }
+
+        // REPEAT 仍携带完整编码访问单元，以维持 H.264 参考链；它只是不具备
+        // “新鲜视觉内容”语义。REPEAT 绝不能建立新 epoch 候选。
+        if (header.kind() == VideoPacketKind.REPEAT
+                && (currentEpoch == null
+                || header.streamEpoch() != currentEpoch.longValue())) {
+            return result(Code.CANDIDATE_REJECTED, header);
+        }
+
+        // 在建立候选槽之前验证载荷，防止空包或超大包占用会话状态。
+        if (payload.length == 0 || payload.length > config.maxAccessUnitBytes()) {
+            return result(Code.INVALID, header);
+        }
+
+        boolean candidate = isCandidate(header.streamEpoch());
+        if (candidate && !selectCandidateEpoch(header.streamEpoch())) {
+            return result(Code.CANDIDATE_REJECTED, header);
+        }
+
+        FrameKey key = new FrameKey(header.streamEpoch(), header.frameSequence());
+        FrameAssembly frame = frames.get(key);
+        if (frame == null) {
+            if (frames.size() >= config.maxInflightFrames()) {
+                if (!candidate) {
+                    eraseNonCurrentEpochs();
+                }
+                if (frames.size() >= config.maxInflightFrames()) {
+                    return resourceFailure(header, candidate);
+                }
+            }
+            frame = new FrameAssembly(header.fragmentCount(), nowNanos);
+            frames.put(key, frame);
+        } else if (frame.fragments.length != header.fragmentCount()) {
+            if (candidate) {
+                return candidateFailure(header);
+            }
+            removeFrame(key);
+            return result(Code.CONFLICT, header);
+        }
+
+        byte[] previous = frame.fragments[header.fragmentIndex()];
+        if (previous != null) {
+            if (Arrays.equals(previous, payload)) {
+                return result(Code.DUPLICATE, header);
+            }
+            if (candidate) {
+                return candidateFailure(header);
+            }
+            removeFrame(key);
+            return result(Code.CONFLICT, header);
+        }
+
+        if (!candidate && payload.length > config.maxTotalBytes() - totalBytes) {
+            eraseNonCurrentEpochs();
+        }
+        if (payload.length > config.maxAccessUnitBytes() - frame.bytes
+                || payload.length > config.maxTotalBytes() - totalBytes) {
+            return resourceFailure(header, candidate);
+        }
+
+        frame.fragments[header.fragmentIndex()] = payload.clone();
+        frame.receivedCount++;
+        frame.bytes += payload.length;
+        totalBytes += payload.length;
+
+        if (frame.receivedCount != frame.fragments.length) {
+            return result(Code.ACCEPTED, header);
+        }
+
+        byte[] accessUnit = new byte[frame.bytes];
+        int offset = 0;
+        for (byte[] fragment : frame.fragments) {
+            if (fragment == null) {
+                throw new IllegalStateException("receivedCount diverged from fragment occupancy");
+            }
+            System.arraycopy(fragment, 0, accessUnit, offset, fragment.length);
+            offset += fragment.length;
+        }
+        removeFrame(key);
+        if (candidate) {
+            candidateReady = true;
+        }
+        return new Result(
+                Code.COMPLETE,
+                header.streamEpoch(),
+                header.frameSequence(),
+                accessUnit,
+                candidate,
+                header.kind() == VideoPacketKind.REPEAT);
+    }
+
+    /**
+     * 提交刚完成且已经由上层验证为 IDR 的候选 epoch。
+     *
+     * @return 候选身份与状态完全匹配时返回 true；任何迟到、重复或越权提交均返回 false
+     */
+    public synchronized boolean commitCandidateEpoch(long epoch) {
+        if (candidateEpoch == null || candidateEpoch.longValue() != epoch || !candidateReady
+                || (currentEpoch != null && epoch <= currentEpoch.longValue())) {
+            return false;
+        }
+        currentEpoch = epoch;
+        candidateEpoch = null;
+        candidateReady = false;
+        eraseEpochsOlderThan(epoch);
+        gapDetected = false;
+        return true;
+    }
+
+    /** 丢弃指定候选及其全部半帧，不改变已经提交的当前 epoch。 */
+    public synchronized void rejectCandidateEpoch(long epoch) {
+        if (candidateEpoch == null || candidateEpoch.longValue() != epoch) {
+            return;
+        }
+        eraseEpoch(epoch);
+    }
+
+    public synchronized void expire(long nowNanos) {
+        if (nowNanos < 0L) {
+            throw new IllegalArgumentException("nowNanos must be non-negative");
+        }
+        Iterator<Map.Entry<FrameKey, FrameAssembly>> iterator = frames.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<FrameKey, FrameAssembly> entry = iterator.next();
+            FrameAssembly frame = entry.getValue();
+            boolean expired = nowNanos >= frame.createdAtNanos
+                    && nowNanos - frame.createdAtNanos >= config.frameTimeoutNanos();
+            if (!expired) {
+                continue;
+            }
+            if (currentEpoch != null && entry.getKey().epoch() == currentEpoch.longValue()) {
+                gapDetected = true;
+            }
+            totalBytes -= frame.bytes;
+            iterator.remove();
+        }
+        if (candidateEpoch != null && !candidateReady
+                && !hasFramesForEpoch(candidateEpoch.longValue())) {
+            candidateEpoch = null;
+        }
+    }
+
+    public synchronized int inflightCount() {
+        return frames.size();
+    }
+
+    public synchronized long inflightBytes() {
+        return totalBytes;
+    }
+
+    public synchronized OptionalLong currentEpoch() {
+        return currentEpoch == null
+                ? OptionalLong.empty()
+                : OptionalLong.of(currentEpoch.longValue());
+    }
+
+    public synchronized OptionalLong candidateEpoch() {
+        return candidateEpoch == null
+                ? OptionalLong.empty()
+                : OptionalLong.of(candidateEpoch.longValue());
+    }
+
+    /** 恢复流程丢弃所有半帧和候选，但保留 epoch 高水位，防止旧 UDP 包重新夺回会话。 */
+    public synchronized void discardInflight() {
+        clearInflight();
+    }
+
+    private boolean isStale(long epoch) {
+        return currentEpoch != null && epoch < currentEpoch.longValue();
+    }
+
+    private boolean isCandidate(long epoch) {
+        return currentEpoch == null || epoch > currentEpoch.longValue();
+    }
+
+    private boolean selectCandidateEpoch(long epoch) {
+        if (candidateEpoch == null) {
+            candidateEpoch = epoch;
+            candidateReady = false;
+            return true;
+        }
+        if (candidateEpoch.longValue() == epoch) {
+            return !candidateReady;
+        }
+        if (candidateReady || epoch < candidateEpoch.longValue()) {
+            return false;
+        }
+
+        // 更高 epoch 可替代尚未完成的旧候选；待确认完整候选不能被任何包抢占。
+        long superseded = candidateEpoch.longValue();
+        eraseEpoch(superseded);
+        candidateEpoch = epoch;
+        candidateReady = false;
+        return true;
+    }
+
+    private Result candidateFailure(VideoFragmentHeader header) {
+        rejectCandidateEpoch(header.streamEpoch());
+        return result(Code.CANDIDATE_REJECTED, header);
+    }
+
+    private Result resourceFailure(VideoFragmentHeader header, boolean candidate) {
+        if (candidate) {
+            return candidateFailure(header);
+        }
+        clearInflight();
+        return result(Code.RESOURCE_LIMIT, header);
+    }
+
+    private boolean hasFramesForEpoch(long epoch) {
+        for (FrameKey key : frames.keySet()) {
+            if (key.epoch() == epoch) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void removeFrame(FrameKey key) {
+        FrameAssembly removed = frames.remove(key);
+        if (removed != null) {
+            totalBytes -= removed.bytes;
+        }
+    }
+
+    private void eraseEpoch(long epoch) {
+        Iterator<Map.Entry<FrameKey, FrameAssembly>> iterator = frames.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<FrameKey, FrameAssembly> entry = iterator.next();
+            if (entry.getKey().epoch() == epoch) {
+                totalBytes -= entry.getValue().bytes;
+                iterator.remove();
+            }
+        }
+        if (candidateEpoch != null && candidateEpoch.longValue() == epoch) {
+            candidateEpoch = null;
+            candidateReady = false;
+        }
+    }
+
+    private void eraseNonCurrentEpochs() {
+        Iterator<Map.Entry<FrameKey, FrameAssembly>> iterator = frames.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<FrameKey, FrameAssembly> entry = iterator.next();
+            if (currentEpoch == null || entry.getKey().epoch() != currentEpoch.longValue()) {
+                totalBytes -= entry.getValue().bytes;
+                iterator.remove();
+            }
+        }
+        candidateEpoch = null;
+        candidateReady = false;
+    }
+
+    private void eraseEpochsOlderThan(long epoch) {
+        Iterator<Map.Entry<FrameKey, FrameAssembly>> iterator = frames.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<FrameKey, FrameAssembly> entry = iterator.next();
+            if (entry.getKey().epoch() < epoch) {
+                totalBytes -= entry.getValue().bytes;
+                iterator.remove();
+            }
+        }
+    }
+
+    private void clearInflight() {
+        frames.clear();
+        totalBytes = 0L;
+        candidateEpoch = null;
+        candidateReady = false;
+    }
+
+    private static Result result(Code code, VideoFragmentHeader header) {
+        return new Result(
+                code,
+                header.streamEpoch(),
+                header.frameSequence(),
+                new byte[0],
+                false,
+                header.kind() == VideoPacketKind.REPEAT);
+    }
+}

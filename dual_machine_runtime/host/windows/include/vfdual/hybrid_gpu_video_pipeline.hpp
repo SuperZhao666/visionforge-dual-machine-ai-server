@@ -27,6 +27,7 @@ enum class HybridGpuTransferMode {
 };
 
 struct HybridGpuVideoPipelineConfig {
+    std::uint64_t stream_epoch{};
     H264EncoderConfig encoder{};
     std::string local_host;
     std::uint16_t local_port{};

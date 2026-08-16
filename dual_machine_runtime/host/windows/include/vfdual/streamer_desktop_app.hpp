@@ -1,6 +1,8 @@
 #pragma once
 
-#include "vfdual/host_runtime_service.hpp"
+#include "vfdual/host/application/host_endpoint_discovery_facade.hpp"
+#include "vfdual/host/application/host_runtime_facade.hpp"
+#include "vfdual/isolated_dhcp_server.hpp"
 #include "vfdual/host_display_catalog.hpp"
 #include "vfdual/host_idle_ui_state.hpp"
 #include "vfdual/host_ui_phase.hpp"
@@ -188,7 +190,8 @@ private:
     int layout_offset_x_{};
     int layout_offset_y_{};
     IsolatedDhcpServer isolated_dhcp_server_{};
-    HostRuntimeService runtime_service_{&isolated_dhcp_server_};
+    host::application::HostEndpointDiscoveryFacade endpoint_discovery_{&isolated_dhcp_server_};
+    host::application::HostRuntimeFacade runtime_facade_{&isolated_dhcp_server_};
     HostUiTelemetry ui_telemetry_{};
     std::vector<HostDisplayOutput> display_outputs_;
     std::deque<std::wstring> recent_events_;

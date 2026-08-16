@@ -854,6 +854,11 @@ bool NativeH264Decoder::restart_after_stream_discontinuity() {
   std::uint64_t generation{};
   {
     std::scoped_lock lock(mutex_);
+    // Multiple Host epoch changes may arrive while Java is recreating
+    // MediaCodec.  The receiver keeps only the newest candidate epoch; native
+    // therefore coalesces every overlapping request into the one in-flight
+    // restart instead of treating Java's busy response as fatal.
+    if (stream_restart_in_progress_) return true;
     java_vm = java_vm_;
     decoder_object = java_decoder_object_;
     restart_method = java_restart_after_discontinuity_method_;

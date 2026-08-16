@@ -791,14 +791,19 @@ Java_com_visionforge_inferencebenchmark_QnnHtpBridge_runBenchmark(JNIEnv* enviro
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_visionforge_inferencebenchmark_QnnHtpBridge_runDualTransportSelfTest(JNIEnv* environment, jclass) {
-  const vfdual::VideoFragment source{0x20260721U, 1, 2, {std::byte{1}, std::byte{2}, std::byte{3}}};
+  const vfdual::VideoFragment source{
+      {0x20260721U, 17U}, false, 1U, 2U,
+      {std::byte{1}, std::byte{2}, std::byte{3}}};
   const auto wire = vfdual::encode_video_packet(source);
   vfdual::VideoFragment decoded;
   const bool ok = !wire.empty() && vfdual::decode_video_packet(wire, decoded)
-      && decoded.frame_id == source.frame_id && decoded.fragment_index == source.fragment_index
-      && decoded.fragment_count == source.fragment_count && decoded.access_unit_part == source.access_unit_part;
+      && decoded.identity == source.identity
+      && decoded.repeated_content == source.repeated_content
+      && decoded.fragment_index == source.fragment_index
+      && decoded.fragment_count == source.fragment_count
+      && decoded.access_unit_part == source.access_unit_part;
   const std::string report = ok
-      ? "Dual-machine C++ protocol self-test: PASS (v5.0 12-byte UDP fragment ABI)."
+      ? "Dual-machine C++ protocol self-test: PASS (v6.0 VF2G/VF2R 20-byte ABI)."
       : "Dual-machine C++ protocol self-test: FAIL";
   return environment->NewStringUTF(report.c_str());
 }

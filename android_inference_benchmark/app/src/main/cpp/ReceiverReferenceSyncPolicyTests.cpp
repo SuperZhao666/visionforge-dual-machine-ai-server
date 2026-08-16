@@ -1,6 +1,7 @@
 #include "ReceiverReferenceSyncPolicy.hpp"
 
 #include <cassert>
+#include <limits>
 
 int main() {
   using vfdual_android::ReceiverReferenceDecision;
@@ -24,8 +25,9 @@ int main() {
   assert(policy.evaluate(12U, false) ==
       ReceiverReferenceDecision::reject_awaiting_idr);
 
-  policy.record_submit(vfdual::kVideoFrameSequenceMask, true);
-  assert(policy.evaluate(0U, false) == ReceiverReferenceDecision::admit);
+  policy.record_submit((std::numeric_limits<std::uint32_t>::max)(), true);
+  assert(policy.evaluate(0U, false) ==
+      ReceiverReferenceDecision::reject_sequence_gap);
 
   policy.require_idr();
   assert(policy.awaiting_idr());

@@ -1,0 +1,101 @@
+{
+  "schema_version": "1.0",
+  "generated_at_utc": "2026-08-15T13:37:47.592781+00:00",
+  "status": "PRESERVED_AND_VERIFIED",
+  "operation": "existing artifact recovery, evidence preservation, mirroring and raw splitting; no source changes",
+  "canonical_archive_sha256": "81142ce68b5c96a6bacc4bac6853b43e9505c3670c9f2c390183b32d41d0c7b7",
+  "recoverable_source_baseline": {
+    "name": "VisionForge_DualMachineAI_Server_complete_repair.zip",
+    "sha256": "015ec5fcc8a019f8afc33dbc6f00e6ffb6d6c4e05c6e4d518246c5aa8e50f052",
+    "entries": 2865,
+    "embedded_manifest_files_verified": 2864
+  },
+  "latest_delivery_text": {
+    "file_library_name": "项目代码审查与修复.txt",
+    "created_at": "2026-08-15T13:02:20Z",
+    "status": "RECOVERED_AS_DOCUMENTATION",
+    "corresponding_latest_source_zip_status": "BYTE_ENTITY_NOT_FOUND"
+  },
+  "artifacts": [
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.zip",
+      "size_bytes": 178551005,
+      "sha256": "81142ce68b5c96a6bacc4bac6853b43e9505c3670c9f2c390183b32d41d0c7b7"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15_MIRROR_A.zip",
+      "size_bytes": 178551005,
+      "sha256": "81142ce68b5c96a6bacc4bac6853b43e9505c3670c9f2c390183b32d41d0c7b7"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15_MIRROR_B.zip",
+      "size_bytes": 178551005,
+      "sha256": "81142ce68b5c96a6bacc4bac6853b43e9505c3670c9f2c390183b32d41d0c7b7"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.sha256.txt",
+      "size_bytes": 132,
+      "sha256": "6c4d49d7b09566899f207eb7daa984b894756db5fec8166b0d0ffaa9926d05e9"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15_VALIDATION.json",
+      "size_bytes": 1327,
+      "sha256": "e8e622466d805f86b00510d1d24b32b084acf46e796a5fac9ef2acc8d719236e"
+    },
+    {
+      "name": "VisionForge_RECOVERED_ARTICLES_AND_EVIDENCE_2026-08-15.zip",
+      "size_bytes": 103769,
+      "sha256": "c4ee4efe3d0549f7318e40e4cad88179734a9e04ae50e25f9979f56bc8c5b5a3"
+    },
+    {
+      "name": "VisionForge_RECOVERED_ARTICLES_AND_EVIDENCE_2026-08-15.sha256.txt",
+      "size_bytes": 125,
+      "sha256": "ab20adda49bb6fb29838a2ae84a728dae6b4a91471413f7be23883c7890ab6ee"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_PARTS_MANIFEST.json",
+      "size_bytes": 1325,
+      "sha256": "8d37cf0fc83d743e1b3236bfd755661e41adfce24f5575780be86db33fb5f29f"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_PARTS_SHA256.txt",
+      "size_bytes": 788,
+      "sha256": "30f5fcc305b9b0e264f396f10a4a4bc4bb24b2e51f4087e7fda5dbd09c70e974"
+    },
+    {
+      "name": "Join-VisionForge-Recovered.ps1",
+      "size_bytes": 1012,
+      "sha256": "51a52196533bbf9f669c3d62699854fb936f4e1ce3fccf77f6caa1fb8e583c1e"
+    },
+    {
+      "name": "join_visionforge_recovered.sh",
+      "size_bytes": 411,
+      "sha256": "e80c670caac62564feb7516a7da706e142795eabc26591b2636f4cb37a67b57d"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.zip.part000",
+      "size_bytes": 41943040,
+      "sha256": "b00f1974874c75e4b4924f8b4cb943713befae2597a4a1acdd588fb05e6b9b6c"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.zip.part001",
+      "size_bytes": 41943040,
+      "sha256": "c507f37e96a5683168199b889eba22dc1a0ec82c51c7db824d52e4f5c2594144"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.zip.part002",
+      "size_bytes": 41943040,
+      "sha256": "55870df54380cf6df576e3ec18be606721b36e4dc4a4021f6b0effbf2c40bca9"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.zip.part003",
+      "size_bytes": 41943040,
+      "sha256": "fdbe1c963cd593ef1aab5c98671dc1db63fad64cb74ee92367473df2dd931189"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.zip.part004",
+      "size_bytes": 10778845,
+      "sha256": "2a520bf7a8b7b8a5c3f3800d702e5f1174da048ec9d77a3ce2beac56751d749f"
+    }
+  ]
+}

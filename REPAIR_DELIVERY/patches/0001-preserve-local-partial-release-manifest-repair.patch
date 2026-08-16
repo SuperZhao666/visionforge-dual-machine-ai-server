@@ -1,0 +1,683 @@
+From 248db99515b6a1dc967e2cb177f159e30bb18881 Mon Sep 17 00:00:00 2001
+From: OpenAI Repair Assistant <repair-assistant@local.invalid>
+Date: Sat, 15 Aug 2026 06:50:42 +0000
+Subject: [PATCH 1/3] preserve local partial release manifest repair
+
+---
+ .github/workflows/ci.yml                      |  13 +
+ android_inference_benchmark/app/build.gradle  |  30 ++-
+ ...UAL_MACHINE_FEATURE_GAP_DECISION_MATRIX.md |   8 +-
+ docs/DUAL_MACHINE_RELEASE_MANIFEST.md         |  31 +++
+ dual_machine_runtime/README.md                |  16 +-
+ release/release-manifest.json                 |  46 ++++
+ .../app/routes/client_api.py                  |  20 +-
+ .../dual_machine_service/release_manifest.py  |  48 ++++
+ .../tests/test_release_manifest_identity.py   |  11 +
+ .../tests/test_release_update_v2.py           |   2 +
+ ...est_verify_release_manifest_consistency.py |  37 +++
+ tools/verify_release_manifest_consistency.py  | 245 ++++++++++++++++++
+ 12 files changed, 495 insertions(+), 12 deletions(-)
+ create mode 100644 docs/DUAL_MACHINE_RELEASE_MANIFEST.md
+ create mode 100644 release/release-manifest.json
+ create mode 100644 server/visionforge-platform/dual_machine_service/release_manifest.py
+ create mode 100644 server/visionforge-platform/tests/test_release_manifest_identity.py
+ create mode 100644 tools/test_verify_release_manifest_consistency.py
+ create mode 100644 tools/verify_release_manifest_consistency.py
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index f873f7e..93e0acd 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -40,6 +40,19 @@ jobs:
+           path: ci-metadata/
+           if-no-files-found: error
+ 
++  release-manifest:
++    name: Release manifest consistency
++    runs-on: ubuntu-latest
++    steps:
++      - name: Check out source
++        uses: actions/checkout@v4
++
++      - name: Verify the single release identity source
++        run: python tools/verify_release_manifest_consistency.py --json
++
++      - name: Verify the tamper test
++        run: python tools/test_verify_release_manifest_consistency.py -v
++
+   platform:
+     name: Platform tests and startup smoke
+     runs-on: ubuntu-latest
+diff --git a/android_inference_benchmark/app/build.gradle b/android_inference_benchmark/app/build.gradle
+index 7cbf8d8..d2ef1b8 100644
+--- a/android_inference_benchmark/app/build.gradle
++++ b/android_inference_benchmark/app/build.gradle
+@@ -17,6 +17,21 @@ import java.util.LinkedHashSet
+ import java.util.Locale
+ 
+ def onnxRuntimeAndroidVersion = '1.27.0'
++def dualMachineReleaseManifestFile = rootProject.file('../release/release-manifest.json')
++if (!dualMachineReleaseManifestFile.isFile()) {
++    throw new GradleException(
++            "Dual-machine release manifest is missing: ${dualMachineReleaseManifestFile}")
++}
++def dualMachineReleaseManifest = new JsonSlurper().parse(dualMachineReleaseManifestFile)
++def dualMachineCanonicalVersion = dualMachineReleaseManifest.components?.server?.version
++def dualMachineAndroidRelease = dualMachineReleaseManifest.components?.android
++if (!(dualMachineAndroidRelease instanceof Map)
++        || !(dualMachineCanonicalVersion instanceof String)
++        || dualMachineReleaseManifest.release_id != "visionforge-dual-machine-${dualMachineCanonicalVersion}"
++        || dualMachineAndroidRelease.version != dualMachineCanonicalVersion
++        || dualMachineAndroidRelease.package_name != 'com.visionforge.mobile') {
++    throw new GradleException('Dual-machine release manifest identity is invalid.')
++}
+ configurations {
+     onnxRuntimeNative
+ }
+@@ -55,7 +70,7 @@ def deployedDualMachineTicketPublicKeyFile = rootProject.file(
+         '../dual_machine_runtime/production_usage_ticket_v1_public.pem')
+ def canonicalDualMachineApiBaseUrl = 'https://www.visionforge.cloud'
+ def androidDebugCertSha256 = '179faf0492d0b49d66bdefcc66bc51541602525a25b8af8c4e42345a770c7155'
+-def productionVersionCode = 11
++def productionVersionCode = (dualMachineAndroidRelease.version_code as Number).intValue()
+ def dualMachineReleaseVersionFile = rootProject.file(
+         '../dual_machine_runtime/release_version.txt')
+ if (!dualMachineReleaseVersionFile.isFile()) {
+@@ -63,7 +78,12 @@ if (!dualMachineReleaseVersionFile.isFile()) {
+             "Dual-machine release version is missing: ${dualMachineReleaseVersionFile}")
+ }
+ def productionVersionName = dualMachineReleaseVersionFile.text.trim()
+-def previouslyReleasedVersionCode = 10
++if (productionVersionName != dualMachineAndroidRelease.version) {
++    throw new GradleException(
++            "Dual-machine release version disagrees with release manifest: ${productionVersionName}")
++}
++def previouslyReleasedVersionCode = (
++        dualMachineAndroidRelease.previous_version_code as Number).intValue()
+ // Flip only after the authenticated Host identity/handshake/video/probe/IDR/
+ // mouse data plane and mutation/replay evidence are all implemented.
+ apply from: 'formal-security-loader.gradle'
+@@ -300,7 +320,11 @@ android {
+         buildConfigField(
+                 'String',
+                 'DUAL_MACHINE_PROTOCOL_CLIENT_VERSION',
+-                buildConfigString('1.0.0'))
++                buildConfigString(dualMachineReleaseManifest.client_protocol_version as String))
++        buildConfigField(
++                'String',
++                'DUAL_MACHINE_RELEASE_ID',
++                buildConfigString(dualMachineReleaseManifest.release_id as String))
+         buildConfigField(
+                 'String',
+                 'DUAL_MACHINE_TLS_SPKI_PINS',
+diff --git a/docs/DUAL_MACHINE_FEATURE_GAP_DECISION_MATRIX.md b/docs/DUAL_MACHINE_FEATURE_GAP_DECISION_MATRIX.md
+index 1f9bad9..a9645b0 100644
+--- a/docs/DUAL_MACHINE_FEATURE_GAP_DECISION_MATRIX.md
++++ b/docs/DUAL_MACHINE_FEATURE_GAP_DECISION_MATRIX.md
+@@ -85,7 +85,13 @@ Android
+ - 无线视频传输或无线回退不恢复。
+ - 不为了名称一致而强行替换当前已验证的两阶段跟踪和有界预测实现。
+ 
+-## 5. 当前可复核产物
++## 5. 历史可复核产物（SUPERSEDED）
++
++The hashes and paths below belong to the historical acceptance evidence and
++are not the current release identity. The current source of truth is
++`release/release-manifest.json`; this checkout does not contain those ignored
++or externally staged binaries, so they must not be treated as current
++artifacts.
+ 
+ - 最终 APK：`android_inference_benchmark/app/build/outputs/apk/release/app-release.apk`
+ - APK 字节数：`128707847`
+diff --git a/docs/DUAL_MACHINE_RELEASE_MANIFEST.md b/docs/DUAL_MACHINE_RELEASE_MANIFEST.md
+new file mode 100644
+index 0000000..6542175
+--- /dev/null
++++ b/docs/DUAL_MACHINE_RELEASE_MANIFEST.md
+@@ -0,0 +1,31 @@
++# Dual-machine release manifest contract
++
++`release/release-manifest.json` is the single source for the current
++dual-machine release identity. `dual_machine_runtime/release_version.txt`
++remains the native build input, but the consistency gate requires it to agree
++with the manifest; Android reads both and fails on drift. The server version
++API returns the same `release_id` and `release_version`.
++
++The checked-in manifest is an `unpublished` source manifest. Its commit and
++artifact fields are explicit placeholders because this repository checkout
++does not contain the production APK or Host binary. A release machine must
++create a new manifest with the exact Git commit, content-addressed URLs,
++positive sizes, lowercase SHA-256 values, and an Ed25519 signature. A
++published manifest is immutable: corrections require a new `release_id`, not
++an in-place edit.
++
++Run the source consistency gate from the repository root:
++
++```powershell
++python tools/verify_release_manifest_consistency.py --json
++```
++
++The publish gate is deliberately fail-closed until real artifacts and an
++external signing key are supplied:
++
++```powershell
++python tools/verify_release_manifest_consistency.py --require-published --json
++```
++
++Historical APK/Host hashes remain in their original acceptance documents but
++are marked `SUPERSEDED`; they are evidence, not a current release manifest.
+diff --git a/dual_machine_runtime/README.md b/dual_machine_runtime/README.md
+index 55fb3a3..66ba616 100644
+--- a/dual_machine_runtime/README.md
++++ b/dual_machine_runtime/README.md
+@@ -118,9 +118,21 @@ about 2.08 ms is stage-only evidence; it is not end-to-end 500 FPS. Display
+ capture cadence, encode, network, decode, preprocessing, post-processing,
+ queues, and optional physical output remain outside that number.
+ 
+-## Current production acceptance
++## Current release identity
++
++The only current release identity is the repository manifest at
++`../release/release-manifest.json`. It binds the Server, Android and Host
++versions, protocol versions, compatibility range, release ID and the
++content-addressed artifact fields. This checkout intentionally carries an
++unpublished source manifest: no APK or Host hash is claimed as a current
++publishable artifact until a release build fills and signs that manifest.
++
++### Historical acceptance (SUPERSEDED)
++
++The following evidence was valid for an earlier physical acceptance and is
++retained for audit history only. It must not be copied into a current release
++manifest:
+ 
+-The current publishable Android artifact is
+ `releases/android/cat6-wireless-lan-production-latest/VisionForgeMobile_1.0.1_20260728_190441.apk`
+ with SHA256
+ `3B985E864DF66B9EB9B460D763EF3F0FE4068FC3FB22FDB3C52A800C493D4C97`.
+diff --git a/release/release-manifest.json b/release/release-manifest.json
+new file mode 100644
+index 0000000..3d60f76
+--- /dev/null
++++ b/release/release-manifest.json
+@@ -0,0 +1,46 @@
++{
++  "schema": "visionforge-dual-machine-release-manifest-v1",
++  "manifest_kind": "source",
++  "release_id": "visionforge-dual-machine-1.0.8",
++  "commit": "${GIT_COMMIT}",
++  "client_protocol_version": "1.0.0",
++  "wire_protocol_version": 2,
++  "components": {
++    "server": {
++      "version": "1.0.8",
++      "minimum_supported_version": "1.0.0"
++    },
++    "host": {
++      "version": "1.0.8",
++      "minimum_supported_version": "1.0.0"
++    },
++    "android": {
++      "version": "1.0.8",
++      "version_code": 11,
++      "previous_version_code": 10,
++      "minimum_supported_version": "1.0.0",
++      "package_name": "com.visionforge.mobile"
++    }
++  },
++  "artifacts": {
++    "android_apk": {
++      "url": "/static/dual-machine-mobile/<sha256>.apk",
++      "size": null,
++      "sha256": null
++    },
++    "host_exe": {
++      "url": "/static/dual-machine-host/<sha256>.exe",
++      "size": null,
++      "sha256": null
++    }
++  },
++  "signature": {
++    "algorithm": "Ed25519",
++    "key_id": "${RELEASE_MANIFEST_KEY_ID}",
++    "signature_b64": "${RELEASE_MANIFEST_SIGNATURE_B64}"
++  },
++  "publication": {
++    "status": "unpublished",
++    "immutable": true
++  }
++}
+diff --git a/server/visionforge-platform/app/routes/client_api.py b/server/visionforge-platform/app/routes/client_api.py
+index 3285a09..779cf4b 100644
+--- a/server/visionforge-platform/app/routes/client_api.py
++++ b/server/visionforge-platform/app/routes/client_api.py
+@@ -11,6 +11,7 @@ from app.config import config
+ from app.database import get_connection
+ from app.security import limiter
+ from app.services.release_service import ReleaseService, ReleaseValidationError, public_manifest
++from dual_machine_service.release_manifest import CURRENT_RELEASE_ID, CURRENT_RELEASE_VERSION
+ 
+ logger = logging.getLogger("client_api")
+ router = APIRouter()
+@@ -21,17 +22,24 @@ def _latest_release(channel: str = "stable") -> dict | None:
+     return release_service.latest(channel)
+ 
+ 
++def _with_current_release_identity(payload: dict) -> dict:
++    result = dict(payload)
++    result["release_id"] = CURRENT_RELEASE_ID
++    result["release_version"] = CURRENT_RELEASE_VERSION
++    return result
++
++
+ @router.get("/api/client/version")
+ async def client_version():
+     """Return the latest available client version and download info."""
+     release = _latest_release("stable")
+     if not release:
+-        return {
+-            "latest_version": "v17.8.81_update_lease_bridge_hardened",
++        return _with_current_release_identity({
++            "latest_version": CURRENT_RELEASE_VERSION,
+             "download_url": str(config.SITE_URL or "").rstrip("/") + "/static/releases/",
+             "release_notes": "稳定版本，推荐所有用户更新。",
+-        }
+-    return public_manifest(release)
++        })
++    return _with_current_release_identity(public_manifest(release))
+ 
+ 
+ @router.get("/update/{channel}.json")
+@@ -44,10 +52,10 @@ async def update_manifest(channel: str, schema: int | None = None):
+     if not release:
+         return JSONResponse({"ok": False, "message": "no published release"}, status_code=404)
+     try:
+-        return public_manifest(
++        return _with_current_release_identity(public_manifest(
+             release,
+             legacy_bridge_only=bool(release.get("payload_b64") and schema != 2),
+-        )
++        ))
+     except ReleaseValidationError as exc:
+         return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+ 
+diff --git a/server/visionforge-platform/dual_machine_service/release_manifest.py b/server/visionforge-platform/dual_machine_service/release_manifest.py
+new file mode 100644
+index 0000000..53f79bd
+--- /dev/null
++++ b/server/visionforge-platform/dual_machine_service/release_manifest.py
+@@ -0,0 +1,48 @@
++"""Read the repository release identity used by server-facing version APIs."""
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any
++
++
++RELEASE_MANIFEST_PATH = (
++    Path(__file__).resolve().parents[3] / "release" / "release-manifest.json"
++)
++
++
++def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++    result: dict[str, Any] = {}
++    for key, value in pairs:
++        if key in result:
++            raise ValueError(f"duplicate release manifest key: {key}")
++        result[key] = value
++    return result
++
++
++def load_release_manifest() -> dict[str, Any]:
++    value = json.loads(
++        RELEASE_MANIFEST_PATH.read_text(encoding="utf-8"),
++        object_pairs_hook=_reject_duplicate_keys,
++    )
++    if not isinstance(value, dict):
++        raise ValueError("release manifest root must be an object")
++    if value.get("schema") != "visionforge-dual-machine-release-manifest-v1":
++        raise ValueError("unsupported release manifest schema")
++    publication = value.get("publication")
++    if not isinstance(publication, dict) or publication.get("status") != "unpublished":
++        raise ValueError("server source checkout requires an unpublished source manifest")
++    components = value.get("components")
++    if not isinstance(components, dict):
++        raise ValueError("release manifest components are missing")
++    version = components.get("server", {}).get("version")
++    if not isinstance(version, str) or not version:
++        raise ValueError("release manifest server version is missing")
++    return value
++
++
++CURRENT_RELEASE_MANIFEST = load_release_manifest()
++CURRENT_RELEASE_ID = str(CURRENT_RELEASE_MANIFEST["release_id"])
++CURRENT_RELEASE_VERSION = str(
++    CURRENT_RELEASE_MANIFEST["components"]["server"]["version"]
++)
+diff --git a/server/visionforge-platform/tests/test_release_manifest_identity.py b/server/visionforge-platform/tests/test_release_manifest_identity.py
+new file mode 100644
+index 0000000..0f2a85e
+--- /dev/null
++++ b/server/visionforge-platform/tests/test_release_manifest_identity.py
+@@ -0,0 +1,11 @@
++from __future__ import annotations
++
++from dual_machine_service.release_manifest import (
++    CURRENT_RELEASE_ID,
++    CURRENT_RELEASE_VERSION,
++)
++
++
++def test_server_release_identity_comes_from_canonical_manifest():
++    assert CURRENT_RELEASE_ID == "visionforge-dual-machine-1.0.8"
++    assert CURRENT_RELEASE_VERSION == "1.0.8"
+diff --git a/server/visionforge-platform/tests/test_release_update_v2.py b/server/visionforge-platform/tests/test_release_update_v2.py
+index 87bf319..47a2aa0 100644
+--- a/server/visionforge-platform/tests/test_release_update_v2.py
++++ b/server/visionforge-platform/tests/test_release_update_v2.py
+@@ -387,6 +387,8 @@ class ReleaseUpdateV2Tests(unittest.TestCase):
+             fallback["download_url"],
+             "https://visionforge.test/static/releases/",
+         )
++        self.assertEqual(fallback["release_id"], "visionforge-dual-machine-1.0.8")
++        self.assertEqual(fallback["release_version"], "1.0.8")
+ 
+     def test_signed_v2_publish_returns_envelope_and_creates_integrity_allowlist(self):
+         payload = self._payload()
+diff --git a/tools/test_verify_release_manifest_consistency.py b/tools/test_verify_release_manifest_consistency.py
+new file mode 100644
+index 0000000..2569940
+--- /dev/null
++++ b/tools/test_verify_release_manifest_consistency.py
+@@ -0,0 +1,37 @@
++from __future__ import annotations
++
++import json
++import tempfile
++import unittest
++from pathlib import Path
++
++from verify_release_manifest_consistency import (
++    DEFAULT_MANIFEST,
++    ManifestError,
++    validate_manifest,
++)
++
++
++class ReleaseManifestConsistencyTests(unittest.TestCase):
++    def test_source_manifest_matches_all_component_sources(self):
++        manifest = validate_manifest()
++        self.assertEqual(manifest["release_id"], "visionforge-dual-machine-1.0.8")
++
++    def test_manifest_version_tampering_is_rejected(self):
++        payload = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
++        payload["components"]["android"]["version"] = "1.0.9"
++        with tempfile.TemporaryDirectory() as directory:
++            candidate = Path(directory) / "release-manifest.json"
++            candidate.write_text(
++                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
++            )
++            with self.assertRaisesRegex(ManifestError, "components.android.version"):
++                validate_manifest(candidate)
++
++    def test_unpublished_source_cannot_be_accepted_as_published(self):
++        with self.assertRaisesRegex(ManifestError, "published manifest commit"):
++            validate_manifest(require_published=True)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tools/verify_release_manifest_consistency.py b/tools/verify_release_manifest_consistency.py
+new file mode 100644
+index 0000000..e966a13
+--- /dev/null
++++ b/tools/verify_release_manifest_consistency.py
+@@ -0,0 +1,245 @@
++"""Validate the single source of truth for dual-machine release identity."""
++from __future__ import annotations
++
++import argparse
++import base64
++import json
++import re
++import sys
++from pathlib import Path
++from typing import Any
++
++
++ROOT = Path(__file__).resolve().parents[1]
++DEFAULT_MANIFEST = ROOT / "release" / "release-manifest.json"
++RELEASE_VERSION_FILE = ROOT / "dual_machine_runtime" / "release_version.txt"
++ANDROID_BUILD_FILE = ROOT / "android_inference_benchmark" / "app" / "build.gradle"
++RUNTIME_CMAKE_FILE = ROOT / "dual_machine_runtime" / "CMakeLists.txt"
++
++SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
++SHA256 = re.compile(r"^[0-9a-f]{64}$")
++COMMIT = re.compile(r"^[0-9a-f]{40}$")
++PLACEHOLDER = re.compile(r"^\$\{[A-Z0-9_]+\}$")
++
++
++class ManifestError(ValueError):
++    """Raised when the manifest is malformed or disagrees with source files."""
++
++
++def _strict_json(path: Path) -> dict[str, Any]:
++    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++        result: dict[str, Any] = {}
++        for key, value in pairs:
++            if key in result:
++                raise ManifestError(f"duplicate JSON key: {key}")
++            result[key] = value
++        return result
++
++    try:
++        value = json.loads(
++            path.read_text(encoding="utf-8"),
++            object_pairs_hook=reject_duplicate_keys,
++            parse_constant=lambda value: (_ for _ in ()).throw(
++                ManifestError(f"non-finite JSON value: {value}")
++            ),
++        )
++    except OSError as exc:
++        raise ManifestError(f"manifest cannot be read: {path}") from exc
++    except json.JSONDecodeError as exc:
++        raise ManifestError(f"manifest is not valid JSON: {exc}") from exc
++    if not isinstance(value, dict):
++        raise ManifestError("manifest root must be an object")
++    return value
++
++
++def _text(mapping: object, key: str, context: str) -> str:
++    if not isinstance(mapping, dict):
++        raise ManifestError(f"{context} must be an object")
++    value = mapping.get(key)
++    if not isinstance(value, str) or not value.strip():
++        raise ManifestError(f"{context}.{key} must be a non-empty string")
++    return value.strip()
++
++
++def _component(manifest: dict[str, Any], name: str) -> dict[str, Any]:
++    components = manifest.get("components")
++    if not isinstance(components, dict) or not isinstance(components.get(name), dict):
++        raise ManifestError(f"components.{name} must be an object")
++    return components[name]
++
++
++def _validate_signature(manifest: dict[str, Any], *, require_published: bool) -> None:
++    signature = manifest.get("signature")
++    if not isinstance(signature, dict):
++        raise ManifestError("signature must be an object")
++    if signature.get("algorithm") != "Ed25519":
++        raise ManifestError("signature.algorithm must be Ed25519")
++    key_id = signature.get("key_id")
++    signature_b64 = signature.get("signature_b64")
++    if require_published:
++        if not isinstance(key_id, str) or PLACEHOLDER.fullmatch(key_id or ""):
++            raise ManifestError("published manifest requires a concrete signature key_id")
++        if not isinstance(signature_b64, str) or not signature_b64:
++            raise ManifestError("published manifest requires signature_b64")
++        try:
++            base64.b64decode(signature_b64, validate=True)
++        except Exception as exc:  # pragma: no cover - exact decoder type is implementation-specific
++            raise ManifestError("published manifest signature_b64 is not valid base64") from exc
++    elif not (
++        isinstance(key_id, str)
++        and PLACEHOLDER.fullmatch(key_id)
++        and isinstance(signature_b64, str)
++        and PLACEHOLDER.fullmatch(signature_b64)
++    ):
++        raise ManifestError(
++            "source manifest must keep signature fields as explicit publication placeholders"
++        )
++
++
++def _validate_artifacts(manifest: dict[str, Any], *, require_published: bool) -> None:
++    artifacts = manifest.get("artifacts")
++    if not isinstance(artifacts, dict):
++        raise ManifestError("artifacts must be an object")
++    expected = {
++        "android_apk": ("/static/dual-machine-mobile/<sha256>.apk", "apk"),
++        "host_exe": ("/static/dual-machine-host/<sha256>.exe", "exe"),
++    }
++    for name, (source_url, suffix) in expected.items():
++        artifact = artifacts.get(name)
++        if not isinstance(artifact, dict):
++            raise ManifestError(f"artifacts.{name} must be an object")
++        url = artifact.get("url")
++        size = artifact.get("size")
++        digest = artifact.get("sha256")
++        if require_published:
++            if not isinstance(url, str) or not re.fullmatch(
++                rf"/static/[a-z0-9-]+/[0-9a-f]{{64}}\.{suffix}", url
++            ):
++                raise ManifestError(f"published artifacts.{name}.url must be content addressed")
++            if not isinstance(size, int) or size <= 0:
++                raise ManifestError(f"published artifacts.{name}.size must be positive")
++            if not isinstance(digest, str) or not SHA256.fullmatch(digest):
++                raise ManifestError(f"published artifacts.{name}.sha256 must be lowercase SHA-256")
++        else:
++            if url != source_url or size is not None or digest is not None:
++                raise ManifestError(
++                    f"source artifacts.{name} must remain unbuilt placeholders"
++                )
++
++
++def validate_manifest(
++    manifest_path: Path = DEFAULT_MANIFEST,
++    *,
++    require_published: bool = False,
++) -> dict[str, Any]:
++    manifest = _strict_json(manifest_path)
++    if manifest.get("schema") != "visionforge-dual-machine-release-manifest-v1":
++        raise ManifestError("unsupported release manifest schema")
++    if not require_published and manifest.get("manifest_kind") != "source":
++        raise ManifestError("source validation requires manifest_kind=source")
++
++    release_version = RELEASE_VERSION_FILE.read_text(encoding="utf-8").strip()
++    if not SEMVER.fullmatch(release_version):
++        raise ManifestError(f"release_version.txt is not stable SemVer: {release_version}")
++    release_id = _text(manifest, "release_id", "manifest")
++    if release_id != f"visionforge-dual-machine-{release_version}":
++        raise ManifestError("release_id does not match release_version.txt")
++
++    commit = _text(manifest, "commit", "manifest")
++    if require_published:
++        if not COMMIT.fullmatch(commit):
++            raise ManifestError("published manifest commit must be a 40-character Git SHA")
++    elif commit != "${GIT_COMMIT}":
++        raise ManifestError("source manifest commit must be ${GIT_COMMIT}")
++
++    client_protocol = _text(manifest, "client_protocol_version", "manifest")
++    if client_protocol != "1.0.0":
++        raise ManifestError("client_protocol_version must remain 1.0.0 for this contract")
++    if manifest.get("wire_protocol_version") != 2:
++        raise ManifestError("wire_protocol_version must be 2")
++
++    for name in ("server", "host", "android"):
++        component = _component(manifest, name)
++        if _text(component, "version", f"components.{name}") != release_version:
++            raise ManifestError(f"components.{name}.version disagrees with release_version.txt")
++        minimum = _text(component, "minimum_supported_version", f"components.{name}")
++        if not SEMVER.fullmatch(minimum):
++            raise ManifestError(f"components.{name}.minimum_supported_version is invalid")
++
++    android = _component(manifest, "android")
++    version_code = android.get("version_code")
++    previous_version_code = android.get("previous_version_code")
++    if not isinstance(version_code, int) or isinstance(version_code, bool) or version_code <= 0:
++        raise ManifestError("components.android.version_code must be a positive integer")
++    if (
++        not isinstance(previous_version_code, int)
++        or isinstance(previous_version_code, bool)
++        or previous_version_code < 0
++        or previous_version_code >= version_code
++    ):
++        raise ManifestError(
++            "components.android.previous_version_code must be less than version_code"
++        )
++    if _text(android, "package_name", "components.android") != "com.visionforge.mobile":
++        raise ManifestError("components.android.package_name is not canonical")
++
++    gradle = ANDROID_BUILD_FILE.read_text(encoding="utf-8")
++    if "def dualMachineReleaseManifestFile = rootProject.file('../release/release-manifest.json')" not in gradle:
++        raise ManifestError("Android Gradle must load the canonical release manifest")
++    if "def productionVersionCode = (dualMachineAndroidRelease.version_code as Number).intValue()" not in gradle:
++        raise ManifestError("Android Gradle versionCode must come from the release manifest")
++    if "dualMachineAndroidRelease.previous_version_code as Number" not in gradle:
++        raise ManifestError("Android Gradle previous versionCode must come from the release manifest")
++    if "../release/release-manifest.json" not in gradle:
++        raise ManifestError("Android Gradle must read the canonical release manifest")
++    if "../dual_machine_runtime/release_version.txt" not in gradle:
++        raise ManifestError("Android Gradle must retain the canonical runtime version check")
++    cmake = RUNTIME_CMAKE_FILE.read_text(encoding="utf-8")
++    if "release_version.txt" not in cmake:
++        raise ManifestError("Host CMake must read the canonical runtime version file")
++
++    _validate_artifacts(manifest, require_published=require_published)
++    _validate_signature(manifest, require_published=require_published)
++    publication = manifest.get("publication")
++    if not isinstance(publication, dict) or publication.get("immutable") is not True:
++        raise ManifestError("publication.immutable must be true")
++    expected_status = "published" if require_published else "unpublished"
++    if publication.get("status") != expected_status:
++        raise ManifestError(f"publication.status must be {expected_status}")
++    return manifest
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
++    parser.add_argument("--require-published", action="store_true")
++    parser.add_argument("--json", action="store_true")
++    args = parser.parse_args(argv)
++    try:
++        manifest = validate_manifest(
++            args.manifest.resolve(), require_published=args.require_published
++        )
++    except (ManifestError, OSError) as exc:
++        payload = {"ok": False, "error": str(exc)}
++        if args.json:
++            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
++        else:
++            print(f"RELEASE_MANIFEST_RED: {exc}")
++        return 1
++    payload = {
++        "ok": True,
++        "mode": "published" if args.require_published else "source",
++        "release_id": manifest["release_id"],
++    }
++    if args.json:
++        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
++    else:
++        print(
++            "RELEASE_MANIFEST_GREEN: "
++            f"mode={payload['mode']} release_id={payload['release_id']}"
++        )
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.47.3
+

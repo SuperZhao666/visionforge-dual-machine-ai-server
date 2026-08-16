@@ -37,14 +37,19 @@ enum class ControlSuppressionReason : std::uint8_t {
   stale_frame,
   non_monotonic_frame,
   no_valid_target,
+  detected_not_control_eligible,
   lock_held,
   switch_pending,
   deadzone,
   settle_guard,
   response_guard,
+  device_resolution_guard,
   direction_flip,
   motion_invalid,
 };
+
+[[nodiscard]] const char* control_suppression_reason_name(
+    ControlSuppressionReason reason) noexcept;
 
 struct ControlFrameContext {
   std::uint64_t sequence{};
@@ -186,6 +191,7 @@ struct ControlCoreMetrics {
   std::uint64_t head_only_acceptances{};
   std::uint64_t rejected_unvalidated_heads{};
   std::uint64_t rejected_body_fallbacks{};
+  std::uint64_t detected_not_control_eligible_frames{};
   std::uint64_t motion_invalid_suppressions{};
   std::uint64_t lock_exact_track_matches{};
   std::uint64_t lock_observation_track_matches{};
@@ -284,6 +290,12 @@ class MobileControlCore final {
   }
   [[nodiscard]] std::uint64_t lost_track_duration_us() const noexcept {
     return config_.tracker.lost_track_duration_us;
+  }
+  [[nodiscard]] float tracker_new_track_confidence_threshold() const noexcept {
+    return config_.tracker.new_track_confidence_threshold;
+  }
+  [[nodiscard]] float tracker_low_confidence_threshold() const noexcept {
+    return config_.tracker.low_confidence_threshold;
   }
   [[nodiscard]] const MobileMotionPlannerOutput& motion_snapshot() const noexcept {
     return motion_planner_.last_output();

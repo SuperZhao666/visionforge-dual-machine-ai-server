@@ -11,13 +11,13 @@ constexpr std::uint64_t kMaximumIdrRequestIntervalUs = 5'000'000;
 constexpr std::uint32_t kMaximumConsecutiveIdleIdrRequests = 4;
 }
 
-bool ReceiverRecoveryPolicy::observe_fragment(std::uint64_t now_us, bool completed_access_unit,
+bool ReceiverRecoveryPolicy::observe_fragment(std::uint64_t now_us, bool fresh_content_accepted,
                                               bool source_changed,
                                               bool reassembly_expired) noexcept {
   consecutive_idle_idr_requests_ = 0U;
   if (first_fragment_us_ == 0U) first_fragment_us_ = now_us;
   last_fragment_us_ = now_us;
-  if (completed_access_unit) {
+  if (fresh_content_accepted) {
     last_completed_us_ = now_us;
     last_idr_request_us_ = 0U;
     consecutive_idr_requests_ = 0U;

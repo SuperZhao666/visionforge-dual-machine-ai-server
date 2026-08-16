@@ -20,6 +20,10 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.WindowManager;
 
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeBinding;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimePhase;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeReadModel;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeReadModelStore;
 import com.visionforge.inferencebenchmark.ui.ControlPreset;
 import com.visionforge.inferencebenchmark.ui.DualMachineAuthorizationUiState;
 import com.visionforge.inferencebenchmark.ui.MobileAppActions;
@@ -99,7 +103,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
     private String latestNote = "";
     private long latestNoteElapsedMillis;
     private long lastRuntimeStatusRevision = -1L;
-    private MobileRuntimeService.Phase lastRuntimeStatusPhase;
+    private MobileRuntimePhase lastRuntimeStatusPhase;
     private DualMachineAuthorizationUiState authorizationUiState =
             DualMachineAuthorizationUiState.readyForActivation();
     private boolean backgroundPolicyDialogShown;
@@ -109,7 +113,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
     private boolean uiPreviewOnly;
     private boolean activityStarted;
     private volatile boolean activityDestroyed;
-    private MobileRuntimeService.LocalBinder runtimeBinder;
+    private MobileRuntimeBinding runtimeBinder;
     private boolean runtimeServiceBound;
 
     private final ServiceConnection runtimeServiceConnection =
@@ -117,14 +121,12 @@ public final class MainActivity extends Activity implements MobileAppActions {
                 @Override
                 public void onServiceConnected(
                         ComponentName name, IBinder service) {
-                    if (!(service instanceof
-                            MobileRuntimeService.LocalBinder)) {
+                    if (!(service instanceof MobileRuntimeBinding)) {
                         onRuntimeServiceUnavailable(
                                 "unexpected_runtime_binder");
                         return;
                     }
-                    runtimeBinder =
-                            (MobileRuntimeService.LocalBinder) service;
+                    runtimeBinder = (MobileRuntimeBinding) service;
                     runtimeServiceBound = true;
                     runtimeBinder.setActivityForeground(activityStarted);
                     runtimeBinder.setAuthorizationObserver(
@@ -270,7 +272,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
         }
         eventLogger.write("mobile_control_bluetooth_hid_route_probe_request",
                 "accepted=true");
-        MobileRuntimeService.LocalBinder binder = runtimeBinder;
+        MobileRuntimeBinding binder = runtimeBinder;
         if (binder != null) {
             selectBluetoothHidOutputRoute(false);
             return "Bluetooth HID route probe scheduled";
@@ -307,7 +309,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
                     "accepted=false reason=debug_disabled");
             return "Bluetooth HID move probe is disabled";
         }
-        MobileRuntimeService.LocalBinder binder = runtimeBinder;
+        MobileRuntimeBinding binder = runtimeBinder;
         if (binder == null && controlRuntime == null) {
             eventLogger.write("mobile_control_bluetooth_hid_move_probe_request",
                     "accepted=false reason=runtime_binder_missing");
@@ -362,7 +364,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
     @Override
     public void onActivateCard(String cardCode) {
         if (uiPreviewOnly) return;
-        MobileRuntimeService.LocalBinder binder = runtimeBinder;
+        MobileRuntimeBinding binder = runtimeBinder;
         if (binder == null) {
             onRuntimeServiceUnavailable("activate_without_runtime_binder");
             return;
@@ -373,7 +375,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
     @Override
     public void onResumePendingActivation() {
         if (uiPreviewOnly) return;
-        MobileRuntimeService.LocalBinder binder = runtimeBinder;
+        MobileRuntimeBinding binder = runtimeBinder;
         if (binder == null) {
             onRuntimeServiceUnavailable("resume_without_runtime_binder");
             return;
@@ -396,7 +398,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
     @Override
     public void onSelectMakcuOutputRoute() {
         if (uiPreviewOnly) return;
-        MobileRuntimeService.LocalBinder binder = runtimeBinder;
+        MobileRuntimeBinding binder = runtimeBinder;
         if (binder == null) {
             controlRuntime.failClosed("output_route_makcu_without_runtime_binder");
             onRuntimeServiceUnavailable("output_route_makcu_without_runtime_binder");
@@ -414,7 +416,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
     @Override
     public void onSelectGameModel(MobileModelCatalog.Profile model) {
         if (uiPreviewOnly || model == null) return;
-        MobileRuntimeService.LocalBinder binder = runtimeBinder;
+        MobileRuntimeBinding binder = runtimeBinder;
         if (binder == null) {
             controlRuntime.failClosed("game_model_switch_without_runtime_binder");
             refreshStates(getString(R.string.status_model_switch_unavailable));
@@ -611,9 +613,9 @@ public final class MainActivity extends Activity implements MobileAppActions {
                 "qnn_htp", QnnHtpBridge::getNativeQnnRealtimeReport);
         String makcu = controlRuntime.makcuReport();
         MobileRuntimeSnapshot snapshot = MobileRuntimeSnapshot.from(video, decoder, qnn, makcu);
-        MobileRuntimeService.RuntimeStatus runtimeStatus = MobileRuntimeService.status();
-        String ethernetDiagnostics = MobileRuntimeService.ethernetDiagnostics();
-        MobileRuntimeService.Phase previousRuntimeStatusPhase =
+        MobileRuntimeReadModel runtimeStatus = MobileRuntimeReadModelStore.snapshot();
+        String ethernetDiagnostics = MobileRuntimeReadModelStore.ethernetDiagnostics();
+        MobileRuntimePhase previousRuntimeStatusPhase =
                 lastRuntimeStatusPhase;
         boolean runtimeStatusChanged =
                 runtimeStatus.revision != lastRuntimeStatusRevision;
@@ -624,11 +626,11 @@ public final class MainActivity extends Activity implements MobileAppActions {
                 previousRuntimeStatusPhase == null
                         ? null : previousRuntimeStatusPhase.name(),
                 runtimeStatus.phase.name(),
-                MobileRuntimeService.Phase.RUNNING.name())) {
+                MobileRuntimePhase.RUNNING.name())) {
             latestNote = getString(R.string.status_pipeline_started);
             latestNoteElapsedMillis = monotonicMillis;
         } else if (runtimeStatusChanged
-                && runtimeStatus.phase == MobileRuntimeService.Phase.FAILED) {
+                && runtimeStatus.phase == MobileRuntimePhase.FAILED) {
             latestNote = MobileRuntimeFailureMessagePolicy.classify(
                     runtimeStatus.failureCode)
                     == MobileRuntimeFailureMessagePolicy.Kind
@@ -649,9 +651,9 @@ public final class MainActivity extends Activity implements MobileAppActions {
                     controlRuntime.inferenceAuditDetail() + " " + metricsEvent);
         }
         MobileUiStateMapper.Input input = new MobileUiStateMapper.Input();
-        input.receiverServiceReady = runtimeStatus.phase == MobileRuntimeService.Phase.READY
-                || runtimeStatus.phase == MobileRuntimeService.Phase.STARTING
-                || runtimeStatus.phase == MobileRuntimeService.Phase.RUNNING;
+        input.receiverServiceReady = runtimeStatus.phase == MobileRuntimePhase.READY
+                || runtimeStatus.phase == MobileRuntimePhase.STARTING
+                || runtimeStatus.phase == MobileRuntimePhase.RUNNING;
         input.receiverRunning = snapshot.receiverRunning;
         input.videoLinkLive = snapshot.videoLinkLive;
         input.decoderReady = snapshot.decoderReady;
@@ -721,9 +723,9 @@ public final class MainActivity extends Activity implements MobileAppActions {
     }
 
     private long nextStatusRefreshDelayMillis() {
-        MobileRuntimeService.RuntimeStatus runtimeStatus = MobileRuntimeService.status();
-        if (runtimeStatus.phase == MobileRuntimeService.Phase.STARTING
-                || runtimeStatus.phase == MobileRuntimeService.Phase.RUNNING) {
+        MobileRuntimeReadModel runtimeStatus = MobileRuntimeReadModelStore.snapshot();
+        if (runtimeStatus.phase == MobileRuntimePhase.STARTING
+                || runtimeStatus.phase == MobileRuntimePhase.RUNNING) {
             return ACTIVE_STATUS_REFRESH_MILLIS;
         }
         return IDLE_STATUS_REFRESH_MILLIS;
@@ -746,7 +748,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
     }
 
     private String ethernetStatusDetail(
-            MobileRuntimeService.RuntimeStatus runtimeStatus, String diagnostics) {
+            MobileRuntimeReadModel runtimeStatus, String diagnostics) {
         if (containsDiagnostic(diagnostics, "accepted=true")) {
             return getString(R.string.connection_ethernet_waiting_host_detail);
         }
@@ -764,8 +766,8 @@ public final class MainActivity extends Activity implements MobileAppActions {
                 || containsDiagnostic(diagnostics, "interface_name_mismatch")) {
             return getString(R.string.connection_ethernet_wrong_address_detail);
         }
-        if (runtimeStatus.phase == MobileRuntimeService.Phase.STARTING
-                || runtimeStatus.phase == MobileRuntimeService.Phase.FAILED) {
+        if (runtimeStatus.phase == MobileRuntimePhase.STARTING
+                || runtimeStatus.phase == MobileRuntimePhase.FAILED) {
             return getString(R.string.status_waiting_ethernet);
         }
         return "";
@@ -852,7 +854,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
                     R.string.status_output_route_bluetooth_permission_requested));
             return;
         }
-        MobileRuntimeService.LocalBinder binder = runtimeBinder;
+        MobileRuntimeBinding binder = runtimeBinder;
         if (binder == null) {
             controlRuntime.failClosed("output_route_bluetooth_hid_without_runtime_binder");
             onRuntimeServiceUnavailable("output_route_bluetooth_hid_without_runtime_binder");
