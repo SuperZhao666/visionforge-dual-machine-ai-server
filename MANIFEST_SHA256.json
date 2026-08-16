@@ -6,7 +6,7 @@
     "SHA256SUMS.txt"
   ],
   "file_count": 3094,
-  "logical_bytes": 208036263,
+  "logical_bytes": 208036997,
   "files": [
     {
       "path": ".github/workflows/app-host-e2e-architecture.yml",
@@ -16996,8 +16996,8 @@
     },
     {
       "path": "server/visionforge-platform/deploy/purge_log_storage.py",
-      "size_bytes": 3657,
-      "sha256": "814c5c3938874971febee2d34cc0564fac8820fa89dbff7f4ba1c9a758b4eacb",
+      "size_bytes": 3693,
+      "sha256": "33a736a42358d739c0b45b0a54f840e0c64e09f4787a6355054376230f426140",
       "executable": false
     },
     {
@@ -17980,8 +17980,8 @@
     },
     {
       "path": "server/visionforge-platform/dual_machine_service/database.py",
-      "size_bytes": 59674,
-      "sha256": "1e70b7ebbed0dbd1ec3d87b53415c0d5ab195add7ea92e4f5429afb338781a83",
+      "size_bytes": 60172,
+      "sha256": "64de37d7a95e1a33c58170ea8dbfefac2a9b617827d667bd38caa7a64fc7633f",
       "executable": false
     },
     {
@@ -18178,8 +18178,8 @@
     },
     {
       "path": "server/visionforge-platform/dual_machine_service/tests/test_pair_generation_credential_v1.py",
-      "size_bytes": 35327,
-      "sha256": "35ff4037ca36454b68a66ed1dde0c117decfc4ec26c12c2c5ff2f9450c1d1dc2",
+      "size_bytes": 35527,
+      "sha256": "1022d4b1274c327493d195b729780b04c967fbccedbb8ac55d134f37ff93dbc5",
       "executable": false
     },
     {

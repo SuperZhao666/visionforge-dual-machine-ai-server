@@ -1,6 +1,7 @@
 """Independent SQLite boundary for the dual-machine sidecar."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -913,7 +914,18 @@ def _create_pair_generation_credentials_table(
 
 
 def _normalized_schema_sql(value: str) -> str:
-    return " ".join(value.split()).lower()
+    normalized = " ".join(value.split()).lower()
+    # The bootstrap schema uses IF NOT EXISTS while migration-created tables
+    # use the strict CREATE TABLE form. SQLite preserves that harmless
+    # idempotency keyword in sqlite_master, so normalize only this exact
+    # statement-level difference before comparing the security schema.
+    normalized = re.sub(
+        r"\bcreate table if not exists\b",
+        "create table",
+        normalized,
+        count=1,
+    )
+    return re.sub(r"\s*([(),])\s*", r"\1", normalized)
 
 
 def _drop_pair_security_triggers(connection: sqlite3.Connection) -> None:
