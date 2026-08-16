@@ -1,5 +1,7 @@
 #include "streamer_ui_resources.h"
 
+1 RT_MANIFEST "@VFDUAL_HOST_MANIFEST_PATH@"
+
 IDI_VF_APP       ICON "@VFDUAL_HOST_ASSET_ROOT@/app.ico"
 IDI_VF_DISPLAY   ICON "@VFDUAL_HOST_ASSET_ROOT@/display.ico"
 IDI_VF_ENCODER   ICON "@VFDUAL_HOST_ASSET_ROOT@/encoder.ico"

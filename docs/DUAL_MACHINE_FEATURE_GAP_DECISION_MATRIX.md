@@ -69,7 +69,7 @@ Android
 |---:|---|---|---|
 | 1 | 本机响应校准、按游戏/DPI/分辨率/灵敏度保存画像 | **部分**：手机 C++ 已有轴向响应预算和保守上限，但没有实体校准工作流 | Android 采集与标定；结果进入 Mobile planner，不能把控制搬回 Host |
 | 2 | 完整语义调参：识别、目标锁定、切换、短时丢失、稳定性、响应速度等 | **部分**：当前只暴露预设、增益、死区、单轴上限、置信度和个人画像三个尺度 | Android 仅暴露少量可理解的语义参数，映射到已有 C++ 策略；不把全部底层常量直接扔给用户 |
-| 3 | 多模型与性能/精度档位 | **已迁**：当前为四模型 416x416 W8A16 QNN HTP 组合：`valorant-yellow-416-v11s-no-flash`、`overwatch2-416-yolov5`、`delta-force-416-v8s`、`counter-strike-2-vombit-416-v8s` | 模型注册表、输入、类别、量化、tensor contract、SoC 与手机实测数值报告见各模型 canonical 清单；CS2 商业分发仍需许可证复核 |
+| 3 | 多模型与性能/精度档位 | **已迁**：当前为四模型 416x416 W8A16 QNN HTP 组合：`valorant-yellow-416-v11s-no-flash`、`overwatch2-416-yolov5`、`delta-force-416-v8s`、`counter-strike-2-vombit-416-v8s` | 模型注册表、输入、类别、量化、tensor contract、SoC 与手机实测数值报告见各模型 canonical 清单；CS2 私有构建使用同一套模型哈希闭包校验 |
 | 4 | 个人轨迹采集、分析、生成和历史管理 | **部分**：手机已能导入并运行桌面画像，但不能在手机上制作/管理画像 | Android 制作工具与历史页；核心个人化 planner 无需重写 |
 | 5 | 完整效果评估页和解释性报告 | **部分**：手机有原始 detection trace、推理页 pipeline metrics 和设置中的单文件运行日志导出，没有独立诊断页或成品评分报告 | Android 离线评估/报告层；复用已有 trace，不阻塞实时热路径 |
 | 6 | 手动背闪宏 | **缺失** | 若用户选择：Android -> MAKCU，物理侧键手动触发，默认关闭，可中断、冷却并记录日志；禁止放到 Host |

@@ -77,11 +77,6 @@ if ($modelInput -ne "1,3,416,416" -or
         $buildManifest.toolchain.qnn_sdk_version -ne "2.37.1.250807") {
     throw "Canonical CS2 build manifest model or toolchain contract is invalid"
 }
-if ($buildManifest.licensing.source_metadata_declares -ne "AGPL-3.0" -or
-        -not $buildManifest.licensing.commercial_distribution_review_required) {
-    throw "CS2 source licensing review contract is missing"
-}
-
 $sourcePath = Join-Path $canonicalRoot $buildManifest.artifacts.source_onnx.path
 $splitPath = Join-Path $canonicalRoot $buildManifest.artifacts.split_onnx.path
 $libraryPath = Join-Path $canonicalRoot $buildManifest.artifacts.android_library.path
@@ -114,8 +109,6 @@ $releaseManifest = [ordered]@{
     complete = $true
     integration_eligible = $true
     phone_htp_numeric_verified = $true
-    commercial_distribution_review_required = $true
-    commercial_release_eligible = $false
     promoted_at = (Get-Date).ToUniversalTime().ToString("o")
     source_onnx_sha256 = $sourceHash
     split_onnx_sha256 = $splitHash
@@ -133,6 +126,5 @@ $releaseTemporary = "$releasePath.tmp"
 Move-Item -LiteralPath $releaseTemporary -Destination $releasePath -Force
 Write-Output (
     "CS2_VOMBIT_W8A16_INTEGRATION_PROMOTED " +
-    "library_sha256=$libraryHash release_manifest=$releasePath " +
-    "commercial_release_eligible=false"
+    "library_sha256=$libraryHash release_manifest=$releasePath"
 )

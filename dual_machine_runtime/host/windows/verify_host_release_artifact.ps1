@@ -12,6 +12,7 @@ param(
     [switch]$RequireAuthenticode
 )
 
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $ErrorActionPreference = 'Stop'
 
 function Invoke-DumpBin {
@@ -120,7 +121,18 @@ if ($symbolManifest.executable_sha256 -ne $sha256 -or
     throw "Private Host symbol manifest does not close over EXE $sha256"
 }
 
-$signature = Get-AuthenticodeSignature -LiteralPath $resolvedExe
+$signature = [pscustomobject]@{
+    Status = 'NotRequested'
+    SignerCertificate = $null
+}
+if ($RequireAuthenticode) {
+    # The normal build gate does not require a platform certificate. Avoid
+    # loading the Security module in that mode because this workstation's
+    # PowerShell 7 compatibility module conflicts with Windows PowerShell's
+    # extended type data. The strict switch still loads the native verifier.
+    Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+    $signature = Get-AuthenticodeSignature -LiteralPath $resolvedExe
+}
 if ($RequireAuthenticode -and $signature.Status -ne 'Valid') {
     throw "VF Host Authenticode signature is required but status is $($signature.Status)"
 }

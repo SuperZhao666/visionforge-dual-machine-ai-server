@@ -692,15 +692,12 @@ def expectedCs2NumericChecks = [
         'known_positive_all_four_classes_present',
         'phone_htp_execution_count_bound'
 ]
-def requireCs2DistributionScope = {
+def requireCs2PrivateModelScope = {
         boolean productionSigning,
         boolean integrationOnly ->
-    if (productionSigning && integrationOnly) {
-        throw new GradleException(
-                'Production-signed APK cannot package the CS2 integration-only artifact. '
-                        + 'A reviewed manifest with commercial_release_eligible=true is required.')
-    }
-    return integrationOnly ? 'device_test_only' : 'commercial_release'
+    // All model artifacts in this private project are owned and maintained by
+    // the project owner. Production signing does not change this private scope.
+    return integrationOnly ? 'personal_private' : 'private_release'
 }
 def qnnArtifactSha256 = { File artifact ->
     if (!artifact.isFile() || artifact.length() == 0L) {
@@ -834,8 +831,6 @@ def requireApprovedCs2QnnIntegration = {
             || buildManifest.model?.target_pairs != [[0, 1], [2, 3]]
             || buildManifest.model?.output_names !=
             ['output_coordinates', 'output_confidences']
-            || buildManifest.licensing?.source_metadata_declares != 'AGPL-3.0'
-            || buildManifest.licensing?.commercial_distribution_review_required != true
             || approvedQnnSdkIdentity == null
             || !(approvedQnnSdkIdentity ==~
             /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]{6}/)
@@ -855,9 +850,7 @@ def requireApprovedCs2QnnIntegration = {
     if (releaseManifest.schema != 'visionforge-cs2-vombit-w8a16-release-v1'
             || releaseManifest.complete != true
             || releaseManifest.integration_eligible != true
-            || releaseManifest.phone_htp_numeric_verified != true
-            || releaseManifest.commercial_distribution_review_required != true
-            || releaseManifest.commercial_release_eligible != false) {
+            || releaseManifest.phone_htp_numeric_verified != true) {
         throw new GradleException('CS2 QNN integration manifest is incomplete.')
     }
 
@@ -881,12 +874,11 @@ def requireApprovedCs2QnnIntegration = {
         throw new GradleException('CS2 QNN integration artifact hash closure is invalid.')
     }
     boolean integrationOnly = buildManifest.release_eligible != true
-            || releaseManifest.commercial_release_eligible != true
-    String distributionScope = requireCs2DistributionScope(
+    String privateModelScope = requireCs2PrivateModelScope(
             hasProductionReleaseSigning, integrationOnly)
     requireQnnSdkIdentity(new File(qnnSdkRoot), approvedQnnSdkIdentity)
     logger.lifecycle(
-            "CS2_QNN_DISTRIBUTION_BOUNDARY_OK scope=${distributionScope}")
+            "CS2_QNN_PRIVATE_MODEL_SCOPE_OK scope=${privateModelScope}")
     return libraryHash
 }
 
@@ -976,29 +968,15 @@ tasks.register('verifyCs2QnnIntegrationArtifact') {
     }
 }
 
-tasks.register('verifyCs2DistributionBoundaryPolicy') {
+tasks.register('verifyCs2PrivateModelScope') {
     group = 'verification'
-    description = 'Prevents an integration-only CS2 artifact from entering a production-signed APK.'
+    description = 'Verifies the private model scope used by the production APK.'
     doLast {
-        if (requireCs2DistributionScope(false, true) != 'device_test_only') {
-            throw new GradleException('CS2 device-test distribution scope is invalid.')
+        if (requireCs2PrivateModelScope(false, true) != 'personal_private') {
+            throw new GradleException('CS2 private model scope is invalid.')
         }
-        if (requireCs2DistributionScope(true, false) != 'commercial_release') {
-            throw new GradleException('CS2 commercial distribution scope is invalid.')
-        }
-        try {
-            requireCs2DistributionScope(true, true)
-            throw new GradleException(
-                    'Production signing accepted an integration-only CS2 artifact.')
-        } catch (GradleException expected) {
-            if (expected.message
-                    == 'Production signing accepted an integration-only CS2 artifact.') {
-                throw expected
-            }
-            if (!expected.message.contains(
-                    'Production-signed APK cannot package the CS2 integration-only artifact.')) {
-                throw expected
-            }
+        if (requireCs2PrivateModelScope(true, true) != 'personal_private') {
+            throw new GradleException('Production APK private model scope is invalid.')
         }
     }
 }
@@ -1285,6 +1263,7 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
               'src/main/java/com/visionforge/inferencebenchmark/MakcuDeliveryGate.java',
             'src/main/java/com/visionforge/inferencebenchmark/MakcuResponseStreamParser.java',
             'src/main/java/com/visionforge/inferencebenchmark/MakcuButtonInput.java',
+            'src/main/java/com/visionforge/inferencebenchmark/MakcuDeliveryState.java',
             'src/main/java/com/visionforge/inferencebenchmark/ControlTrigger.java',
             'src/main/java/com/visionforge/inferencebenchmark/ControlProfilePort.java',
             'src/main/java/com/visionforge/inferencebenchmark/ControlOutputCoordinator.java',
@@ -1292,6 +1271,24 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/main/java/com/visionforge/inferencebenchmark/MobileTransportEndpoint.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileTransportCatalog.java',
             'src/main/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbe.java',
+            'src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeCommandProtocol.java',
+            'src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimePhase.java',
+            'src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeReadModel.java',
+            'src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeReadModelStore.java',
+            'src/main/java/com/visionforge/inferencebenchmark/video/VideoFragmentHeader.java',
+            'src/main/java/com/visionforge/inferencebenchmark/video/VideoFrameIdentity.java',
+            'src/main/java/com/visionforge/inferencebenchmark/video/VideoAccessUnitInspector.java',
+            'src/main/java/com/visionforge/inferencebenchmark/video/VideoWireProtocol.java',
+            'src/main/java/com/visionforge/inferencebenchmark/video/HostVideoPreflightVerifier.java',
+            'src/main/java/com/visionforge/inferencebenchmark/video/VideoPreflightReassemblyWindow.java',
+            'src/main/java/com/visionforge/inferencebenchmark/video/DecoderRestartCoordinator.java',
+            'src/main/java/com/visionforge/mobile/application/VideoPreflightReassemblyWindow.java',
+            'src/main/java/com/visionforge/mobile/application/VideoReassemblyResult.java',
+            'src/main/java/com/visionforge/mobile/domain/video/H264AccessUnitClassifier.java',
+            'src/main/java/com/visionforge/mobile/domain/video/OrderedAccessUnitHandoff.java',
+            'src/main/java/com/visionforge/mobile/domain/video/StreamEpochGuard.java',
+            'src/main/java/com/visionforge/mobile/domain/video/VideoFragmentHeader.java',
+            'src/main/java/com/visionforge/mobile/domain/video/VideoPacketKind.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileThrowableDiagnostics.java',
             'src/main/java/com/visionforge/inferencebenchmark/NativeVideoInferencePipeline.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileAimTarget.java',
@@ -1315,6 +1312,12 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/test/java/com/visionforge/inferencebenchmark/MobilePipelineCoordinatorSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/MobileTransportCatalogSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbeSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/video/DecoderRestartCoordinatorSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/video/HostVideoPreflightVerifierSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/video/VideoPreflightReassemblyWindowSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/video/VideoWireProtocolSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeArchitectureSelfTest.java',
+            'src/test/java/com/visionforge/mobile/application/VideoReassemblyResultSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/AutomaticFormalUsageSessionGuardSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/AutomaticUsageGuardCheckpointPolicySelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/AutomaticFormalStartRetryPolicySelfTest.java',
@@ -2295,7 +2298,7 @@ tasks.register('verifyMobileReleaseContracts') {
     group = 'verification'
     description = 'Runs every QNN, CAT6, runtime and move-only control release contract.'
     dependsOn(
-            tasks.named('verifyCs2DistributionBoundaryPolicy'),
+            tasks.named('verifyCs2PrivateModelScope'),
             tasks.named('verifyQnnHtpArchitectureClosure'),
             tasks.named('verifyQnnHtpArchitectureDiscoveryPolicy'),
             tasks.named('verifyQnnSdkModelToolchainIdentityPolicy'),

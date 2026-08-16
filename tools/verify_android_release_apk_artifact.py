@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.verify_formal_release_bundle import (  # noqa: E402
+from tools.verify_android_release_apk_contract import (  # noqa: E402
     CheckResult,
     verify_android_release_apk,
 )

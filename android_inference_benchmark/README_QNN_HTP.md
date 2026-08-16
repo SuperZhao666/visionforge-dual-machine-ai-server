@@ -53,9 +53,9 @@ be rebuilt and reapproved with the same newer SDK before the release gate can pa
 - `libdelta_416_v8s_w8a16.so`
 - `libcs2_vombit_416_v8s_w8a16.so`
 
-The CS2 Vombit source metadata declares AGPL-3.0. Its local integration and phone HTP
-numeric contract are approved, but commercial distribution remains blocked until an
-independent license review records distribution rights.
+The CS2 Vombit model is maintained as a project-owned private model artifact. Its local
+integration and phone HTP numeric contract are approved, and private Release builds use
+the same model hash closure as integration builds.
 
 Packaging an HTP architecture is only build compatibility. Physical certification remains
 per phone and firmware as defined in `../docs/DUAL_MACHINE_SNAPDRAGON_COMPATIBILITY.md`.

@@ -21,7 +21,7 @@ from tools.verify_android_production_signing_inputs import (  # noqa: E402
     verify_android_production_signing_inputs,
     write_report as write_signing_report,
 )
-from tools.verify_formal_release_bundle import (  # noqa: E402
+from tools.verify_android_release_apk_contract import (  # noqa: E402
     CheckResult,
     sha256_file,
     verify_android_release_apk,
