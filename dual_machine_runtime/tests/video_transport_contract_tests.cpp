@@ -47,5 +47,20 @@ int main() {
   assert(epoch != 0U && epoch <= vfdual::kVideoStreamEpochMax);
   assert(!vfdual::valid_video_fragment_metadata(
       {0U, 1U}, 0U, 1U, 1U));
+
+  vfdual::VideoEpochCoordinator epochs(1U);
+  assert(epochs.observe(1U) == vfdual::VideoEpochObservation::candidate);
+  assert(epochs.commit_candidate(1U));
+  for (std::uint64_t value = 2U; value <= 2'048U; ++value) {
+    assert(epochs.observe(value) == vfdual::VideoEpochObservation::candidate);
+    assert(epochs.commit_candidate(value));
+  }
+  assert(epochs.retired_through() == 2'047U);
+  assert(epochs.is_retired(1U));
+  assert(epochs.observe(1U) == vfdual::VideoEpochObservation::retired);
+  assert(epochs.observe(3'000U) == vfdual::VideoEpochObservation::candidate);
+  assert(epochs.observe(2'999U) == vfdual::VideoEpochObservation::retired);
+  assert(epochs.candidate_epoch() == 3'000U);
+  assert(epochs.commit_candidate(3'000U));
   return 0;
 }

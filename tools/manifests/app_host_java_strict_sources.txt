@@ -1,4 +1,5 @@
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/DecoderRestartCoordinator.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/HostVideoPreflightVerifier.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/VideoAccessUnitInspector.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/VideoFragmentHeader.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/VideoFrameIdentity.java
@@ -6,6 +7,7 @@ android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/VideoWireProtocol.java
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/MobileRuntimeCompositionRoot.java
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/VideoPreflightReassemblyWindow.java
+android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/VideoReassemblyResult.java
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/core/AtomicRuntimeReadModel.java
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/core/DecoderRestartCoordinator.java
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/core/EpochGuard.java
@@ -29,7 +31,9 @@ android_inference_benchmark/app/src/main/java/com/visionforge/mobile/ports/Decod
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/ports/RecoveryPort.java
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/ports/RuntimeDiagnosticsPort.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/video/DecoderRestartCoordinatorSelfTest.java
+android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/video/HostVideoPreflightVerifierSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/video/VideoPreflightReassemblyWindowSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/video/VideoWireProtocolSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/mobile/application/MobileArchitectureSelfTest.java
+android_inference_benchmark/app/src/test/java/com/visionforge/mobile/application/VideoReassemblyResultSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/mobile/core/MobileCoreSelfTest.java

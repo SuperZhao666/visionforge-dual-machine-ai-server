@@ -4,8 +4,8 @@ import com.visionforge.mobile.domain.video.VideoFragmentHeader;
 import com.visionforge.mobile.domain.video.VideoPacketKind;
 
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalLong;
@@ -19,6 +19,8 @@ import java.util.OptionalLong;
  * malformed 帧和 REPEAT 因而都不能退休正在工作的流。</p>
  */
 public final class VideoPreflightReassemblyWindow {
+    private static final byte[] EMPTY_ACCESS_UNIT = new byte[0];
+
     public record Config(
             int maxInflightFrames,
             long maxTotalBytes,
@@ -52,24 +54,6 @@ public final class VideoPreflightReassemblyWindow {
         REPEAT
     }
 
-    public record Result(
-            Code code,
-            long streamEpoch,
-            long frameSequence,
-            byte[] accessUnit,
-            boolean requiresEpochCommit,
-            boolean repeatedContent) {
-        public Result {
-            Objects.requireNonNull(code, "code");
-            accessUnit = accessUnit == null ? new byte[0] : accessUnit.clone();
-        }
-
-        @Override
-        public byte[] accessUnit() {
-            return accessUnit.clone();
-        }
-    }
-
     private record FrameKey(long epoch, long sequence) {}
 
     private static final class FrameAssembly {
@@ -85,23 +69,45 @@ public final class VideoPreflightReassemblyWindow {
     }
 
     private final Config config;
-    private final Map<FrameKey, FrameAssembly> frames = new HashMap<>();
+    private final Map<FrameKey, FrameAssembly> frames = new LinkedHashMap<>();
     private Long currentEpoch;
     private Long candidateEpoch;
     private boolean candidateReady;
     private long totalBytes;
     private boolean gapDetected;
+    private long payloadBytesCopied;
+    private long duplicatePayloadBytesAvoided;
+    private long completedAccessUnitBytes;
+    private long resourceLimitEvents;
 
     public VideoPreflightReassemblyWindow(Config config) {
         this.config = Objects.requireNonNull(config, "config");
     }
 
-    public synchronized Result ingest(
+    public synchronized VideoReassemblyResult ingest(
             VideoFragmentHeader header,
             byte[] payload,
             long nowNanos) {
-        Objects.requireNonNull(header, "header");
         Objects.requireNonNull(payload, "payload");
+        return ingest(header, payload, 0, payload.length, nowNanos);
+    }
+
+    /**
+     * 直接从接收数据报的 payload 区间入队。调用方不必先 copyOfRange；本类只在
+     * 分片真正通过全部边界检查后复制一次，从而避免每个 UDP 包的双重临时分配。
+     */
+    public synchronized VideoReassemblyResult ingest(
+            VideoFragmentHeader header,
+            byte[] source,
+            int payloadOffset,
+            int payloadLength,
+            long nowNanos) {
+        Objects.requireNonNull(header, "header");
+        Objects.requireNonNull(source, "source");
+        if (payloadOffset < 0 || payloadLength < 0
+                || payloadOffset > source.length - payloadLength) {
+            return result(Code.INVALID, header);
+        }
         if (nowNanos < 0L) {
             return result(Code.INVALID, header);
         }
@@ -126,7 +132,7 @@ public final class VideoPreflightReassemblyWindow {
         }
 
         // 在建立候选槽之前验证载荷，防止空包或超大包占用会话状态。
-        if (payload.length == 0 || payload.length > config.maxAccessUnitBytes()) {
+        if (payloadLength == 0 || payloadLength > config.maxAccessUnitBytes()) {
             return result(Code.INVALID, header);
         }
 
@@ -158,7 +164,8 @@ public final class VideoPreflightReassemblyWindow {
 
         byte[] previous = frame.fragments[header.fragmentIndex()];
         if (previous != null) {
-            if (Arrays.equals(previous, payload)) {
+            if (rangeEquals(previous, source, payloadOffset, payloadLength)) {
+                duplicatePayloadBytesAvoided += payloadLength;
                 return result(Code.DUPLICATE, header);
             }
             if (candidate) {
@@ -168,18 +175,20 @@ public final class VideoPreflightReassemblyWindow {
             return result(Code.CONFLICT, header);
         }
 
-        if (!candidate && payload.length > config.maxTotalBytes() - totalBytes) {
+        if (!candidate && payloadLength > config.maxTotalBytes() - totalBytes) {
             eraseNonCurrentEpochs();
         }
-        if (payload.length > config.maxAccessUnitBytes() - frame.bytes
-                || payload.length > config.maxTotalBytes() - totalBytes) {
+        if (payloadLength > config.maxAccessUnitBytes() - frame.bytes
+                || payloadLength > config.maxTotalBytes() - totalBytes) {
             return resourceFailure(header, candidate);
         }
 
-        frame.fragments[header.fragmentIndex()] = payload.clone();
+        frame.fragments[header.fragmentIndex()] = Arrays.copyOfRange(
+                source, payloadOffset, payloadOffset + payloadLength);
+        payloadBytesCopied += payloadLength;
         frame.receivedCount++;
-        frame.bytes += payload.length;
-        totalBytes += payload.length;
+        frame.bytes += payloadLength;
+        totalBytes += payloadLength;
 
         if (frame.receivedCount != frame.fragments.length) {
             return result(Code.ACCEPTED, header);
@@ -195,10 +204,11 @@ public final class VideoPreflightReassemblyWindow {
             offset += fragment.length;
         }
         removeFrame(key);
+        completedAccessUnitBytes += accessUnit.length;
         if (candidate) {
             candidateReady = true;
         }
-        return new Result(
+        return new VideoReassemblyResult(
                 Code.COMPLETE,
                 header.streamEpoch(),
                 header.frameSequence(),
@@ -258,13 +268,14 @@ public final class VideoPreflightReassemblyWindow {
         }
     }
 
-    public synchronized int inflightCount() {
-        return frames.size();
+    public synchronized int inflightCount() { return frames.size(); }
+    public synchronized long inflightBytes() { return totalBytes; }
+    public synchronized long payloadBytesCopied() { return payloadBytesCopied; }
+    public synchronized long duplicatePayloadBytesAvoided() {
+        return duplicatePayloadBytesAvoided;
     }
-
-    public synchronized long inflightBytes() {
-        return totalBytes;
-    }
+    public synchronized long completedAccessUnitBytes() { return completedAccessUnitBytes; }
+    public synchronized long resourceLimitEvents() { return resourceLimitEvents; }
 
     public synchronized OptionalLong currentEpoch() {
         return currentEpoch == null
@@ -312,12 +323,26 @@ public final class VideoPreflightReassemblyWindow {
         return true;
     }
 
-    private Result candidateFailure(VideoFragmentHeader header) {
+    private static boolean rangeEquals(
+            byte[] stored, byte[] source, int offset, int length) {
+        if (stored.length != length) {
+            return false;
+        }
+        for (int index = 0; index < length; index++) {
+            if (stored[index] != source[offset + index]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private VideoReassemblyResult candidateFailure(VideoFragmentHeader header) {
         rejectCandidateEpoch(header.streamEpoch());
         return result(Code.CANDIDATE_REJECTED, header);
     }
 
-    private Result resourceFailure(VideoFragmentHeader header, boolean candidate) {
+    private VideoReassemblyResult resourceFailure(VideoFragmentHeader header, boolean candidate) {
+        resourceLimitEvents++;
         if (candidate) {
             return candidateFailure(header);
         }
@@ -387,12 +412,12 @@ public final class VideoPreflightReassemblyWindow {
         candidateReady = false;
     }
 
-    private static Result result(Code code, VideoFragmentHeader header) {
-        return new Result(
+    private static VideoReassemblyResult result(Code code, VideoFragmentHeader header) {
+        return new VideoReassemblyResult(
                 code,
                 header.streamEpoch(),
                 header.frameSequence(),
-                new byte[0],
+                EMPTY_ACCESS_UNIT,
                 false,
                 header.kind() == VideoPacketKind.REPEAT);
     }

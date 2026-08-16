@@ -62,6 +62,10 @@ public final class MobileArchitectureSelfTest {
         };
         check(Arrays.equals(header.encode(), expected), "Java wire vector drifted from C++");
         check(VideoFragmentHeader.decode(expected).equals(header), "wire round-trip failed");
+        byte[] framed = new byte[expected.length + 4];
+        System.arraycopy(expected, 0, framed, 2, expected.length);
+        check(VideoFragmentHeader.decode(framed, 2, expected.length).equals(header),
+                "offset wire decode copied or misread the canonical header");
         try {
             new VideoFragmentHeader(VideoPacketKind.DATA, 1L, 0L, 0, 4097);
             throw new AssertionError("fragment count above shared cap was accepted");
@@ -78,12 +82,23 @@ public final class MobileArchitectureSelfTest {
         check(result.code() == VideoPreflightReassemblyWindow.Code.ACCEPTED,
                 "out-of-order second fragment not buffered");
         result = window.ingest(
-                new VideoFragmentHeader(VideoPacketKind.DATA, 10, 7, 0, 2), first, 1);
+                new VideoFragmentHeader(VideoPacketKind.DATA, 10, 7, 1, 2), second, 0);
+        check(result.code() == VideoPreflightReassemblyWindow.Code.DUPLICATE
+                        && window.payloadBytesCopied() == 2L
+                        && window.duplicatePayloadBytesAvoided() == 2L,
+                "identical duplicate allocated or changed frame state");
+        byte[] sourceWithPrefix = new byte[] {99, 1, 2, 88};
+        result = window.ingest(
+                new VideoFragmentHeader(VideoPacketKind.DATA, 10, 7, 0, 2),
+                sourceWithPrefix, 1, 2, 1);
         check(result.code() == VideoPreflightReassemblyWindow.Code.COMPLETE
                         && result.requiresEpochCommit()
                         && Arrays.equals(result.accessUnit(), new byte[] {1, 2, 3, 4})
                         && window.currentEpoch().isEmpty(),
                 "candidate access unit bypassed two-phase epoch confirmation");
+        check(window.payloadBytesCopied() == 4L
+                        && window.completedAccessUnitBytes() == 4L,
+                "preflight hot path copied more than admitted fragment bytes");
         check(window.commitCandidateEpoch(10L)
                         && window.currentEpoch().orElseThrow() == 10L,
                 "validated candidate epoch was not committed");
@@ -164,6 +179,26 @@ public final class MobileArchitectureSelfTest {
                 new VideoFragmentHeader(VideoPacketKind.DATA, 10, 99, 0, 1), first, 100);
         check(result.code() == VideoPreflightReassemblyWindow.Code.STALE_EPOCH,
                 "very old epoch reclaimed the receiver");
+    }
+
+    private static void testLongRunEpochRetirement() {
+        // Thousands of epoch rotations must not make the earliest session
+        // admissible again. The current epoch is a permanent high-water mark.
+        VideoPreflightReassemblyWindow longRun = new VideoPreflightReassemblyWindow(
+                new VideoPreflightReassemblyWindow.Config(2, 64, 32, 100));
+        for (long epoch = 1L; epoch <= 2_048L; epoch++) {
+            var complete = longRun.ingest(
+                    new VideoFragmentHeader(VideoPacketKind.DATA, epoch, 0L, 0, 1),
+                    idr((int) epoch), epoch);
+            check(complete.code() == VideoPreflightReassemblyWindow.Code.COMPLETE,
+                    "long-run candidate IDR was not reassembled");
+            check(longRun.commitCandidateEpoch(epoch),
+                    "long-run candidate epoch was not committed");
+        }
+        check(longRun.ingest(
+                new VideoFragmentHeader(VideoPacketKind.DATA, 1L, 1L, 0, 1),
+                idr(1), 3_000L).code() == VideoPreflightReassemblyWindow.Code.STALE_EPOCH,
+                "ancient epoch reclaimed Java preflight after history pressure");
     }
 
     private static void testH264AndOrderedHandoff() {
@@ -429,6 +464,7 @@ public final class MobileArchitectureSelfTest {
 
     public static void main(String[] args) {
         testProtocolAndReassembly();
+        testLongRunEpochRetirement();
         testH264AndOrderedHandoff();
         testDecodedMetadataSemanticConflicts();
         testControlStateMachines();

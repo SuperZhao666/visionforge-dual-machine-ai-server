@@ -43,8 +43,7 @@ def smoke_check_entrypoint() -> dict[str, object]:
         raise RuntimeError("retention database path is not a regular file")
 
     database_uri = f"{database_path.resolve(strict=True).as_uri()}?mode=ro"
-    conn = sqlite3.connect(database_uri, uri=True)
-    try:
+    with sqlite3.connect(database_uri, uri=True) as conn:
         conn.execute("PRAGMA query_only = ON")
         table_rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' "
@@ -64,8 +63,6 @@ def smoke_check_entrypoint() -> dict[str, object]:
         conn.execute(
             "SELECT id, started_at, latest_upload_at FROM log_sessions LIMIT 0"
         ).fetchall()
-    finally:
-        conn.close()
     return {
         "smoke_check": "ok",
         "database_present": True,

@@ -1,9 +1,8 @@
 package com.visionforge.inferencebenchmark.video;
 
-import java.io.ByteArrayOutputStream;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -51,10 +50,14 @@ public final class VideoPreflightReassemblyWindow {
 
     private final int maximumFrames;
     private final int maximumBytes;
-    private final Map<VideoFrameIdentity, Pending> pending = new HashMap<>();
+    // Insertion order makes oldest-frame eviction O(1) and deterministic.
+    private final Map<VideoFrameIdentity, Pending> pending = new LinkedHashMap<>();
     private int inflightBytes;
     private long conflicts;
     private long expirations;
+    private long evictions;
+    private long payloadBytesCopied;
+    private long duplicatePayloadBytesAvoided;
 
     public VideoPreflightReassemblyWindow(int maximumFrames, int maximumBytes) {
         if (maximumFrames <= 0 || maximumBytes <= 0) {
@@ -65,10 +68,16 @@ public final class VideoPreflightReassemblyWindow {
     }
 
     public CompletedCandidate offer(byte[] datagram, int length, long nowNanos) {
+        if (datagram == null || nowNanos < 0L) return null;
         VideoFragmentHeader header = VideoWireProtocol.parse(datagram, length);
         if (header == null) return null;
         int offset = VideoWireProtocol.HEADER_BYTES;
-        byte[] part = Arrays.copyOfRange(datagram, offset, length);
+        int partLength = length - offset;
+        if (partLength <= 0
+                || partLength > maximumBytes
+                || partLength > VideoWireProtocol.MAX_ACCESS_UNIT_BYTES) {
+            return null;
+        }
         Pending frame = pending.get(header.identity);
         if (frame == null) {
             if (pending.size() >= maximumFrames) evictOldest();
@@ -83,40 +92,49 @@ public final class VideoPreflightReassemblyWindow {
 
         byte[] previous = frame.parts[header.fragmentIndex];
         if (previous != null) {
-            if (!Arrays.equals(previous, part)) {
+            if (!rangeEquals(previous, datagram, offset, partLength)) {
                 remove(frame);
                 conflicts++;
+            } else {
+                duplicatePayloadBytesAvoided += partLength;
             }
             return null;
         }
-        if (part.length > maximumBytes - inflightBytes
-                || part.length > VideoWireProtocol.MAX_ACCESS_UNIT_BYTES - frame.bytes) {
+        if (partLength > maximumBytes - inflightBytes
+                || partLength > VideoWireProtocol.MAX_ACCESS_UNIT_BYTES - frame.bytes) {
             remove(frame);
             return null;
         }
+        byte[] part = Arrays.copyOfRange(datagram, offset, length);
+        payloadBytesCopied += partLength;
         frame.parts[header.fragmentIndex] = part;
         frame.received++;
-        frame.bytes += part.length;
-        inflightBytes += part.length;
+        frame.bytes += partLength;
+        inflightBytes += partLength;
         if (frame.received != frame.parts.length) return null;
 
-        ByteArrayOutputStream output = new ByteArrayOutputStream(frame.bytes);
+        byte[] accessUnit = new byte[frame.bytes];
+        int writeOffset = 0;
         for (byte[] fragment : frame.parts) {
-            output.write(fragment, 0, fragment.length);
+            System.arraycopy(fragment, 0, accessUnit, writeOffset, fragment.length);
+            writeOffset += fragment.length;
         }
         CompletedCandidate result = new CompletedCandidate(
-                frame.identity, frame.repeated, output.toByteArray());
+                frame.identity, frame.repeated, accessUnit);
         remove(frame);
         return result;
     }
 
     public int discardExpired(long nowNanos, long ttlNanos) {
+        if (nowNanos < 0L || ttlNanos < 0L) {
+            throw new IllegalArgumentException("time values must be non-negative");
+        }
         int discarded = 0;
         Iterator<Pending> iterator = pending.values().iterator();
         while (iterator.hasNext()) {
             Pending frame = iterator.next();
             if (nowNanos >= frame.firstSeenNanos
-                    && nowNanos - frame.firstSeenNanos > ttlNanos) {
+                    && nowNanos - frame.firstSeenNanos >= ttlNanos) {
                 inflightBytes -= frame.bytes;
                 iterator.remove();
                 discarded++;
@@ -130,6 +148,9 @@ public final class VideoPreflightReassemblyWindow {
     public int inflightBytes() { return inflightBytes; }
     public long conflicts() { return conflicts; }
     public long expirations() { return expirations; }
+    public long evictions() { return evictions; }
+    public long payloadBytesCopied() { return payloadBytesCopied; }
+    public long duplicatePayloadBytesAvoided() { return duplicatePayloadBytesAvoided; }
 
     public void clear() {
         pending.clear();
@@ -137,18 +158,27 @@ public final class VideoPreflightReassemblyWindow {
     }
 
     private void evictOldest() {
-        Pending oldest = null;
-        for (Pending candidate : pending.values()) {
-            if (oldest == null || candidate.firstSeenNanos < oldest.firstSeenNanos) {
-                oldest = candidate;
-            }
+        Iterator<Pending> iterator = pending.values().iterator();
+        if (iterator.hasNext()) {
+            Pending oldest = iterator.next();
+            inflightBytes -= oldest.bytes;
+            iterator.remove();
+            evictions++;
         }
-        if (oldest != null) remove(oldest);
     }
 
     private void remove(Pending frame) {
         if (pending.remove(frame.identity) != null) {
             inflightBytes -= frame.bytes;
         }
+    }
+
+    private static boolean rangeEquals(
+            byte[] stored, byte[] source, int offset, int length) {
+        if (stored.length != length) return false;
+        for (int index = 0; index < length; index++) {
+            if (stored[index] != source[offset + index]) return false;
+        }
+        return true;
     }
 }

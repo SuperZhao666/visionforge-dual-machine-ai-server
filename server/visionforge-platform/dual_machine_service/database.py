@@ -1,7 +1,6 @@
 """Independent SQLite boundary for the dual-machine sidecar."""
 from __future__ import annotations
 
-import re
 import sqlite3
 from pathlib import Path
 
@@ -914,18 +913,79 @@ def _create_pair_generation_credentials_table(
 
 
 def _normalized_schema_sql(value: str) -> str:
-    normalized = " ".join(value.split()).lower()
-    # The bootstrap schema uses IF NOT EXISTS while migration-created tables
-    # use the strict CREATE TABLE form. SQLite preserves that harmless
-    # idempotency keyword in sqlite_master, so normalize only this exact
-    # statement-level difference before comparing the security schema.
-    normalized = re.sub(
-        r"\bcreate table if not exists\b",
-        "create table",
-        normalized,
-        count=1,
-    )
-    return re.sub(r"\s*([(),])\s*", r"\1", normalized)
+    """Return a token-exact SQLite schema representation.
+
+    ``sqlite_master.sql`` preserves harmless source formatting.  Comparing a
+    whitespace-collapsed string therefore rejected tables created by this
+    module's own multiline bootstrap script.  Removing all whitespace would be
+    unsafe because it can merge distinct SQL tokens.  This lexer ignores only
+    whitespace/comments, lower-cases unquoted SQL tokens, and preserves quoted
+    literals/identifiers and every operator as separate tokens.  Formatting
+    variants compare equal while a missing CHECK/UNIQUE/FOREIGN KEY remains a
+    different token sequence and still fails closed.
+    """
+    tokens: list[str] = []
+    index = 0
+    length = len(value)
+    while index < length:
+        char = value[index]
+        if char.isspace():
+            index += 1
+            continue
+        if value.startswith("--", index):
+            newline = value.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if value.startswith("/*", index):
+            end = value.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("unterminated SQL block comment")
+            index = end + 2
+            continue
+        if char in ("'", '"', "`"):
+            quote = char
+            start = index
+            index += 1
+            while index < length:
+                if value[index] == quote:
+                    if index + 1 < length and value[index + 1] == quote:
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+            else:
+                raise ValueError("unterminated quoted SQL token")
+            tokens.append(value[start:index])
+            continue
+        if char == "[":
+            end = value.find("]", index + 1)
+            if end < 0:
+                raise ValueError("unterminated bracketed SQL identifier")
+            tokens.append(value[index : end + 1])
+            index = end + 1
+            continue
+        if char.isalnum() or char in ("_", "$", "."):
+            start = index
+            index += 1
+            while index < length and (
+                value[index].isalnum() or value[index] in ("_", "$", ".")
+            ):
+                index += 1
+            tokens.append(value[start:index].lower())
+            continue
+        matched = False
+        for operator in ("->>", "<=", ">=", "<>", "!=", "==", "||", "->"):
+            if value.startswith(operator, index):
+                tokens.append(operator)
+                index += len(operator)
+                matched = True
+                break
+        if matched:
+            continue
+        tokens.append(char)
+        index += 1
+    return "\x1f".join(tokens)
 
 
 def _drop_pair_security_triggers(connection: sqlite3.Connection) -> None:

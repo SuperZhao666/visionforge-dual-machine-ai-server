@@ -57,11 +57,6 @@ def hasProductionReleaseSigning = !releaseStoreFile.isBlank() && !releaseStorePa
         && !releaseKeyAlias.isBlank() && !releaseKeyPassword.isBlank()
 def allowDevelopmentReleaseSigning = providers.gradleProperty('visionforgeAllowDevelopmentSigning')
         .getOrElse(System.getenv('VISIONFORGE_ALLOW_DEVELOPMENT_SIGNING') ?: 'false').toBoolean()
-def releaseTaskRequested = {
-    gradle.startParameter.taskNames.any { String taskName ->
-        taskName.toLowerCase(Locale.ROOT).contains('release')
-    }
-}
 def dualMachineTlsSpkiPins = providers.gradleProperty('visionforgeDualMachineTlsSpkiPins')
         .getOrElse(System.getenv('VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS') ?: '')
 def dualMachineTicketPublicKeyFile = providers
@@ -262,11 +257,6 @@ android {
     namespace = 'com.visionforge.inferencebenchmark'
     compileSdk 35
 
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
-
     signingConfigs {
         release {
             // minSdk 29 makes the legacy JAR signature unnecessary. Keep only
@@ -390,11 +380,6 @@ tasks.register('verifyDualMachineReleaseSecurityInputs') {
     group = 'verification'
     description = 'Rejects release builds without rotated TLS pins and pinned public lease keys.'
     doLast {
-        if (!releaseTaskRequested()) {
-            logger.lifecycle(
-                    'DUAL_MACHINE_RELEASE_SECURITY_INPUTS=SKIPPED_NON_RELEASE_TASK_GRAPH')
-            return
-        }
         requireDualMachineTlsPins(dualMachineTlsSpkiPins)
         List<String> keyPaths = []
         if (!dualMachineTicketPublicKeyFile.isBlank()) {
@@ -1285,11 +1270,10 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
              'src/main/java/com/visionforge/inferencebenchmark/MakcuProtocolNegotiator.java',
              'src/main/java/com/visionforge/inferencebenchmark/MakcuConnectionAttemptTracker.java',
              'src/main/java/com/visionforge/inferencebenchmark/MakcuUsbInterfaceSelector.java',
-            'src/main/java/com/visionforge/inferencebenchmark/MakcuCdcLineCoding.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MakcuCdcLineCoding.java',
               'src/main/java/com/visionforge/inferencebenchmark/MakcuDeliveryCircuit.java',
               'src/main/java/com/visionforge/inferencebenchmark/MakcuPendingMoveSlot.java',
               'src/main/java/com/visionforge/inferencebenchmark/MakcuDeliveryGate.java',
-            'src/main/java/com/visionforge/inferencebenchmark/MakcuDeliveryState.java',
             'src/main/java/com/visionforge/inferencebenchmark/MakcuResponseStreamParser.java',
             'src/main/java/com/visionforge/inferencebenchmark/MakcuButtonInput.java',
             'src/main/java/com/visionforge/inferencebenchmark/ControlTrigger.java',
@@ -1306,15 +1290,6 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/main/java/com/visionforge/inferencebenchmark/MobileControlTuning.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileProfileStorageKeys.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobilePipelineCoordinator.java',
-            fileTree('src/main/java/com/visionforge/inferencebenchmark/video') {
-                include '*.java'
-            },
-            fileTree('src/main/java/com/visionforge/inferencebenchmark/runtime') {
-                include '*.java'
-            },
-            fileTree('src/main/java/com/visionforge/mobile/domain/video') {
-                include '*.java'
-            },
             'src/main/java/com/visionforge/inferencebenchmark/ui/ControlPreset.java',
             'src/main/java/com/visionforge/inferencebenchmark/ui/DualMachineAuthorizationUiState.java',
             'src/main/java/com/visionforge/inferencebenchmark/ui/MobileUiState.java',
@@ -1331,12 +1306,6 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/test/java/com/visionforge/inferencebenchmark/MobilePipelineCoordinatorSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/MobileTransportCatalogSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbeSelfTest.java',
-            fileTree('src/test/java/com/visionforge/inferencebenchmark/video') {
-                include '*.java'
-            },
-            fileTree('src/test/java/com/visionforge/inferencebenchmark/runtime') {
-                include '*.java'
-            },
             'src/test/java/com/visionforge/inferencebenchmark/AutomaticFormalUsageSessionGuardSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/AutomaticUsageGuardCheckpointPolicySelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/AutomaticFormalStartRetryPolicySelfTest.java',
@@ -2313,50 +2282,40 @@ tasks.named('check').configure {
             tasks.named('verifyMakcuOutputGateNative'))
 }
 
-// The public `check` task must remain runnable from a source-only checkout.
-// QNN model libraries, manifests, and SDKs are protected private artifacts;
-// they are still fail-closed for release graphs or when a private QNN SDK is
-// explicitly supplied, but must not be an accidental dependency of public CI.
-def mobileReleaseContractDependencies = [
-        tasks.named('verifyCs2DistributionBoundaryPolicy'),
-        tasks.named('verifyEthernetTransportContract'),
-        tasks.named('verifyCat6ReadyContract'),
-        tasks.named('verifyCat6ReadyLifecycle'),
-        tasks.named('verifyMobileRuntimeSnapshot'),
-        tasks.named('verifyAuthenticatedDataPlaneV2'),
-        tasks.named('verifyAuthenticatedPeerHandshakeV1'),
-        tasks.named('verifyPairGenerationProposalV1'),
-        tasks.named('verifyPairGenerationCredentialV1'),
-        tasks.named('verifyAndroidBoundPeerHandshakeSession'),
-        tasks.named('verifyDualMachineUsageAuthorizationContract'),
-        tasks.named('verifyDualMachineUsageLease'),
-        tasks.named('verifyDualMachineAuthorizationPresentation'),
-        tasks.named('verifyDualMachineCardAuthorizationFoundation'),
-        tasks.named('verifyDualMachineCardAuthorizationCoordinators'),
-        tasks.named('verifyDualMachineSidecarHttpClient'),
-        tasks.named('verifyDualMachinePairingIdentityCodec'),
-        tasks.named('verifyMobileMotionPlannerNative'),
-        tasks.named('verifyMobileControlCoreNative'),
-        tasks.named('verifyMobileControlAllocationNative'),
-        tasks.named('verifyYoloPostprocessorNative'),
-        tasks.named('verifyFixedMetricRingNative'),
-        tasks.named('verifyInferenceGenerationPolicyNative'),
-        tasks.named('verifyPortableInferenceFailurePolicyNative'),
-        tasks.named('verifyReceiverReferenceSyncPolicyNative'),
-        tasks.named('verifyMobileTargetTrackerNative'),
-        tasks.named('verifyMakcuOutputGateNative')
-]
-if (releaseTaskRequested() || !qnnSdkRoot.isBlank()) {
-    mobileReleaseContractDependencies.addAll([
-            tasks.named('verifyQnnHtpArchitectureClosure'),
-            tasks.named('verifyQnnHtpArchitectureDiscoveryPolicy'),
-            tasks.named('verifyQnnSdkModelToolchainIdentityPolicy')
-    ])
-}
 tasks.register('verifyMobileReleaseContracts') {
     group = 'verification'
-    description = 'Runs source-available mobile release contracts and protected QNN contracts when configured.'
-    dependsOn(mobileReleaseContractDependencies)
+    description = 'Runs every QNN, CAT6, runtime and move-only control release contract.'
+    dependsOn(
+            tasks.named('verifyCs2DistributionBoundaryPolicy'),
+            tasks.named('verifyQnnHtpArchitectureClosure'),
+            tasks.named('verifyQnnHtpArchitectureDiscoveryPolicy'),
+            tasks.named('verifyQnnSdkModelToolchainIdentityPolicy'),
+            tasks.named('verifyEthernetTransportContract'),
+            tasks.named('verifyCat6ReadyContract'),
+            tasks.named('verifyCat6ReadyLifecycle'),
+            tasks.named('verifyMobileRuntimeSnapshot'),
+            tasks.named('verifyAuthenticatedDataPlaneV2'),
+            tasks.named('verifyAuthenticatedPeerHandshakeV1'),
+            tasks.named('verifyPairGenerationProposalV1'),
+            tasks.named('verifyPairGenerationCredentialV1'),
+            tasks.named('verifyAndroidBoundPeerHandshakeSession'),
+            tasks.named('verifyDualMachineUsageAuthorizationContract'),
+            tasks.named('verifyDualMachineUsageLease'),
+            tasks.named('verifyDualMachineAuthorizationPresentation'),
+            tasks.named('verifyDualMachineCardAuthorizationFoundation'),
+            tasks.named('verifyDualMachineCardAuthorizationCoordinators'),
+            tasks.named('verifyDualMachineSidecarHttpClient'),
+            tasks.named('verifyDualMachinePairingIdentityCodec'),
+            tasks.named('verifyMobileMotionPlannerNative'),
+            tasks.named('verifyMobileControlCoreNative'),
+            tasks.named('verifyMobileControlAllocationNative'),
+            tasks.named('verifyYoloPostprocessorNative'),
+            tasks.named('verifyFixedMetricRingNative'),
+            tasks.named('verifyInferenceGenerationPolicyNative'),
+            tasks.named('verifyPortableInferenceFailurePolicyNative'),
+            tasks.named('verifyReceiverReferenceSyncPolicyNative'),
+            tasks.named('verifyMobileTargetTrackerNative'),
+            tasks.named('verifyMakcuOutputGateNative'))
 }
 
 def releaseApkArtifact = layout.buildDirectory.file(

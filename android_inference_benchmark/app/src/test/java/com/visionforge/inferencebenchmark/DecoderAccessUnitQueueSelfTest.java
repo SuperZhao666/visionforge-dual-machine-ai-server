@@ -16,6 +16,7 @@ final class DecoderAccessUnitQueueSelfTest {
         closesWithoutAcceptingAStaleProducerReference();
         enforcesTheBoundedFreshnessBoundary();
         reusesAccessUnitWithoutMutatingSourceView();
+        boundsReusablePoolAfterOversizedBursts();
     }
 
     private static void prioritizesRecoverySyncFrameOverQueuedPredictionFrames()
@@ -169,6 +170,32 @@ final class DecoderAccessUnitQueueSelfTest {
         require(queue.offer(directBytes(8), 1, 201, true, 52_001)
                 == DecoderAccessUnitQueue.OfferResult.ACCEPTED);
         require(!queue.isAwaitingSyncFrame());
+    }
+
+    private static void boundsReusablePoolAfterOversizedBursts() throws Exception {
+        DecoderAccessUnitQueue queue = new DecoderAccessUnitQueue(50_000, 8);
+        require(queue.offer(directBytes(1, 2, 3, 4, 5, 6, 7, 8), 8, 10, true, 100)
+                == DecoderAccessUnitQueue.OfferResult.ACCEPTED);
+        DecoderAccessUnitQueue.AccessUnit large = queue.awaitNext(0);
+        queue.recycle(large);
+        require(queue.reusableBytes() == 8L);
+
+        require(queue.offer(directBytes(1, 2, 3, 4), 4, 20, false, 200)
+                == DecoderAccessUnitQueue.OfferResult.ACCEPTED);
+        DecoderAccessUnitQueue.AccessUnit reused = queue.awaitNext(0);
+        queue.recycle(reused);
+        require(queue.reusableBytes() <= 8L);
+
+        // Recycling another independent full-budget allocation must evict the
+        // largest retained array rather than exceed the byte budget.
+        DecoderAccessUnitQueue second = new DecoderAccessUnitQueue(50_000, 8);
+        require(second.offer(directBytes(9, 9, 9, 9, 9, 9, 9, 9), 8, 1, true, 1)
+                == DecoderAccessUnitQueue.OfferResult.ACCEPTED);
+        DecoderAccessUnitQueue.AccessUnit secondLarge = second.awaitNext(0);
+        second.recycle(secondLarge);
+        require(second.reusableBytes() <= 8L);
+        second.closeAndDrain();
+        require(second.reusableBytes() == 0L);
     }
 
     private static ByteBuffer directBytes(int... values) {

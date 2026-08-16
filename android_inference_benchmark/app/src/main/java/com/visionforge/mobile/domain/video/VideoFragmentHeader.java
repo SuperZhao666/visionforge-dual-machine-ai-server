@@ -46,7 +46,7 @@ public record VideoFragmentHeader(
 
     public byte[] encode() {
         ByteBuffer buffer = ByteBuffer.allocate(BYTE_LENGTH).order(ByteOrder.BIG_ENDIAN);
-        buffer.put(kind.magic());
+        buffer.putInt(kind.magicCode());
         buffer.putLong(streamEpoch);
         buffer.putInt((int) frameSequence);
         buffer.putShort((short) fragmentIndex);
@@ -73,9 +73,7 @@ public record VideoFragmentHeader(
         }
         ByteBuffer buffer = ByteBuffer.wrap(datagram, offset, BYTE_LENGTH)
                 .order(ByteOrder.BIG_ENDIAN);
-        byte[] magic = new byte[4];
-        buffer.get(magic);
-        VideoPacketKind kind = VideoPacketKind.fromMagic(magic);
+        VideoPacketKind kind = VideoPacketKind.fromMagicCode(buffer.getInt());
         long epoch = buffer.getLong();
         long sequence = Integer.toUnsignedLong(buffer.getInt());
         int index = Short.toUnsignedInt(buffer.getShort());

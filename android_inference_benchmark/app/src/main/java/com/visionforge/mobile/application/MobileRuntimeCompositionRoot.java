@@ -11,7 +11,6 @@ import com.visionforge.mobile.ports.RecoveryPort;
 import com.visionforge.mobile.ports.RuntimeDiagnosticsPort;
 
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -83,8 +82,12 @@ public final class MobileRuntimeCompositionRoot {
             safeDiagnostic("wire_header_rejected", error.getClass().getSimpleName());
             return DatagramOutcome.INVALID;
         }
-        byte[] payload = Arrays.copyOfRange(datagram, VideoFragmentHeader.BYTE_LENGTH, datagram.length);
-        VideoPreflightReassemblyWindow.Result result = reassembly.ingest(header, payload, nowNanos);
+        VideoReassemblyResult result = reassembly.ingest(
+                header,
+                datagram,
+                VideoFragmentHeader.BYTE_LENGTH,
+                datagram.length - VideoFragmentHeader.BYTE_LENGTH,
+                nowNanos);
         return switch (result.code()) {
             case ACCEPTED -> DatagramOutcome.BUFFERED;
             case DUPLICATE, STALE_EPOCH -> DatagramOutcome.STALE_OR_DUPLICATE;
@@ -171,9 +174,13 @@ public final class MobileRuntimeCompositionRoot {
         return DatagramOutcome.REPEAT_REJECTED;
     }
 
-    private DatagramOutcome onComplete(VideoPreflightReassemblyWindow.Result result, long nowNanos) {
+    private DatagramOutcome onComplete(VideoReassemblyResult result, long nowNanos) {
+        // The completed Access Unit is transferred exactly once from the bounded
+        // reassembler to classification and decode handoff. Diagnostic readers
+        // still receive defensive copies through VideoReassemblyResult.accessUnit().
+        byte[] accessUnit = result.takeAccessUnit();
         H264AccessUnitClassifier.Classification classification =
-                H264AccessUnitClassifier.classify(result.accessUnit());
+                H264AccessUnitClassifier.classify(accessUnit);
 
         if (result.requiresEpochCommit()) {
             if (result.repeatedContent()) {
@@ -204,7 +211,7 @@ public final class MobileRuntimeCompositionRoot {
 
         OrderedAccessUnitHandoff.AccessUnit unit = new OrderedAccessUnitHandoff.AccessUnit(
                 result.streamEpoch(), result.frameSequence(), classification.containsIdr(),
-                result.repeatedContent(), result.accessUnit());
+                result.repeatedContent(), accessUnit);
         OrderedAccessUnitHandoff.OfferDecision offer = handoff.offer(unit);
         switch (offer) {
             case STALE, DUPLICATE -> {

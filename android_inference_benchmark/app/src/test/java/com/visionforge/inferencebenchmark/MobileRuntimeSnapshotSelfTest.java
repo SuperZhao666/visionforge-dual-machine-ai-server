@@ -18,6 +18,8 @@ public final class MobileRuntimeSnapshotSelfTest {
         MobileProfileStorageKeysSelfTest.run();
         MobilePipelineCoordinatorSelfTest.run();
         HostVideoPresenceProbeSelfTest.run();
+        com.visionforge.inferencebenchmark.video.HostVideoPreflightVerifierSelfTest.main(args);
+        com.visionforge.mobile.application.VideoReassemblyResultSelfTest.main(args);
         com.visionforge.inferencebenchmark.video.VideoWireProtocolSelfTest.main(args);
         com.visionforge.inferencebenchmark.video.VideoPreflightReassemblyWindowSelfTest.main(args);
         com.visionforge.inferencebenchmark.video.DecoderRestartCoordinatorSelfTest.main(args);

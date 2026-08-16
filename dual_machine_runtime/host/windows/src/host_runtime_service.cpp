@@ -1,5 +1,6 @@
 #include "vfdual/host_runtime_service.hpp"
 
+#include "vf/host/infrastructure/file_epoch_reservation_store.hpp"
 #include "vfdual/host_cat6_bootstrap.hpp"
 #include "vfdual/host_cat6_monitor.hpp"
 #include "vfdual/wired_link_contract.hpp"
@@ -8,7 +9,6 @@
 #include "vfdual/host_preferred_probe_log_policy.hpp"
 #include "vfdual/host_recovery_policy.hpp"
 #include "vfdual/h264_encoder_config.hpp"
-#include "vfdual/video_transport_contract.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -210,6 +210,17 @@ std::string resolve_metrics_path() {
     // authoritative hybrid-published counter.
     // Keep older append-only evidence intact instead of mixing row schemas.
     return error ? std::string{} : (directory / "host-metrics-v6.csv").string();
+}
+
+std::filesystem::path resolve_stream_epoch_state_path() {
+    const std::filesystem::path local_app_data = resolve_local_app_data_directory();
+    if (local_app_data.empty()) return {};
+    const std::filesystem::path directory =
+        local_app_data / "VisionForge" / "DualMachine";
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    return error ? std::filesystem::path{}
+                 : directory / "stream-epoch-v1.state";
 }
 
 std::filesystem::path resolve_event_path() {
@@ -1396,13 +1407,38 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
         start_condition_.notify_all();
         return;
     }
+    const std::filesystem::path stream_epoch_state_path =
+        resolve_stream_epoch_state_path();
+    if (stream_epoch_state_path.empty()) {
+        std::lock_guard lock(mutex_);
+        last_error_ =
+            "Unable to create the persistent stream epoch state path; "
+            "stage=stream_epoch_state_resolve " + capture_stack_addresses();
+        write_host_event("host_runtime_initialization_failed", last_error_);
+        start_finished_ = true;
+        start_condition_.notify_all();
+        return;
+    }
+    std::unique_ptr<vf::host::infrastructure::FileEpochReservationStore>
+        stream_epoch_store;
+    std::uint64_t stream_epoch{};
+    try {
+        stream_epoch_store = std::make_unique<
+            vf::host::infrastructure::FileEpochReservationStore>(
+                stream_epoch_state_path, kVideoStreamEpochMax);
+        stream_epoch = stream_epoch_store->reserve_next();
+    } catch (const std::exception& error) {
+        std::lock_guard lock(mutex_);
+        last_error_ =
+            "Unable to reserve a crash-safe stream epoch; "
+            "stage=stream_epoch_reservation detail=" + std::string{error.what()} +
+            " " + capture_stack_addresses();
+        write_host_event("host_runtime_initialization_failed", last_error_);
+        start_finished_ = true;
+        start_condition_.notify_all();
+        return;
+    }
     HostApplication application;
-    const std::uint64_t stream_epoch_seed =
-        derive_video_stream_epoch(
-            (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32U) ^
-                static_cast<std::uint64_t>(GetTickCount64()),
-            static_cast<std::uint64_t>(GetTickCount64()) * 1'000ULL);
-    std::uint64_t stream_epoch = stream_epoch_seed;
     if (!application.start(create_runtime_config(
             settings, metrics_path, stream_epoch,
             []() noexcept {
@@ -2038,12 +2074,22 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
             }
             write_host_capture_geometry_event(settings);
             std::uint64_t next_stream_epoch{};
-            if (stream_epoch >= kVideoStreamEpochMax) {
-                next_stream_epoch = derive_video_stream_epoch(
-                    stream_epoch_seed ^ decision.total_failures,
-                    static_cast<std::uint64_t>(GetTickCount64()) * 1'000ULL);
-            } else {
-                next_stream_epoch = stream_epoch + 1U;
+            try {
+                next_stream_epoch = stream_epoch_store->reserve_next();
+            } catch (const std::exception& error) {
+                recovery_stage = "stream_epoch_reservation";
+                recovery_detail =
+                    "failure_stage=stream_epoch_reservation detail=" +
+                    std::string{error.what()};
+                {
+                    std::lock_guard lock(mutex_);
+                    last_error_ =
+                        "Host stream recovery stopped because a unique epoch "
+                        "could not be durably reserved: " + recovery_detail;
+                }
+                write_host_event(
+                    "host_stream_recovery_fatal", recovery_detail);
+                break;
             }
             if (!application.start(create_runtime_config(
                     settings, metrics_path, next_stream_epoch,

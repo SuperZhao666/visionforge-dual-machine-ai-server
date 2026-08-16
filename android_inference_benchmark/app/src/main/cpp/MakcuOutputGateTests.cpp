@@ -456,6 +456,42 @@ void verify_route_specific_post_completion_visibility() {
   CHECK(bluetooth.consume_if_visible(81U, 30'000U, true));
 }
 
+void verify_full_frame_identity_across_generation_transition() {
+  using vfdual_android::MakcuFrameIdentity;
+  using vfdual_android::MakcuMoveVisibilityDecision;
+
+  vfdual_android::MakcuMoveCommitGate commit;
+  const std::uint64_t ticket = commit.begin(1'000U, 7U, 9'000U);
+  CHECK(ticket != 0U);
+  const auto pending = commit.snapshot();
+  CHECK(pending.source_generation == 7U);
+  CHECK(pending.source_sequence == 9'000U);
+
+  vfdual_android::MakcuMoveVisibilityGate visibility;
+  const auto completion = commit.complete_with(
+      ticket, [&](MakcuFrameIdentity identity) noexcept {
+        visibility.arm(identity, 2'000U, 0U);
+      });
+  CHECK(completion.matched);
+  CHECK(completion.source_generation == 7U);
+  CHECK(completion.source_sequence == 9'000U);
+  CHECK(visibility.snapshot().source_generation == 7U);
+
+  // A delayed frame from an older generation cannot bypass the barrier even
+  // when its sequence is numerically much larger.
+  CHECK(visibility.evaluate(
+            {6U, 99'999U}, 2'100U, true, 2'100U, 10'000U) ==
+        MakcuMoveVisibilityDecision::waiting);
+  CHECK(visibility.armed());
+
+  // A restarted stream legitimately resets sequence to one. Full identity
+  // ordering treats the newer generation as fresh instead of waiting forever.
+  CHECK(visibility.evaluate(
+            {8U, 1U}, 2'200U, true, 2'200U, 10'000U) ==
+        MakcuMoveVisibilityDecision::became_visible);
+  CHECK(!visibility.armed());
+}
+
 void verify_repeated_content_never_drives_control() {
   vfdual_android::MakcuMoveVisibilityGate gate;
   gate.arm(41U, 10'000U, 8'000U);
@@ -547,6 +583,7 @@ int main() {
   verify_post_ack_visibility_requires_newer_delayed_frame();
   verify_post_ack_visibility_timeout_is_bounded_and_fail_closed();
   verify_route_specific_post_completion_visibility();
+  verify_full_frame_identity_across_generation_transition();
   verify_repeated_content_never_drives_control();
   return 0;
 }

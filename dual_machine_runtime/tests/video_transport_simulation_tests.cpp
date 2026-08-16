@@ -42,34 +42,39 @@ std::optional<vfdual::CompletedAccessUnit> deliver_shuffled_round_trip(
       {epoch, sequence}, access_unit, repeated);
   CHECK(!fragments.empty());
 
-  // Exercise the actual wire encoder and decoder before random reordering.
-  std::vector<vfdual::VideoFragment> decoded;
-  decoded.reserve(fragments.size() + fragments.size() / 4U + 1U);
+  // Exercise the production allocation-free wire decoder before random
+  // reordering. Datagram storage remains alive while each view is consumed.
+  std::vector<std::vector<std::byte>> datagrams;
+  datagrams.reserve(fragments.size() + fragments.size() / 4U + 1U);
   for (const auto& fragment : fragments) {
-    const auto datagram = vfdual::encode_video_packet(fragment);
+    auto datagram = vfdual::encode_video_packet(fragment);
     CHECK(datagram.size() ==
           vfdual::kVideoPacketHeaderBytes + fragment.access_unit_part.size());
-    vfdual::VideoFragment round_trip{};
-    CHECK(vfdual::decode_video_packet(datagram, round_trip));
+    vfdual::VideoFragmentView round_trip{};
+    CHECK(vfdual::decode_video_packet_view(datagram, round_trip));
     CHECK(round_trip.identity == fragment.identity);
     CHECK(round_trip.repeated_content == fragment.repeated_content);
     CHECK(round_trip.fragment_index == fragment.fragment_index);
     CHECK(round_trip.fragment_count == fragment.fragment_count);
-    CHECK(round_trip.access_unit_part == fragment.access_unit_part);
-    decoded.push_back(std::move(round_trip));
+    CHECK(std::equal(
+        round_trip.access_unit_part.begin(), round_trip.access_unit_part.end(),
+        fragment.access_unit_part.begin(), fragment.access_unit_part.end()));
+    datagrams.push_back(std::move(datagram));
 
     // Identical duplicate datagrams are deliberately injected. They must be
     // idempotent, never counted as a corrupt or second completed frame.
-    if ((engine() % 4U) == 0U) decoded.push_back(decoded.back());
+    if ((engine() % 4U) == 0U) datagrams.push_back(datagrams.back());
   }
-  std::shuffle(decoded.begin(), decoded.end(), engine);
+  std::shuffle(datagrams.begin(), datagrams.end(), engine);
 
   vfdual::AccessUnitReassembler reassembler;
   CHECK(reassembler.activate_epoch(epoch));
   std::optional<vfdual::CompletedAccessUnit> completed;
   std::uint64_t now_us = 1U;
-  for (auto& fragment : decoded) {
-    auto candidate = reassembler.push(std::move(fragment), now_us++);
+  for (const auto& datagram : datagrams) {
+    vfdual::VideoFragmentView fragment{};
+    CHECK(vfdual::decode_video_packet_view(datagram, fragment));
+    auto candidate = reassembler.push_view(fragment, now_us++);
     if (candidate.has_value()) {
       CHECK(!completed.has_value());
       completed = std::move(candidate);
@@ -146,6 +151,11 @@ void run_epoch_and_corruption_matrix() {
   CHECK(!reassembler.push(
       {{101U, 1U}, false, 0U, 1U, {std::byte{0x65U}}}, 1U));
   CHECK(reassembler.foreign_or_retired_epoch_drops() == 1U);
+  CHECK(!reassembler.activate_epoch(101U));
+  for (std::uint64_t epoch = 203U; epoch <= 512U; ++epoch) {
+    CHECK(reassembler.activate_epoch(epoch));
+  }
+  CHECK(reassembler.is_retired_epoch(101U));
   CHECK(!reassembler.activate_epoch(101U));
 
   const vfdual::VideoFragment source{

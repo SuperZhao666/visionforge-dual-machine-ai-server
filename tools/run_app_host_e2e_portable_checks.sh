@@ -19,6 +19,7 @@ cd "${ROOT}"
 
 python3 tools/check_app_host_architecture.py --root "${ROOT}"
 python3 tools/check_video_transport_contract.py --root "${ROOT}"
+python3 tools/check_realtime_pipeline_contract.py --root "${ROOT}"
 python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
 
 cmake -S dual_machine_runtime -B "${NATIVE_BUILD}" -DCMAKE_BUILD_TYPE=Release

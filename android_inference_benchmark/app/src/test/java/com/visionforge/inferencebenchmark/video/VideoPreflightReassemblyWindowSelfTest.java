@@ -10,10 +10,24 @@ public final class VideoPreflightReassemblyWindowSelfTest {
         byte[] last = VideoWireProtocol.encodeForTest(
                 identity, false, 1, 2, new byte[] {0x65, (byte) 0x80});
         require(window.offer(last, last.length, 1L) == null);
+        require(window.offer(last, last.length, 1L) == null);
+        require(window.payloadBytesCopied() == 2L);
+        require(window.duplicatePayloadBytesAvoided() == 2L);
         VideoPreflightReassemblyWindow.CompletedCandidate completed =
                 window.offer(first, first.length, 2L);
         require(completed != null && completed.isCommittableIdr());
         require(window.inflightFrames() == 0 && window.inflightBytes() == 0);
+        require(window.payloadBytesCopied() == 6L);
+
+        VideoPreflightReassemblyWindow bounded =
+                new VideoPreflightReassemblyWindow(2, 64);
+        for (long sequence = 1L; sequence <= 3L; sequence++) {
+            byte[] partial = VideoWireProtocol.encodeForTest(
+                    new VideoFrameIdentity(7L, sequence), false, 0, 2, new byte[] {1});
+            require(bounded.offer(partial, partial.length, sequence) == null);
+        }
+        require(bounded.inflightFrames() == 2);
+        require(bounded.evictions() == 1L);
 
         byte[] conflictA = VideoWireProtocol.encodeForTest(
                 new VideoFrameIdentity(6L, 1L), false, 0, 2, new byte[] {1});

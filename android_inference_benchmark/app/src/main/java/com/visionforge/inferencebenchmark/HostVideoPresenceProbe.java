@@ -1,6 +1,7 @@
 package com.visionforge.inferencebenchmark;
 
 import com.visionforge.inferencebenchmark.video.VideoFragmentHeader;
+import com.visionforge.inferencebenchmark.video.HostVideoPreflightVerifier;
 import com.visionforge.inferencebenchmark.video.VideoWireProtocol;
 
 import java.io.IOException;
@@ -20,8 +21,10 @@ import java.util.function.BooleanSupplier;
  * Performs one bounded, non-inference UDP check before paid usage starts.
  *
  * <p>The probe does not authenticate or encrypt Host traffic. It only proves
- * that the configured Host is actively publishing a structurally valid
- * VisionForge video fragment on the selected transport. The socket is closed
+ * that the configured Host is actively publishing complete, decodable-order
+ * VisionForge Access Units on the selected transport. A fragment header alone
+ * is deliberately insufficient: billing readiness requires a complete real
+ * IDR followed by a complete forward fresh Access Unit. The socket is closed
  * before the server is asked to create the first billable lease.</p>
  */
 final class HostVideoPresenceProbe {
@@ -58,8 +61,8 @@ final class HostVideoPresenceProbe {
             long timeoutMillis,
             BooleanSupplier cancellationRequested) throws IOException {
         // A single valid fragment can be a delayed tail of a stalled WLAN
-        // burst. Billing readiness requires two distinct, forward-moving
-        // frame starts so candidate3's one-packet late wake cannot debit.
+        // burst. Billing readiness requires a complete real IDR plus a second
+        // complete, forward-moving, non-REPEAT Access Unit.
         return receiveValidHostVideo(
                 endpoint,
                 port,
@@ -79,9 +82,9 @@ final class HostVideoPresenceProbe {
             int port,
             long timeoutMillis) throws IOException {
         try {
-            // A re-arm observation must include two forward-moving frame
-            // starts. One delayed fragment after an idle Wi-Fi interval is
-            // never enough to unlock another paid generation.
+            // A re-arm observation uses the same complete-frame proof as the
+            // first billable generation. One delayed fragment after an idle
+            // Wi-Fi interval can never unlock another paid generation.
             return receiveValidHostVideo(
                     endpoint,
                     port,
@@ -99,7 +102,7 @@ final class HostVideoPresenceProbe {
             int port,
             long timeoutMillis,
             boolean logOutcome,
-            int minimumForwardFrameStarts,
+            int minimumCompleteAccessUnits,
             BooleanSupplier cancellationRequested) throws IOException {
         if (cancellationRequested == null) {
             throw new IllegalArgumentException(
@@ -110,17 +113,16 @@ final class HostVideoPresenceProbe {
             throw new IOException("host_video_preflight_transport_unavailable");
         }
         if (port <= 0 || port > 65_535 || timeoutMillis <= 0L
-                || minimumForwardFrameStarts <= 0) {
+                || minimumCompleteAccessUnits < 2) {
             throw new IllegalArgumentException("invalid Host video preflight parameters");
         }
 
         long startedNanos = System.nanoTime();
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         long generation = cancellationGeneration.get();
-        long deadlineNanos = startedNanos
-                + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
-        int rejectedDatagrams = 0;
-        int confirmedForwardFrameStarts = 0;
-        VideoFragmentHeader previousFrameStart = null;
+        long rejectedSourceDatagrams = 0L;
+        HostVideoPreflightVerifier verifier =
+                new HostVideoPreflightVerifier(minimumCompleteAccessUnits);
         DatagramSocket socket = null;
         try {
             InetAddress localAddress = InetAddress.getByName(endpoint.localIpv4);
@@ -157,9 +159,13 @@ final class HostVideoPresenceProbe {
             DatagramPacket datagram = new DatagramPacket(bytes, bytes.length);
             while (true) {
                 requireNotCancelled(cancellationRequested, generation);
-                long remainingNanos = deadlineNanos - System.nanoTime();
+                long remainingNanos = remainingNanos(
+                        startedNanos, timeoutNanos, System.nanoTime());
                 if (remainingNanos <= 0L) {
-                    throw notObserved(timeoutMillis, rejectedDatagrams);
+                    throw notObserved(
+                            timeoutMillis,
+                            totalRejectedDatagrams(
+                                    rejectedSourceDatagrams, verifier.snapshot()));
                 }
                 long remainingMillis = Math.max(
                         1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
@@ -169,42 +175,35 @@ final class HostVideoPresenceProbe {
                 try {
                     socket.receive(datagram);
                 } catch (SocketTimeoutException timeout) {
-                    throw notObserved(timeoutMillis, rejectedDatagrams);
+                    throw notObserved(
+                            timeoutMillis,
+                            totalRejectedDatagrams(
+                                    rejectedSourceDatagrams, verifier.snapshot()));
                 }
-                VideoFragmentHeader header = VideoWireProtocol.parse(
-                        bytes, datagram.getLength());
-                if (!expectedHost.equals(datagram.getAddress()) || header == null) {
-                    rejectedDatagrams++;
+                if (!expectedHost.equals(datagram.getAddress())) {
+                    rejectedSourceDatagrams++;
                     continue;
                 }
-                long logicalFrameSequence = header.identity.frameSequence;
-                if (minimumForwardFrameStarts > 1) {
-                    if (!header.isFrameStart()) continue;
-                    if (previousFrameStart == null) {
-                        previousFrameStart = header;
-                        confirmedForwardFrameStarts = 1;
-                        continue;
-                    }
-                    if (!VideoWireProtocol.isForwardFrameStart(
-                            previousFrameStart, header)) {
-                        continue;
-                    }
-                    previousFrameStart = header;
-                    confirmedForwardFrameStarts++;
-                    if (confirmedForwardFrameStarts < minimumForwardFrameStarts) {
-                        continue;
-                    }
-                } else {
-                    confirmedForwardFrameStarts = 1;
+
+                HostVideoPreflightVerifier.Decision decision = verifier.offer(
+                        bytes, datagram.getLength(), System.nanoTime());
+                if (decision != HostVideoPreflightVerifier.Decision.READY) {
+                    continue;
+                }
+                HostVideoPreflightVerifier.Snapshot proof = verifier.snapshot();
+                if (!proof.ready() || proof.lastCompleteIdentity() == null) {
+                    throw new IOException("host_video_preflight_inconsistent_ready_state");
                 }
                 long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(
                         Math.max(0L, System.nanoTime() - startedNanos));
                 HostVideoObservation observation = new HostVideoObservation(
-                        header.identity.streamEpoch,
-                        logicalFrameSequence,
+                        proof.lastCompleteIdentity().streamEpoch,
+                        proof.lastCompleteIdentity().frameSequence,
                         datagram.getPort(),
                         datagram.getLength(),
-                        confirmedForwardFrameStarts);
+                        proof.confirmedCompleteAccessUnits());
+                long rejectedDatagrams = totalRejectedDatagrams(
+                        rejectedSourceDatagrams, proof);
                 failureLogPolicy.clearFailure();
                 if (logOutcome) {
                     events.write(
@@ -217,6 +216,10 @@ final class HostVideoPresenceProbe {
                                     + observation.logicalFrameSequence
                                     + " confirmed_forward_frame_starts="
                                     + observation.confirmedForwardFrameStarts
+                                    + " confirmed_complete_access_units="
+                                    + proof.confirmedCompleteAccessUnits()
+                                    + " continuity_failures="
+                                    + proof.continuityFailures()
                                     + " rejected_datagrams=" + rejectedDatagrams
                                     + " elapsed_ms=" + elapsedMillis
                                     + " billing_started=false");
@@ -225,6 +228,8 @@ final class HostVideoPresenceProbe {
             }
         } catch (HostVideoNotObservedException failure) {
             requireNotCancelled(cancellationRequested, generation, failure);
+            long rejectedDatagrams = totalRejectedDatagrams(
+                    rejectedSourceDatagrams, verifier.snapshot());
             if (logOutcome && failureLogPolicy.shouldWriteFailure(
                     endpoint.detail(),
                     "valid_host_video_not_observed",
@@ -321,7 +326,7 @@ final class HostVideoPresenceProbe {
 
     private static HostVideoNotObservedException notObserved(
             long timeoutMillis,
-            int rejectedDatagrams) {
+            long rejectedDatagrams) {
         return new HostVideoNotObservedException(
                 "host_video_not_observed timeout_ms=" + timeoutMillis
                         + " rejected_datagrams=" + rejectedDatagrams);
@@ -329,6 +334,39 @@ final class HostVideoPresenceProbe {
 
     private static long monotonicMillis() {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
+    }
+
+    /** Remaining duration without absolute-deadline overflow. */
+    private static long remainingNanos(
+            long startedNanos,
+            long timeoutNanos,
+            long nowNanos) {
+        long elapsedNanos = nowNanos - startedNanos;
+        if (elapsedNanos < 0L) {
+            // System.nanoTime wraps only after centuries. Treat a negative
+            // interval conservatively as no elapsed time rather than making a
+            // positive timeout look immediately expired through overflow.
+            elapsedNanos = 0L;
+        }
+        return elapsedNanos >= timeoutNanos
+                ? 0L
+                : timeoutNanos - elapsedNanos;
+    }
+
+    private static long totalRejectedDatagrams(
+            long rejectedSourceDatagrams,
+            HostVideoPreflightVerifier.Snapshot proof) {
+        long verifierRejected = proof.rejectedDatagrams();
+        long continuityFailures = proof.continuityFailures();
+        long total = saturatingAdd(rejectedSourceDatagrams, verifierRejected);
+        return saturatingAdd(total, continuityFailures);
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        if (left < 0L || right < 0L) {
+            throw new IllegalArgumentException("non-negative counters required");
+        }
+        return left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
     }
 
     private void requireNotCancelled(

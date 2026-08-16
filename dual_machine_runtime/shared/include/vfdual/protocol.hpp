@@ -68,6 +68,23 @@ struct VideoFragment final {
 };
 
 /**
+ * Allocation-free view over one received video datagram.
+ *
+ * The payload span remains valid only while the caller-owned datagram buffer
+ * is alive.  The Android receiver decodes into this view and immediately gives
+ * it to the bounded reassembler.  That lets an identical duplicate be checked
+ * before allocating another payload vector, which matters on a high-rate UDP
+ * path where duplicates and reordering are expected rather than exceptional.
+ */
+struct VideoFragmentView final {
+  VideoFrameIdentity identity{};
+  bool repeated_content{};
+  std::uint16_t fragment_index{};
+  std::uint16_t fragment_count{};
+  std::span<const std::byte> access_unit_part{};
+};
+
+/**
  * Advances a frame sequence without wraparound.
  *
  * Returning false at UINT32_MAX forces the Host to rotate stream_epoch rather
@@ -100,6 +117,12 @@ struct VideoFragment final {
 [[nodiscard]] std::vector<std::byte> encode_video_packet(
     const VideoFragment& fragment);
 
+/** Parses header and payload as a caller-owned, allocation-free view. */
+[[nodiscard]] bool decode_video_packet_view(
+    std::span<const std::byte> datagram,
+    VideoFragmentView& destination) noexcept;
+
+/** Backward-compatible owning decoder; delegates validation to the view codec. */
 [[nodiscard]] bool decode_video_packet(
     std::span<const std::byte> datagram,
     VideoFragment& destination) noexcept;

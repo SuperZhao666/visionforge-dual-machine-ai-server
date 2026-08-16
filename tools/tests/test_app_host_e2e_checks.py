@@ -26,6 +26,11 @@ class ArchitectureCheckSelfTest(unittest.TestCase):
         report = module.audit(ROOT)
         self.assertEqual("PASS", report["status"], report["failures"])
 
+    def test_current_tree_passes_realtime_pipeline_gate(self) -> None:
+        module = load("vf_realtime", "tools/check_realtime_pipeline_contract.py")
+        report = module.audit(ROOT)
+        self.assertEqual("PASS", report["status"], report["failures"])
+
 
 if __name__ == "__main__":
     unittest.main()

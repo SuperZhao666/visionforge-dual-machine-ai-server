@@ -52,6 +52,7 @@ final class DecoderAccessUnitQueue {
 
     private final long maximumAgeNanos;
     private final long maximumQueuedBytes;
+    private final long maximumReusableBytes;
     private final ArrayDeque<AccessUnit> pending = new ArrayDeque<>();
     private final ArrayList<AccessUnit> reusableAccessUnits =
             new ArrayList<>(MAX_REUSABLE_ACCESS_UNIT_COUNT);
@@ -63,6 +64,7 @@ final class DecoderAccessUnitQueue {
     private int highWatermark;
     private long queuedBytes;
     private long highWatermarkBytes;
+    private long reusableBytes;
 
     DecoderAccessUnitQueue(long maximumAgeNanos, long maximumQueuedBytes) {
         if (maximumAgeNanos <= 0) {
@@ -73,6 +75,10 @@ final class DecoderAccessUnitQueue {
         }
         this.maximumAgeNanos = maximumAgeNanos;
         this.maximumQueuedBytes = maximumQueuedBytes;
+        // Pool memory is bounded independently from queued work.  A one-off
+        // large IDR must not leave sixteen oversized byte arrays retained for
+        // the lifetime of the foreground service.
+        this.maximumReusableBytes = maximumQueuedBytes;
     }
 
     synchronized OfferResult offer(ByteBuffer source, int size, long presentationTimeUs,
@@ -143,8 +149,10 @@ final class DecoderAccessUnitQueue {
     synchronized void recycle(AccessUnit accessUnit) {
         if (accessUnit == null) return;
         reusableAccessUnits.add(accessUnit);
-        while (reusableAccessUnits.size() > MAX_REUSABLE_ACCESS_UNIT_COUNT) {
-            removeSmallestReusableAccessUnit();
+        reusableBytes += accessUnit.bytes.length;
+        while (reusableAccessUnits.size() > MAX_REUSABLE_ACCESS_UNIT_COUNT
+                || reusableBytes > maximumReusableBytes) {
+            removeLargestReusableAccessUnit();
         }
     }
 
@@ -153,6 +161,8 @@ final class DecoderAccessUnitQueue {
         List<AccessUnit> discarded = new ArrayList<>(pending);
         pending.clear();
         queuedBytes = 0L;
+        reusableAccessUnits.clear();
+        reusableBytes = 0L;
         notifyAll();
         return discarded;
     }
@@ -173,6 +183,10 @@ final class DecoderAccessUnitQueue {
         return highWatermarkBytes;
     }
 
+    synchronized long reusableBytes() {
+        return reusableBytes;
+    }
+
     synchronized boolean isClosed() {
         return closed;
     }
@@ -182,7 +196,10 @@ final class DecoderAccessUnitQueue {
     }
 
     static boolean isStale(long enqueuedNanos, long nowNanos, long maximumAgeNanos) {
-        return maximumAgeNanos >= 0 && nowNanos - enqueuedNanos >= maximumAgeNanos;
+        if (maximumAgeNanos < 0L || nowNanos < enqueuedNanos) {
+            return false;
+        }
+        return nowNanos - enqueuedNanos >= maximumAgeNanos;
     }
 
     private boolean wouldExceedFreshnessOrByteBudget(int incomingSize, long nowNanos) {
@@ -204,7 +221,9 @@ final class DecoderAccessUnitQueue {
             }
         }
         if (bestIndex >= 0) {
-            return reusableAccessUnits.remove(bestIndex);
+            AccessUnit reused = reusableAccessUnits.remove(bestIndex);
+            reusableBytes -= reused.bytes.length;
+            return reused;
         }
         return new AccessUnit(minimumSize);
     }
@@ -223,15 +242,18 @@ final class DecoderAccessUnitQueue {
         }
     }
 
-    private void removeSmallestReusableAccessUnit() {
-        int smallestIndex = -1;
+    private void removeLargestReusableAccessUnit() {
+        int largestIndex = -1;
         for (int index = 0; index < reusableAccessUnits.size(); index++) {
             AccessUnit candidate = reusableAccessUnits.get(index);
-            if (smallestIndex < 0 || candidate.bytes.length
-                    < reusableAccessUnits.get(smallestIndex).bytes.length) {
-                smallestIndex = index;
+            if (largestIndex < 0 || candidate.bytes.length
+                    > reusableAccessUnits.get(largestIndex).bytes.length) {
+                largestIndex = index;
             }
         }
-        if (smallestIndex >= 0) reusableAccessUnits.remove(smallestIndex);
+        if (largestIndex >= 0) {
+            AccessUnit removed = reusableAccessUnits.remove(largestIndex);
+            reusableBytes -= removed.bytes.length;
+        }
     }
 }

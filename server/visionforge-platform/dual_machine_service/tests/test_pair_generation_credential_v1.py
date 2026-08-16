@@ -67,10 +67,10 @@ class _NoOpVerifyPublicKey(rsa.RSAPublicKey):
     def __eq__(self, other: object) -> bool:
         return self is other
 
+    # cryptography 46 made key objects explicitly copyable through an abstract
+    # method.  This adversarial test double must remain instantiable without
+    # changing the production verifier contract.
     def __copy__(self):
-        return self
-
-    def __deepcopy__(self, memo):
         return self
 
 
@@ -104,9 +104,6 @@ class _NoOpSignPrivateKey(rsa.RSAPrivateKey):
         return b"\x00"
 
     def __copy__(self):
-        return self
-
-    def __deepcopy__(self, memo):
         return self
 
 

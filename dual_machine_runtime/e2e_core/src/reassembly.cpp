@@ -198,6 +198,7 @@ IngestResult AccessUnitReassembler::ingest(
         Frame frame{
             .fragment_count = header.fragment_count,
             .fragments = std::vector<std::optional<std::vector<std::uint8_t>>>(header.fragment_count),
+            .received_fragments = 0,
             .bytes = 0,
             .created_at = now,
         };
@@ -235,12 +236,11 @@ IngestResult AccessUnitReassembler::ingest(
     }
 
     slot = std::vector<std::uint8_t>(payload.begin(), payload.end());
+    ++frame.received_fragments;
     frame.bytes += payload.size();
     total_bytes_ += payload.size();
 
-    const bool complete = std::all_of(frame.fragments.begin(), frame.fragments.end(),
-                                      [](const auto& part) { return part.has_value(); });
-    if (!complete) {
+    if (frame.received_fragments != frame.fragment_count) {
         return {.code = IngestCode::Accepted, .stream_epoch = header.stream_epoch,
                 .frame_sequence = header.frame_sequence};
     }
