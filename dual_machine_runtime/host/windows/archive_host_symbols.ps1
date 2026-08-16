@@ -12,6 +12,22 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Get-Sha256Hex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash([System.IO.File]::ReadAllBytes($Path))
+        return ([System.BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
 $resolvedExe = (Resolve-Path -LiteralPath $ExePath).Path
 $resolvedPdb = (Resolve-Path -LiteralPath $PdbPath).Path
 if ((Get-Item -LiteralPath $resolvedExe).Length -le 0) {
@@ -21,7 +37,7 @@ if ((Get-Item -LiteralPath $resolvedPdb).Length -le 0) {
     throw "VF Host PDB is empty: $resolvedPdb"
 }
 
-$exeHash = (Get-FileHash -LiteralPath $resolvedExe -Algorithm SHA256).Hash.ToLowerInvariant()
+$exeHash = Get-Sha256Hex -Path $resolvedExe
 $archiveRoot = [System.IO.Path]::GetFullPath($ArchiveDirectory)
 [System.IO.Directory]::CreateDirectory($archiveRoot) | Out-Null
 
@@ -35,7 +51,7 @@ $manifest = [ordered]@{
     executable_name = [System.IO.Path]::GetFileName($resolvedExe)
     executable_bytes = (Get-Item -LiteralPath $resolvedExe).Length
     pdb_name = [System.IO.Path]::GetFileName($archivedPdb)
-    pdb_sha256 = (Get-FileHash -LiteralPath $archivedPdb -Algorithm SHA256).Hash.ToLowerInvariant()
+    pdb_sha256 = Get-Sha256Hex -Path $archivedPdb
     pdb_bytes = (Get-Item -LiteralPath $archivedPdb).Length
     archived_utc = [DateTime]::UtcNow.ToString('o')
     distribution = 'private_do_not_ship'
