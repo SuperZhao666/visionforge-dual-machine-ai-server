@@ -280,10 +280,6 @@ try {
             target_pairs = @(@(0, 1), @(2, 3))
             output_names = @("output_coordinates", "output_confidences")
         }
-        licensing = [ordered]@{
-            source_metadata_declares = "AGPL-3.0"
-            commercial_distribution_review_required = $true
-        }
         toolchain = [ordered]@{
             qnn_sdk_version = $approvedQnnSdkVersion
             qnn_sdk_root = $qnnRoot

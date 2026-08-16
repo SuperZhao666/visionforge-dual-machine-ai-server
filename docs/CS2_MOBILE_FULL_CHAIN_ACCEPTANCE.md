@@ -113,13 +113,12 @@ CS2 动态链路不要求游戏窗口在线；桌面真实帧足以证明指定 
 - paired-head 掉检连续性只由同一 body track、几何契约与单调时间控制，不得以帧数抽样、降 FPS 或跳帧伪造稳定。
 - `qnn_fps` 只统计有新视觉内容的实际 QNN 执行，不等同于线速接收帧率；完全相同的重复画面可以继续接收、解码和计数，但不得为了抬高表面数值重复推理同一像素或重复产生控制决策。验收时应同时报告 `wire_reassembly_fps`、`fresh_content_fps`、`repeated_content_fps` 与 `qnn_fps`，区分内容去重和性能限速。
 
-## 6. 分发边界
+## 6. 私有模型范围
 
 当前 CS2 工件清单声明：
 
 - `integration_eligible=true`；
-- `source_metadata_declares=AGPL-3.0`；
-- `commercial_distribution_review_required=true`；
-- `commercial_release_eligible=false`。
+- 模型由项目所有者维护，供本项目私有构建使用；
+- 生产签名和开发签名都使用同一套模型哈希闭包校验。
 
-因此当前工件只允许进入开发签名的实体机测试包。构建检测到生产签名时，除非经过审查的清单明确更新为 `commercial_release_eligible=true`，否则必须 fail-fast。加密、混淆或二进制加固不能替代模型许可证审查。
+构建只校验模型内容、QNN 工具链、数值契约和 APK 签名，不把分发类型作为拒绝条件。正式安全数据面仍需通过独立的安全实现门。

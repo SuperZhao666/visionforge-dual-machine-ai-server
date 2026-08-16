@@ -17,7 +17,10 @@ if errorlevel 1 exit /b 1
 for %%I in ("%~dp0..\..") do set "RUNTIME_ROOT=%%~fI"
 for %%I in ("%RUNTIME_ROOT%\..") do set "REPOSITORY_ROOT=%%~fI"
 set "BUILD_DIR=%RUNTIME_ROOT%\out_ninja_host_release"
-set "TEST_BUILD_DIR=%RUNTIME_ROOT%\out\cmake-host-tests-clean"
+rem Keep the disposable test tree short. CMake's Ninja generator embeds the
+rem absolute path of Android benchmark sources in object paths, and the full
+rem repository path can exceed MSVC's legacy path limit.
+set "TEST_BUILD_DIR=C:\vfdual-host-tests-clean"
 set "CMAKE_EXE=%REPOSITORY_ROOT%\.android-sdk\cmake\3.22.1\bin\cmake.exe"
 set "CTEST_EXE=%REPOSITORY_ROOT%\.android-sdk\cmake\3.22.1\bin\ctest.exe"
 set "NINJA_EXE=%REPOSITORY_ROOT%\.android-sdk\cmake\3.22.1\bin\ninja.exe"
@@ -98,6 +101,7 @@ if errorlevel 1 (
 )
 
 powershell.exe -NoLogo -NoProfile -NonInteractive -Command ^
+  "Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop;" ^
   "$sourceHash = (Get-FileHash -LiteralPath '%BUILD_DIR%\VFHost.exe' -Algorithm SHA256).Hash;" ^
   "$productHash = (Get-FileHash -LiteralPath '%VFDUAL_HOST_OUTPUT%' -Algorithm SHA256).Hash;" ^
   "if ($sourceHash -ne $productHash) { Write-Error ('Product copy verification failed: source=' + $sourceHash + ' product=' + $productHash); exit 1 };" ^

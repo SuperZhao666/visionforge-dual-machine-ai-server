@@ -21,6 +21,7 @@ android_inference_benchmark/.gradle-user-home/
 android_inference_benchmark/*.gradle-user-home/
 android_inference_benchmark/.cxx/
 android_inference_benchmark/app/.cxx/
+android_inference_benchmark/app/build/
 android_inference_benchmark/build/
 android_inference_benchmark/output/
 android_inference_benchmark/qnn_sdk/
@@ -37,6 +38,9 @@ android_inference_benchmark/app/src/main/assets/qnn/
 # Native build products and local acceptance evidence
 dual_machine_runtime/out*/
 dual_machine_runtime/analysis_output/
+analysis_output/
+build-artifacts/
+.android-sdk/
 *.obj
 *.pdb
 *.etl

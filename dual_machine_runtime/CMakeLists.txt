@@ -60,6 +60,12 @@ if(MSVC)
     # The Host is distributed as one EXE. Keep the MSVC/UCRT runtime inside
     # every Windows binary produced by this standalone runtime project.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    # CMake 3.22 emits a directory-only /Fd argument for some source files
+    # whose object directory is hashed. MSVC 19.44 rejects that form with
+    # C1083 and an empty generated-file path. Give every target an explicit,
+    # short compiler-PDB directory; linker PDB locations remain target-owned.
+    set(CMAKE_COMPILE_PDB_OUTPUT_DIRECTORY
+        "${CMAKE_CURRENT_BINARY_DIR}/pdb")
     # Build the host runtime as UTF-8 regardless of the Windows system code
     # page. Chinese Windows defaults to CP936, which can misparse UTF-8 source
     # comments/strings and make release builds non-reproducible across systems.
@@ -285,6 +291,12 @@ if(WIN32)
         host/windows/src/udp_video_publisher.cpp
     )
     set_target_properties(VisionForgeHost PROPERTIES OUTPUT_NAME VFHost)
+    # CMake 3.22's MSVC link wrapper tries to run mt.exe after every
+    # WIN32_EXECUTABLE link.  Because the Host supplies its own repository
+    # manifest as an RC resource, that wrapper has no generated manifest input
+    # and fails with mt.exe C10100A7.  Keep the GUI subsystem explicit while
+    # letting the resource compiler embed the authoritative manifest.
+    set_target_properties(VisionForgeHost PROPERTIES WIN32_EXECUTABLE FALSE)
     if(MSVC)
         # Keep the latency-sensitive Host native and fully optimized while
         # making the Windows exploit mitigations explicit.  These switches do
@@ -298,7 +310,8 @@ if(WIN32)
             "$<$<CONFIG:Release>:/HIGHENTROPYVA>"
             "$<$<CONFIG:Release>:/NXCOMPAT>"
             "$<$<CONFIG:Release>:/guard:cf>"
-            "$<$<CONFIG:Release>:/CETCOMPAT>")
+            "$<$<CONFIG:Release>:/CETCOMPAT>"
+            "/SUBSYSTEM:WINDOWS")
         include(CheckIPOSupported)
         check_ipo_supported(RESULT vfdual_host_ipo_supported
                             OUTPUT vfdual_host_ipo_error)
@@ -318,14 +331,6 @@ if(WIN32)
         third_party/nv-codec-headers/include)
     target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
         mfplat mf mfuuid wmcodecdspuuid ole32 oleaut32 user32 gdi32 shell32 dwmapi dbghelp)
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        # Keep the repository-owned manifest as the single manifest input.
-        target_link_options(VisionForgeHost PRIVATE
-            -Xlinker "/MANIFESTINPUT:${VFDUAL_HOST_MANIFEST_PATH}")
-    elseif(MSVC)
-        target_link_options(VisionForgeHost PRIVATE
-            "/MANIFESTINPUT:${VFDUAL_HOST_MANIFEST_PATH}")
-    endif()
     if(MSVC AND VFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS)
         target_compile_options(VisionForgeHost PRIVATE /Zi /FS)
         target_link_options(VisionForgeHost PRIVATE
@@ -976,6 +981,19 @@ vfdual_add_e2e_domain_test(vfdual_e2e_domain_composition_root_tests e2e_core/tes
 # configurations define NDEBUG globally, so undefine it for test executables
 # only; otherwise CTest can report a false pass without evaluating a check.
 get_property(vfdual_directory_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+if(MSVC)
+    # CMake 3.22 initializes COMPILE_PDB_OUTPUT_DIRECTORY without a target
+    # name, producing /Fd<directory>\ and an invalid empty compiler-PDB path
+    # with current MSVC. Assign a unique file name to every target after the
+    # complete target graph has been declared.
+    foreach(vfdual_target IN LISTS vfdual_directory_targets)
+        set_target_properties(${vfdual_target} PROPERTIES
+            # CMake appends .pdb to COMPILE_PDB_NAME automatically.
+            COMPILE_PDB_NAME "${vfdual_target}"
+            COMPILE_PDB_OUTPUT_DIRECTORY
+                "${CMAKE_CURRENT_BINARY_DIR}/pdb")
+    endforeach()
+endif()
 set(vfdual_test_build_targets)
 foreach(vfdual_target IN LISTS vfdual_directory_targets)
     if(vfdual_target MATCHES "_tests$")
