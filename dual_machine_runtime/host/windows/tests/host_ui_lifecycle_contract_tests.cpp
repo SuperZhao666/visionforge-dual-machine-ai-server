@@ -26,7 +26,13 @@ std::string read_source(const char* relative_path) {
     VFDUAL_TEST_REQUIRE(input.good());
     std::ostringstream buffer;
     buffer << input.rdbuf();
-    return buffer.str();
+    std::string text = buffer.str();
+    for (std::size_t offset = text.find("\r\n");
+         offset != std::string::npos;
+         offset = text.find("\r\n", offset + 1U)) {
+        text.replace(offset, 2U, "\n");
+    }
+    return text;
 }
 
 std::string slice_between(
