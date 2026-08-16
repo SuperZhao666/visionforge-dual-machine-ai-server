@@ -12,10 +12,71 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 namespace {
 using vf::host::domain::StreamIdentityGenerator;
 using vf::host::infrastructure::FileEpochReservationStore;
 using vf::test::expect;
+
+#ifndef _WIN32
+void verify_cross_process_reservations(
+    const std::filesystem::path& root,
+    const std::filesystem::path& state,
+    std::uint64_t first_expected) {
+    constexpr int kChildren = 4;
+    constexpr int kPerChild = 25;
+    std::vector<pid_t> children;
+    children.reserve(kChildren);
+    for (int child_index = 0; child_index < kChildren; ++child_index) {
+        const pid_t child = ::fork();
+        expect(child >= 0, "fork failed during epoch store process test");
+        if (child == 0) {
+            try {
+                FileEpochReservationStore store(state);
+                std::ofstream output(
+                    root / ("child-" + std::to_string(child_index) + ".txt"),
+                    std::ios::binary | std::ios::trunc);
+                if (!output) ::_exit(21);
+                for (int index = 0; index < kPerChild; ++index) {
+                    output << store.reserve_next() << '\n';
+                }
+                output.flush();
+                ::_exit(output ? 0 : 22);
+            } catch (...) {
+                ::_exit(23);
+            }
+        }
+        children.push_back(child);
+    }
+
+    for (pid_t child : children) {
+        int status{};
+        expect(::waitpid(child, &status, 0) == child,
+               "waitpid failed during epoch store process test");
+        expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+               "child process failed while reserving epochs");
+    }
+
+    std::vector<std::uint64_t> values;
+    values.reserve(kChildren * kPerChild);
+    for (int child_index = 0; child_index < kChildren; ++child_index) {
+        std::ifstream input(root / ("child-" + std::to_string(child_index) + ".txt"));
+        std::uint64_t value{};
+        while (input >> value) values.push_back(value);
+    }
+    std::sort(values.begin(), values.end());
+    expect(values.size() == static_cast<std::size_t>(kChildren * kPerChild),
+           "cross-process reservations were lost");
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        expect(values[index] == first_expected + index,
+               "cross-process reservation was duplicated or skipped");
+    }
+}
+#endif
 
 void run() {
     const auto root = std::filesystem::temp_directory_path() /
@@ -49,10 +110,17 @@ void run() {
         expect(values[index] == index + 3, "concurrent reservation was duplicated or skipped");
     }
 
-    StreamIdentityGenerator generator(values.back(),
+#ifndef _WIN32
+    verify_cross_process_reservations(root, state, 43U);
+    const std::uint64_t highest_reserved = 142U;
+#else
+    const std::uint64_t highest_reserved = values.back();
+#endif
+
+    StreamIdentityGenerator generator(highest_reserved,
                                       std::numeric_limits<std::uint32_t>::max());
     const auto terminal = generator.next();
-    expect(terminal.stream_epoch == values.back(), "generator ignored persisted epoch");
+    expect(terminal.stream_epoch == highest_reserved, "generator ignored persisted epoch");
     expect(generator.rotation_required(), "terminal sequence did not require persisted rotation");
     const auto next_epoch = first.reserve_next();
     generator.rotate_to(next_epoch);

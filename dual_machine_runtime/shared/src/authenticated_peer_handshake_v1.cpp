@@ -446,7 +446,7 @@ public:
 #endif
 }
 
-[[nodiscard]] PeerHandshakeError hkdf_expand_sha256(
+[[nodiscard, maybe_unused]] PeerHandshakeError hkdf_expand_sha256(
     const std::span<const std::byte, kPeerHandshakeSha256Bytes> prk,
     const std::string_view ascii_info,
     const std::span<std::byte> output) noexcept {
@@ -507,7 +507,7 @@ public:
     return {};
 }
 
-[[nodiscard]] PeerHandshakeError derive_prk(
+[[nodiscard, maybe_unused]] PeerHandshakeError derive_prk(
     const std::span<const std::byte, kPeerHandshakeSha256Bytes>
         transcript_sha256,
     const std::span<const std::byte, 32U> shared_secret_be,

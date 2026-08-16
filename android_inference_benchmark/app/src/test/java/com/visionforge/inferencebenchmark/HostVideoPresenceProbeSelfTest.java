@@ -6,8 +6,10 @@ import com.visionforge.inferencebenchmark.video.VideoWireProtocol;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.BindException;
+import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -25,6 +27,8 @@ final class HostVideoPresenceProbeSelfTest {
         classifiesOnlyUnavailableLocalAddressBindFailures();
         rejectsMalformedOrNonVideoDatagrams();
         cancellationShortCircuitsBeforeEndpointValidation();
+        partialFrameStartsCannotSatisfySocketProbe();
+        completeIdrAndFreshFrameSatisfySocketProbe();
         activeSocketCancellationIsNotAProbeFailure();
     }
 
@@ -188,6 +192,91 @@ final class HostVideoPresenceProbeSelfTest {
         }
     }
 
+    private static void partialFrameStartsCannotSatisfySocketProbe() {
+        AtomicInteger events = new AtomicInteger();
+        HostVideoPresenceProbe probe = new HostVideoPresenceProbe(
+                (event, detail) -> events.incrementAndGet());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            int port = reserveLoopbackPort();
+            MobileTransportEndpoint endpoint =
+                    MobileTransportEndpointTestFixtures.loopbackProbe(
+                            18L, "127.0.0.1", "127.0.0.2");
+            Future<HostVideoPresenceProbe.HostVideoObservation> future =
+                    executor.submit(() -> probe.awaitValidHostVideo(
+                            endpoint, port, 300L));
+            waitForActiveSocket(probe);
+            try (DatagramSocket sender = new DatagramSocket(
+                    new InetSocketAddress("127.0.0.2", 0))) {
+                send(sender, port, packet(
+                        50L, 0L, false, 0, 2,
+                        new byte[] {0, 0, 0, 1}));
+                send(sender, port, packet(
+                        50L, 1L, false, 0, 2,
+                        new byte[] {0, 0, 0, 1}));
+            }
+            try {
+                future.get(2L, TimeUnit.SECONDS);
+                throw new AssertionError(
+                        "two incomplete frame starts opened billing readiness");
+            } catch (ExecutionException expected) {
+                require(expected.getCause()
+                        instanceof HostVideoPresenceProbe.HostVideoNotObservedException);
+            }
+            require(events.get() == 1);
+        } catch (Exception failure) {
+            throw new AssertionError(
+                    "partial-frame socket preflight regression failed",
+                    failure);
+        } finally {
+            probe.cancel();
+            executor.shutdownNow();
+        }
+    }
+
+    private static void completeIdrAndFreshFrameSatisfySocketProbe() {
+        AtomicInteger events = new AtomicInteger();
+        HostVideoPresenceProbe probe = new HostVideoPresenceProbe(
+                (event, detail) -> events.incrementAndGet());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            int port = reserveLoopbackPort();
+            MobileTransportEndpoint endpoint =
+                    MobileTransportEndpointTestFixtures.loopbackProbe(
+                            19L, "127.0.0.1", "127.0.0.2");
+            Future<HostVideoPresenceProbe.HostVideoObservation> future =
+                    executor.submit(() -> probe.awaitValidHostVideo(
+                            endpoint, port, 2_000L));
+            waitForActiveSocket(probe);
+            try (DatagramSocket sender = new DatagramSocket(
+                    new InetSocketAddress("127.0.0.2", 0))) {
+                // Deliberately deliver IDR fragments out of order.
+                send(sender, port, packet(
+                        51L, 10L, false, 1, 2,
+                        new byte[] {0x65, (byte) 0x80}));
+                send(sender, port, packet(
+                        51L, 10L, false, 0, 2,
+                        new byte[] {0, 0, 0, 1}));
+                send(sender, port, packet(
+                        51L, 11L, false, 0, 1,
+                        new byte[] {0, 0, 0, 1, 0x41, (byte) 0x80}));
+            }
+            HostVideoPresenceProbe.HostVideoObservation observation =
+                    future.get(2L, TimeUnit.SECONDS);
+            require(observation.streamEpoch == 51L);
+            require(observation.logicalFrameSequence == 11L);
+            require(observation.confirmedForwardFrameStarts == 2);
+            require(events.get() == 1);
+        } catch (Exception failure) {
+            throw new AssertionError(
+                    "complete-frame socket preflight regression failed",
+                    failure);
+        } finally {
+            probe.cancel();
+            executor.shutdownNow();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private static void waitForActiveSocket(HostVideoPresenceProbe probe)
             throws Exception {
@@ -214,6 +303,39 @@ final class HostVideoPresenceProbeSelfTest {
                 new VideoFrameIdentity(37L, 37L),
                 magic == HostVideoPresenceProbe.VIDEO_REPEATED_PACKET_MAGIC,
                 fragmentIndex, fragmentCount, payload);
+    }
+
+    private static byte[] packet(
+            long epoch,
+            long sequence,
+            boolean repeated,
+            int fragmentIndex,
+            int fragmentCount,
+            byte[] payload) {
+        return VideoWireProtocol.encodeForTest(
+                new VideoFrameIdentity(epoch, sequence),
+                repeated,
+                fragmentIndex,
+                fragmentCount,
+                payload);
+    }
+
+    private static int reserveLoopbackPort() throws IOException {
+        try (DatagramSocket reservation = new DatagramSocket(
+                0, InetAddress.getByName("127.0.0.1"))) {
+            return reservation.getLocalPort();
+        }
+    }
+
+    private static void send(
+            DatagramSocket socket,
+            int port,
+            byte[] payload) throws IOException {
+        socket.send(new DatagramPacket(
+                payload,
+                payload.length,
+                InetAddress.getByName("127.0.0.1"),
+                port));
     }
 
     private static void writeInt(byte[] bytes, int offset, int value) {

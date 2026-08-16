@@ -564,11 +564,13 @@ private:
     std::uint64_t last_accepted_datagram_us = monotonic_microseconds();
     std::uint64_t receive_timeout_us = kInitialReceiveTimeoutUs;
 
-    const auto rebuild_active_reassembler = [&]() {
+    const auto rebuild_active_reassembler = [
+        &](std::optional<std::uint32_t> last_delivered_sequence = std::nullopt) {
       active_reassembler =
           vfdual::AccessUnitReassembler(kMaximumInflightAccessUnits);
       if (const auto active = epoch_session.active_epoch(); active.has_value()) {
-        (void)active_reassembler.activate_epoch(*active);
+        (void)active_reassembler.activate_epoch(
+            *active, last_delivered_sequence);
       }
     };
     const auto rebuild_candidate_reassembler = [&](std::uint64_t epoch) {
@@ -588,7 +590,9 @@ private:
         pending_candidate_idr.reset();
         return true;
       }
-      rebuild_active_reassembler();
+      const std::uint32_t committed_idr_sequence =
+          pending_candidate_idr->identity.frame_sequence;
+      rebuild_active_reassembler(committed_idr_sequence);
       recovery_policy_.reset();
       require_reference_sync();
       const CompletedSubmission submission =
@@ -694,8 +698,8 @@ private:
       }
 
       consecutive_socket_errors = 0;
-      vfdual::VideoFragment fragment;
-      if (!vfdual::decode_video_packet(
+      vfdual::VideoFragmentView fragment;
+      if (!vfdual::decode_video_packet_view(
               std::span<const std::byte>(
                   datagram.data(), static_cast<std::size_t>(received)),
               fragment)) {
@@ -750,8 +754,7 @@ private:
         }
         const std::uint64_t losses_before =
             candidate_reassembler.incomplete_access_unit_losses();
-        auto candidate = candidate_reassembler.push(
-            std::move(fragment), now_us);
+        auto candidate = candidate_reassembler.push_view(fragment, now_us);
         (void)candidate_reassembler.discard_expired(
             now_us, kAccessUnitReassemblyTtlUs);
         const bool candidate_lost =
@@ -783,7 +786,7 @@ private:
             ++metrics_.candidate_epoch_rejections;
             continue;
           }
-          rebuild_active_reassembler();
+          rebuild_active_reassembler(candidate->identity.frame_sequence);
           recovery_policy_.reset();
           require_reference_sync();
           const CompletedSubmission submission =
@@ -818,7 +821,7 @@ private:
       if (source_restart_pending) continue;
       const std::uint64_t reassembly_losses_before =
           active_reassembler.incomplete_access_unit_losses();
-      auto completed = active_reassembler.push(std::move(fragment), now_us);
+      auto completed = active_reassembler.push_view(fragment, now_us);
       const std::size_t expired_access_units =
           active_reassembler.discard_expired(
               now_us, kAccessUnitReassemblyTtlUs);

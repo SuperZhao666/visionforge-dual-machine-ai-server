@@ -385,9 +385,9 @@ bool complete_matching_move(
     std::uint64_t minimum_visibility_us) noexcept {
   const std::uint64_t acknowledged_at_us = monotonic_microseconds();
   const MakcuMoveCompletion completion = g_move_commit_gate.complete_with(
-      ticket, [&](std::uint64_t source_sequence) noexcept {
+      ticket, [&](MakcuFrameIdentity source_identity) noexcept {
         g_move_visibility_gate.arm(
-            source_sequence, acknowledged_at_us, minimum_visibility_us);
+            source_identity, acknowledged_at_us, minimum_visibility_us);
       });
   if (!completion.matched) {
     ++stale_counter;
@@ -733,7 +733,7 @@ void publish_makcu_move_for_detections(
   }
   const MakcuMoveVisibilityDecision visibility_decision =
       g_move_visibility_gate.evaluate(
-          frame_sequence, observed_at_us, content_updated, now_us,
+          {stream_generation, frame_sequence}, observed_at_us, content_updated, now_us,
           kMaximumPostAckVisibilityAgeUs);
   if (visibility_decision == MakcuMoveVisibilityDecision::timed_out) {
     ++g_post_completion_visibility_timeouts;
@@ -780,7 +780,7 @@ void publish_makcu_move_for_detections(
     return;
   }
   const std::uint64_t ticket =
-      g_move_commit_gate.begin(now_us, frame_sequence);
+      g_move_commit_gate.begin(now_us, stream_generation, frame_sequence);
   if (ticket == 0U) {
     ++g_move_completion_pending_suppressed;
     update_control_blocker(ControlBlockerReason::ticket_begin_failed, now_us);
@@ -995,6 +995,8 @@ std::string makcu_move_bridge_report() {
         << " native_move_completion_pending=" << g_move_commit_gate.pending()
         << " native_move_completion_pending_ticket="
         << commit_snapshot.ticket
+        << " native_move_completion_pending_source_generation="
+        << commit_snapshot.source_generation
         << " native_move_completion_pending_source_sequence="
         << commit_snapshot.source_sequence
         << " native_move_completion_pending_age_us=" << commit_age_us
@@ -1035,6 +1037,8 @@ std::string makcu_move_bridge_report() {
            "android_hid_stack_accepted_not_host_or_physical_ack"
         << " post_completion_visibility_armed="
         << visibility_snapshot.armed
+        << " post_completion_visibility_source_generation="
+        << visibility_snapshot.source_generation
         << " post_completion_visibility_source_sequence="
         << visibility_snapshot.source_sequence
         << " post_completion_visibility_age_us=" << visibility_age_us

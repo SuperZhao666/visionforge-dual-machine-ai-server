@@ -12,15 +12,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$resolvedExe = (Resolve-Path -LiteralPath $ExePath).Path
-$resolvedPdb = (Resolve-Path -LiteralPath $PdbPath).Path
-if ((Get-Item -LiteralPath $resolvedExe).Length -le 0) {
-    throw "VF Host executable is empty: $resolvedExe"
-}
-if ((Get-Item -LiteralPath $resolvedPdb).Length -le 0) {
-    throw "VF Host PDB is empty: $resolvedPdb"
-}
-
 function Get-Sha256Hex {
     param(
         [Parameter(Mandatory = $true)]
@@ -28,16 +19,22 @@ function Get-Sha256Hex {
     )
 
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    $stream = [System.IO.File]::OpenRead($Path)
     try {
-        return ([System.BitConverter]::ToString(
-            $sha256.ComputeHash($stream)
-        )).Replace('-', '').ToLowerInvariant()
+        $digest = $sha256.ComputeHash([System.IO.File]::ReadAllBytes($Path))
+        return ([System.BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant()
     }
     finally {
-        $stream.Dispose()
         $sha256.Dispose()
     }
+}
+
+$resolvedExe = (Resolve-Path -LiteralPath $ExePath).Path
+$resolvedPdb = (Resolve-Path -LiteralPath $PdbPath).Path
+if ((Get-Item -LiteralPath $resolvedExe).Length -le 0) {
+    throw "VF Host executable is empty: $resolvedExe"
+}
+if ((Get-Item -LiteralPath $resolvedPdb).Length -le 0) {
+    throw "VF Host PDB is empty: $resolvedPdb"
 }
 
 $exeHash = Get-Sha256Hex -Path $resolvedExe

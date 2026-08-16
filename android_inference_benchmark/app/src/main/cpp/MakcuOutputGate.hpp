@@ -2,8 +2,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 
 namespace vfdual_android {
@@ -76,17 +78,43 @@ struct MakcuRecoveryCompletion final {
   bool output_enabled{};
 };
 
+struct MakcuFrameIdentity final {
+  std::uint64_t stream_generation{};
+  std::uint64_t source_sequence{};
+
+  [[nodiscard]] constexpr bool valid() const noexcept {
+    return stream_generation != 0U && source_sequence != 0U;
+  }
+
+  [[nodiscard]] constexpr bool newer_than(
+      const MakcuFrameIdentity& baseline) const noexcept {
+    return valid() && baseline.valid() &&
+        (stream_generation > baseline.stream_generation ||
+         (stream_generation == baseline.stream_generation &&
+          source_sequence > baseline.source_sequence));
+  }
+};
+
 struct MakcuMoveCompletion final {
   bool matched{};
+  std::uint64_t source_generation{};
   std::uint64_t source_sequence{};
+
+  [[nodiscard]] constexpr MakcuFrameIdentity source_identity() const noexcept {
+    return {source_generation, source_sequence};
+  }
 };
 
 struct MakcuMoveCommitSnapshot final {
   std::uint64_t ticket{};
   std::uint64_t started_at_us{};
+  std::uint64_t source_generation{};
   std::uint64_t source_sequence{};
 
   [[nodiscard]] bool pending() const noexcept { return ticket != 0U; }
+  [[nodiscard]] constexpr MakcuFrameIdentity source_identity() const noexcept {
+    return {source_generation, source_sequence};
+  }
 };
 
 enum class MakcuMoveFeedbackAction {
@@ -116,17 +144,25 @@ enum class MakcuMoveFeedbackAction {
  */
 class MakcuMoveCommitGate final {
 public:
+  /** Legacy single-generation entry point retained for isolated tests/adapters. */
   [[nodiscard]] std::uint64_t begin(
       std::uint64_t started_at_us, std::uint64_t source_sequence) noexcept {
+    return begin(started_at_us, 1U, source_sequence);
+  }
+
+  [[nodiscard]] std::uint64_t begin(
+      std::uint64_t started_at_us, std::uint64_t source_generation,
+      std::uint64_t source_sequence) noexcept {
     std::scoped_lock lock(commit_mutex_);
-    if (started_at_us == 0U || source_sequence == 0U ||
-        pending_ticket_ != 0U) {
+    const MakcuFrameIdentity identity{source_generation, source_sequence};
+    if (started_at_us == 0U || !identity.valid() || pending_ticket_ != 0U) {
       return 0U;
     }
     ++next_ticket_;
     if (next_ticket_ == 0U) ++next_ticket_;
     pending_ticket_ = next_ticket_;
     pending_started_at_us_ = started_at_us;
+    pending_source_generation_ = source_generation;
     pending_source_sequence_ = source_sequence;
     return pending_ticket_;
   }
@@ -134,11 +170,9 @@ public:
   [[nodiscard]] MakcuMoveCompletion complete(std::uint64_t ticket) noexcept {
     std::scoped_lock lock(commit_mutex_);
     if (ticket == 0U || ticket != pending_ticket_) return {};
-    const std::uint64_t source_sequence = pending_source_sequence_;
-    pending_ticket_ = 0U;
-    pending_started_at_us_ = 0U;
-    pending_source_sequence_ = 0U;
-    return {.matched = true, .source_sequence = source_sequence};
+    const MakcuMoveCompletion completion = completion_locked();
+    clear_pending_locked();
+    return completion;
   }
 
   /**
@@ -151,19 +185,25 @@ public:
       std::uint64_t ticket, BeforeClear&& before_clear) noexcept {
     std::scoped_lock lock(commit_mutex_);
     if (ticket == 0U || ticket != pending_ticket_) return {};
-    const std::uint64_t source_sequence = pending_source_sequence_;
-    std::forward<BeforeClear>(before_clear)(source_sequence);
-    pending_ticket_ = 0U;
-    pending_started_at_us_ = 0U;
-    pending_source_sequence_ = 0U;
-    return {.matched = true, .source_sequence = source_sequence};
+    const MakcuMoveCompletion completion = completion_locked();
+    const MakcuFrameIdentity identity = completion.source_identity();
+    if constexpr (std::is_invocable_v<BeforeClear&, MakcuFrameIdentity>) {
+      std::invoke(before_clear, identity);
+    } else {
+      static_assert(
+          std::is_invocable_v<BeforeClear&, std::uint64_t>,
+          "completion callback must accept MakcuFrameIdentity or sequence");
+      std::invoke(before_clear, identity.source_sequence);
+    }
+    clear_pending_locked();
+    return completion;
   }
 
   [[nodiscard]] MakcuMoveCompletion inspect(
       std::uint64_t ticket) const noexcept {
     std::scoped_lock lock(commit_mutex_);
     if (ticket == 0U || ticket != pending_ticket_) return {};
-    return {.matched = true, .source_sequence = pending_source_sequence_};
+    return completion_locked();
   }
 
   [[nodiscard]] bool expire_if_older(
@@ -174,9 +214,7 @@ public:
         now_us - pending_started_at_us_ <= maximum_age_us) {
       return false;
     }
-    pending_ticket_ = 0U;
-    pending_started_at_us_ = 0U;
-    pending_source_sequence_ = 0U;
+    clear_pending_locked();
     return true;
   }
 
@@ -189,17 +227,13 @@ public:
         now_us - pending_started_at_us_ < maximum_age_us) {
       return false;
     }
-    pending_ticket_ = 0U;
-    pending_started_at_us_ = 0U;
-    pending_source_sequence_ = 0U;
+    clear_pending_locked();
     return true;
   }
 
   void fail_closed() noexcept {
     std::scoped_lock lock(commit_mutex_);
-    pending_ticket_ = 0U;
-    pending_started_at_us_ = 0U;
-    pending_source_sequence_ = 0U;
+    clear_pending_locked();
   }
 
   [[nodiscard]] bool pending() const noexcept {
@@ -217,15 +251,32 @@ public:
     return {
         .ticket = pending_ticket_,
         .started_at_us = pending_started_at_us_,
+        .source_generation = pending_source_generation_,
         .source_sequence = pending_source_sequence_,
     };
   }
 
 private:
+  [[nodiscard]] MakcuMoveCompletion completion_locked() const noexcept {
+    return {
+        .matched = pending_ticket_ != 0U,
+        .source_generation = pending_source_generation_,
+        .source_sequence = pending_source_sequence_,
+    };
+  }
+
+  void clear_pending_locked() noexcept {
+    pending_ticket_ = 0U;
+    pending_started_at_us_ = 0U;
+    pending_source_generation_ = 0U;
+    pending_source_sequence_ = 0U;
+  }
+
   mutable std::mutex commit_mutex_;
   std::uint64_t next_ticket_{};
   std::uint64_t pending_ticket_{};
   std::uint64_t pending_started_at_us_{};
+  std::uint64_t pending_source_generation_{};
   std::uint64_t pending_source_sequence_{};
 };
 
@@ -238,53 +289,72 @@ enum class MakcuMoveVisibilityDecision : std::uint8_t {
 
 struct MakcuMoveVisibilitySnapshot final {
   bool armed{};
+  std::uint64_t source_generation{};
   std::uint64_t source_sequence{};
   std::uint64_t armed_at_us{};
   std::uint64_t visible_not_before_us{};
+
+  [[nodiscard]] constexpr MakcuFrameIdentity source_identity() const noexcept {
+    return {source_generation, source_sequence};
+  }
 };
 
 /**
  * Holds further movement until a newer received content frame exists after the
- * matching ACK. Callers may request an additional interval, but the realtime
- * control route uses none: source sequence and observation time already enforce
- * the causal post-ACK boundary.
+ * matching ACK. The full (stream generation, sequence) identity is compared:
+ * sequence reset after a decoder/stream generation transition is therefore
+ * fresh, while an old generation with a large sequence can never bypass the
+ * gate. Callers may request an additional interval, but the realtime control
+ * route uses none.
  */
 class MakcuMoveVisibilityGate final {
 public:
+  /** Legacy single-generation overload retained for isolated adapters/tests. */
   void arm(
       std::uint64_t source_sequence, std::uint64_t acknowledged_at_us,
+      std::uint64_t minimum_visibility_us) noexcept {
+    arm({1U, source_sequence}, acknowledged_at_us, minimum_visibility_us);
+  }
+
+  void arm(
+      MakcuFrameIdentity source_identity, std::uint64_t acknowledged_at_us,
       std::uint64_t minimum_visibility_us) noexcept {
     std::scoped_lock lock(visibility_mutex_);
     constexpr std::uint64_t maximum =
         std::numeric_limits<std::uint64_t>::max();
-    source_sequence_ = source_sequence;
+    source_identity_ = source_identity;
     armed_at_us_ = acknowledged_at_us;
     visible_not_before_us_ =
         acknowledged_at_us > maximum - minimum_visibility_us
         ? maximum
         : acknowledged_at_us + minimum_visibility_us;
-    armed_ = source_sequence != 0U && acknowledged_at_us != 0U;
-    if (!armed_) {
-      source_sequence_ = 0U;
-      armed_at_us_ = 0U;
-      visible_not_before_us_ = 0U;
-    }
+    armed_ = source_identity.valid() && acknowledged_at_us != 0U;
+    if (!armed_) clear_locked();
+  }
+
+  /** Legacy single-generation overload retained for isolated adapters/tests. */
+  [[nodiscard]] MakcuMoveVisibilityDecision evaluate(
+      std::uint64_t frame_sequence, std::uint64_t observed_at_us,
+      bool content_updated, std::uint64_t now_us,
+      std::uint64_t maximum_wait_us) noexcept {
+    return evaluate(
+        {1U, frame_sequence}, observed_at_us, content_updated, now_us,
+        maximum_wait_us);
   }
 
   /**
    * Evaluates the post-ACK causal barrier and gives an otherwise permanent
    * wait a bounded terminal state. A qualifying fresh frame always wins over
-   * the timeout at the same observation, because it is the exact evidence the
-   * barrier was waiting for. A timeout never authorizes movement; callers must
-   * fail closed and start their normal recovery path.
+   * timeout at the same observation. Timeout never authorizes movement;
+   * callers must fail closed and enter the normal recovery path.
    */
   [[nodiscard]] MakcuMoveVisibilityDecision evaluate(
-      std::uint64_t frame_sequence, std::uint64_t observed_at_us,
+      MakcuFrameIdentity frame_identity, std::uint64_t observed_at_us,
       bool content_updated, std::uint64_t now_us,
       std::uint64_t maximum_wait_us) noexcept {
     std::scoped_lock lock(visibility_mutex_);
     if (!armed_) return MakcuMoveVisibilityDecision::open;
-    if (content_updated && frame_sequence > source_sequence_ &&
+    if (content_updated && frame_identity.newer_than(source_identity_) &&
         observed_at_us >= visible_not_before_us_) {
       clear_locked();
       return MakcuMoveVisibilityDecision::became_visible;
@@ -301,9 +371,16 @@ public:
   [[nodiscard]] bool consume_if_visible(
       std::uint64_t frame_sequence, std::uint64_t observed_at_us,
       bool content_updated, bool* became_visible = nullptr) noexcept {
+    return consume_if_visible(
+        {1U, frame_sequence}, observed_at_us, content_updated, became_visible);
+  }
+
+  [[nodiscard]] bool consume_if_visible(
+      MakcuFrameIdentity frame_identity, std::uint64_t observed_at_us,
+      bool content_updated, bool* became_visible = nullptr) noexcept {
     if (became_visible != nullptr) *became_visible = false;
     const MakcuMoveVisibilityDecision decision = evaluate(
-        frame_sequence, observed_at_us, content_updated, 0U, 0U);
+        frame_identity, observed_at_us, content_updated, 0U, 0U);
     if (decision == MakcuMoveVisibilityDecision::became_visible) {
       if (became_visible != nullptr) *became_visible = true;
       return true;
@@ -325,7 +402,8 @@ public:
     std::scoped_lock lock(visibility_mutex_);
     return {
         .armed = armed_,
-        .source_sequence = source_sequence_,
+        .source_generation = source_identity_.stream_generation,
+        .source_sequence = source_identity_.source_sequence,
         .armed_at_us = armed_at_us_,
         .visible_not_before_us = visible_not_before_us_,
     };
@@ -334,14 +412,14 @@ public:
 private:
   void clear_locked() noexcept {
     armed_ = false;
-    source_sequence_ = 0U;
+    source_identity_ = {};
     armed_at_us_ = 0U;
     visible_not_before_us_ = 0U;
   }
 
   mutable std::mutex visibility_mutex_;
   bool armed_{};
-  std::uint64_t source_sequence_{};
+  MakcuFrameIdentity source_identity_{};
   std::uint64_t armed_at_us_{};
   std::uint64_t visible_not_before_us_{};
 };

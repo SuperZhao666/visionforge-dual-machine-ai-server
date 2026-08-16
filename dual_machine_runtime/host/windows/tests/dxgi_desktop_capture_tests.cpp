@@ -49,8 +49,8 @@ int main() {
         return 77;
     }
     const vfdual::DesktopCaptureRegion region{
-        (output->width - kCaptureEdge) / 2U,
-        (output->height - kCaptureEdge) / 2U,
+        static_cast<std::int32_t>((output->width - kCaptureEdge) / 2U),
+        static_cast<std::int32_t>((output->height - kCaptureEdge) / 2U),
         kCaptureEdge,
         kCaptureEdge,
     };

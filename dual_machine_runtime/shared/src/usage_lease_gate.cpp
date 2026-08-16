@@ -212,33 +212,51 @@ void UsageLeaseGate::revoke() {
 
 UsageLeaseGateSnapshot UsageLeaseGate::evaluate_locked(
     const std::uint64_t trusted_now_epoch) {
+    const auto state_only_snapshot = [this]() {
+        UsageLeaseGateSnapshot snapshot{};
+        snapshot.state = state_;
+        return snapshot;
+    };
+    const auto current_snapshot = [this](
+        const bool permits_data_plane,
+        const bool future_ticket_staged) {
+        UsageLeaseGateSnapshot snapshot{};
+        snapshot.state = state_;
+        snapshot.permits_data_plane = permits_data_plane;
+        snapshot.future_ticket_staged = future_ticket_staged;
+        if (current_.has_value()) {
+            snapshot.current_ticket_sha256 = current_->ticket_sha256;
+            snapshot.sequence = current_->claims.sequence;
+            snapshot.not_before_epoch = current_->claims.not_before_epoch;
+            snapshot.expires_at_epoch = current_->claims.expires_at_epoch;
+        }
+        if (future_.has_value()) {
+            snapshot.future_ticket_sha256 = future_->ticket_sha256;
+        }
+        return snapshot;
+    };
+
     if (terminal(state_)) {
-        return UsageLeaseGateSnapshot{.state = state_};
+        return state_only_snapshot();
     }
     if (trusted_now_epoch == 0U) {
         if (last_trusted_now_epoch_ != 0U) {
             close_locked(UsageLeaseGateState::trusted_time_rollback);
         }
-        return UsageLeaseGateSnapshot{.state = state_};
+        return state_only_snapshot();
     }
     if (last_trusted_now_epoch_ != 0U &&
         trusted_now_epoch < last_trusted_now_epoch_) {
         close_locked(UsageLeaseGateState::trusted_time_rollback);
-        return UsageLeaseGateSnapshot{.state = state_};
+        return state_only_snapshot();
     }
     last_trusted_now_epoch_ = trusted_now_epoch;
 
     if (state_ == UsageLeaseGateState::expired && current_.has_value()) {
-        return UsageLeaseGateSnapshot{
-            .state = state_,
-            .current_ticket_sha256 = current_->ticket_sha256,
-            .sequence = current_->claims.sequence,
-            .not_before_epoch = current_->claims.not_before_epoch,
-            .expires_at_epoch = current_->claims.expires_at_epoch,
-        };
+        return current_snapshot(false, false);
     }
     if (state_ != UsageLeaseGateState::active || !current_.has_value()) {
-        return UsageLeaseGateSnapshot{.state = state_};
+        return state_only_snapshot();
     }
 
     if (trusted_now_epoch >= current_->claims.expires_at_epoch) {
@@ -249,31 +267,14 @@ UsageLeaseGateSnapshot UsageLeaseGate::evaluate_locked(
             future_.reset();
         } else {
             expire_locked();
-            return UsageLeaseGateSnapshot{
-                .state = state_,
-                .current_ticket_sha256 = current_->ticket_sha256,
-                .sequence = current_->claims.sequence,
-                .not_before_epoch = current_->claims.not_before_epoch,
-                .expires_at_epoch = current_->claims.expires_at_epoch,
-            };
+            return current_snapshot(false, false);
         }
     }
 
     const bool within_window =
         trusted_now_epoch >= current_->claims.not_before_epoch &&
         trusted_now_epoch < current_->claims.expires_at_epoch;
-    return UsageLeaseGateSnapshot{
-        .state = state_,
-        .permits_data_plane = within_window,
-        .future_ticket_staged = future_.has_value(),
-        .current_ticket_sha256 = current_->ticket_sha256,
-        .future_ticket_sha256 = future_.has_value()
-            ? future_->ticket_sha256
-            : std::string{},
-        .sequence = current_->claims.sequence,
-        .not_before_epoch = current_->claims.not_before_epoch,
-        .expires_at_epoch = current_->claims.expires_at_epoch,
-    };
+    return current_snapshot(within_window, future_.has_value());
 }
 
 void UsageLeaseGate::expire_locked() {

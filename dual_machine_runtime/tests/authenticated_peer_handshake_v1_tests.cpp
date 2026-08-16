@@ -214,7 +214,7 @@ template <std::size_t Size>
     return result;
 }
 
-[[nodiscard]] std::vector<std::byte> concatenate(
+[[nodiscard, maybe_unused]] std::vector<std::byte> concatenate(
     const vfdual::PeerHandshakeDataPlaneKeyView material) {
     std::vector<std::byte> result;
     result.reserve(
@@ -256,7 +256,7 @@ template <typename Left, typename Right>
         "4d5b14dc32bf656ef6c6bd58a5d943f92");
 }
 
-[[nodiscard]] vfdual::PeerHandshakeP256PublicKey scalar_three_public_key() {
+[[nodiscard, maybe_unused]] vfdual::PeerHandshakeP256PublicKey scalar_three_public_key() {
     return array_from_hex<vfdual::kPeerHandshakeP256PublicKeyBytes>(
         "045ecbe4d1a6330a44c8f7ef951d4bf1"
         "65e6c6b721efada985fb41661bc6e7fd6"
@@ -264,7 +264,7 @@ template <typename Left, typename Right>
         "cd82ab036384fb83d9a79b127a27d5032");
 }
 
-[[nodiscard]] std::array<std::byte, 32U> scalar(
+[[nodiscard, maybe_unused]] std::array<std::byte, 32U> scalar(
     const std::uint16_t value) {
     std::array<std::byte, 32U> result{};
     result[30] = std::byte{static_cast<std::uint8_t>(value >> 8U)};
@@ -399,7 +399,7 @@ tlv_ranges(const std::span<const std::byte> canonical) {
     return result;
 }
 
-void verify_frozen_transcript_vector() {
+[[maybe_unused]] void verify_frozen_transcript_vector() {
     const auto built = build_vector_transcript();
     CHECK(built.succeeded());
     CHECK(built.transcript->canonical_bytes().size() == 439U);
@@ -444,7 +444,7 @@ void verify_frozen_transcript_vector() {
     CHECK(parsed.transcript->fields().control_port == 45679U);
 }
 
-void verify_strict_tlv_rejections() {
+[[maybe_unused]] void verify_strict_tlv_rejections() {
     const auto built = build_vector_transcript();
     CHECK(built.succeeded());
     const auto canonical = built.transcript->canonical_bytes();
@@ -549,7 +549,7 @@ void verify_strict_tlv_rejections() {
         vfdual::PeerHandshakeErrorCode::invalid_field_length);
 }
 
-void verify_field_validation_boundaries() {
+[[maybe_unused]] void verify_field_validation_boundaries() {
     auto fields = vector_fields();
     fields.host_identity_spki_sha256.fill(std::byte{0U});
     expect_build_error(
@@ -724,7 +724,7 @@ void verify_field_validation_boundaries() {
         static_cast<vfdual::PeerHandshakePairIdRequirement>(0U));
 }
 
-void verify_every_accepted_field_mutation_changes_transcript_hash() {
+[[maybe_unused]] void verify_every_accepted_field_mutation_changes_transcript_hash() {
     const auto baseline = build_vector_transcript();
     CHECK(baseline.succeeded());
     std::vector<vfdual::PeerHandshakeTranscriptFields> mutations;

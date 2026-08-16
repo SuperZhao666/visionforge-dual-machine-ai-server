@@ -189,7 +189,7 @@ void expect_build_error(
     CHECK(result.error.code == expected);
 }
 
-void verify_frozen_vector_and_restricted_final_mapping() {
+[[maybe_unused]] void verify_frozen_vector_and_restricted_final_mapping() {
     vfdual::PairGenerationProposalFields fields = vector_fields();
     const auto result = vfdual::build_pair_generation_proposal_v1(fields);
     CHECK(result.succeeded());
@@ -249,7 +249,7 @@ void verify_frozen_vector_and_restricted_final_mapping() {
     CHECK(contains_nonzero(result.proposal->fields().host_nonce));
 }
 
-void verify_strict_parser() {
+[[maybe_unused]] void verify_strict_parser() {
     const auto built =
         vfdual::build_pair_generation_proposal_v1(vector_fields());
     CHECK(built.succeeded());
@@ -419,7 +419,7 @@ void verify_unsupported_platform_fails_closed() {
 }
 #endif
 
-void verify_generation_boundary_and_sanitized_errors() {
+[[maybe_unused]] void verify_generation_boundary_and_sanitized_errors() {
     const auto proposal =
         vfdual::build_pair_generation_proposal_v1(vector_fields());
     CHECK(proposal.succeeded());

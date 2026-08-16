@@ -19,7 +19,8 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(!projectDirectory.isEmpty());
         Path servicePath = Paths.get(projectDirectory, "src", "main", "java", "com",
                 "visionforge", "inferencebenchmark", "MobileRuntimeService.java");
-        String source = new String(Files.readAllBytes(servicePath), StandardCharsets.UTF_8);
+        String source = new String(Files.readAllBytes(servicePath), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
         Path gradlePath = Paths.get(projectDirectory, "build.gradle");
         String gradleSource = new String(
                 Files.readAllBytes(gradlePath), StandardCharsets.UTF_8);
@@ -133,7 +134,8 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         Path activityPath = Paths.get(projectDirectory, "src", "main", "java", "com",
                 "visionforge", "inferencebenchmark", "MainActivity.java");
         String activity = new String(
-                Files.readAllBytes(activityPath), StandardCharsets.UTF_8);
+                Files.readAllBytes(activityPath), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
         Path runtimePresentationPolicyPath = Paths.get(
                 projectDirectory, "src", "main", "java", "com",
                 "visionforge", "inferencebenchmark",
@@ -165,7 +167,8 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         Path dualMachineReceiverPath = Paths.get(projectDirectory, "src", "main", "cpp",
                 "DualMachineReceiver.cpp");
         String dualMachineReceiver = new String(
-                Files.readAllBytes(dualMachineReceiverPath), StandardCharsets.UTF_8);
+                Files.readAllBytes(dualMachineReceiverPath), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
         Path controlRuntimePath = Paths.get(projectDirectory, "src", "main", "java", "com",
                 "visionforge", "inferencebenchmark", "MobileControlRuntime.java");
         String controlRuntime = new String(
@@ -1354,11 +1357,15 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(hostVideoPresenceProbeSource.contains(
                 "cancellationObserved(cancellationRequested, generation)"));
         require(hostVideoPresenceProbeSource.contains(
-                "header.isFrameStart()"));
+                "HostVideoPreflightVerifier"));
         require(hostVideoPresenceProbeSource.contains(
+                "verifier.offer("));
+        require(hostVideoPresenceProbeSource.contains(
+                "proof.confirmedCompleteAccessUnits()"));
+        require(!hostVideoPresenceProbeSource.contains(
+                "previousFrameStart"));
+        require(!hostVideoPresenceProbeSource.contains(
                 "VideoWireProtocol.isForwardFrameStart("));
-        require(hostVideoPresenceProbeSource.contains(
-                "VideoWireProtocol.parse("));
         require(!hostVideoPresenceProbeSource.contains("VFRG"));
         require(!hostVideoPresenceProbeSource.contains("VFRR"));
         require(source.contains("WifiManager.WIFI_MODE_FULL_HIGH_PERF"));

@@ -80,6 +80,11 @@ add_library(vfdual_protocol STATIC
 )
 target_include_directories(vfdual_protocol PUBLIC shared/include)
 target_compile_definitions(vfdual_protocol PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+if(MSVC)
+    target_compile_options(vfdual_protocol PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(vfdual_protocol PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
 if(WIN32)
     target_link_libraries(vfdual_protocol PRIVATE bcrypt)
 endif()
@@ -258,6 +263,7 @@ if(WIN32)
         host/windows/src/isolated_dhcp_server.cpp
         host/windows/src/host_cat6_monitor.cpp
         host/windows/src/host_runtime_service.cpp
+        e2e_core/src/host/infrastructure/file_epoch_reservation_store.cpp
         host/windows/src/host_runtime_facade.cpp
         host/windows/src/host_endpoint_discovery_facade.cpp
         host/windows/src/host_ui_telemetry.cpp
@@ -306,10 +312,11 @@ if(WIN32)
     endif()
     target_include_directories(VisionForgeHost PRIVATE
         "${VFDUAL_GENERATED_RESOURCE_DIRECTORY}"
+        e2e_core/include
         host/windows
         host/windows/include
         third_party/nv-codec-headers/include)
-    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
+    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
         mfplat mf mfuuid wmcodecdspuuid ole32 oleaut32 user32 gdi32 shell32 dwmapi dbghelp)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         # Keep the repository-owned manifest as the single manifest input.
@@ -507,6 +514,19 @@ enable_testing()
 add_executable(vfdual_protocol_tests tests/protocol_tests.cpp)
 target_link_libraries(vfdual_protocol_tests PRIVATE vfdual_protocol)
 add_test(NAME vfdual_protocol_tests COMMAND vfdual_protocol_tests)
+
+# Non-gating microbenchmark: reports the production zero-copy decoder against
+# the former per-datagram owning path. Correctness is mandatory; wall-clock
+# ratios are evidence only and are never used as a flaky CI pass threshold.
+add_executable(vfdual_video_packet_decode_benchmark
+    tests/video_packet_decode_benchmark.cpp)
+target_link_libraries(vfdual_video_packet_decode_benchmark PRIVATE vfdual_protocol)
+if(MSVC)
+    target_compile_options(vfdual_video_packet_decode_benchmark PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(vfdual_video_packet_decode_benchmark PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+endif()
 
 add_executable(vfdual_video_transport_contract_tests
     tests/video_transport_contract_tests.cpp)
@@ -915,6 +935,18 @@ if(WIN32)
         PRIVATE host/windows/include)
     target_link_libraries(vfdual_udp_socket_tests PRIVATE ws2_32)
     add_test(NAME vfdual_udp_socket_tests COMMAND vfdual_udp_socket_tests)
+endif()
+
+# The MAKCU ticket/visibility gate is platform-independent. Build it on
+# non-Windows CI as well so generation-bound ACK semantics cannot regress just
+# because the full Host/Android toolchains are unavailable.
+if(NOT WIN32)
+    add_executable(vfdual_makcu_output_gate_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp/MakcuOutputGateTests.cpp)
+    target_include_directories(vfdual_makcu_output_gate_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp)
+    target_link_libraries(vfdual_makcu_output_gate_tests PRIVATE Threads::Threads)
+    add_test(NAME vfdual_makcu_output_gate_tests COMMAND vfdual_makcu_output_gate_tests)
 endif()
 
 function(vfdual_add_e2e_domain_test target source)

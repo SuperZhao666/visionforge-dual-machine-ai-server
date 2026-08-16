@@ -22,6 +22,8 @@ REQUIRED_FILES = (
     "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeReadModel.java",
     "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/MobileRuntimeCompositionRoot.java",
     "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/VideoPreflightReassemblyWindow.java",
+    "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/VideoReassemblyResult.java",
+    "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/HostVideoPreflightVerifier.java",
     "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/video/VideoFragmentHeader.java",
     "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/control/ExactCommandTicket.java",
     "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/domain/control/PostAckVisibilityGate.java",
@@ -32,6 +34,7 @@ REQUIRED_FILES = (
     "dual_machine_runtime/e2e_core/include/vf/host/application/host_streaming_orchestrator.hpp",
     "dual_machine_runtime/e2e_core/include/vf/host/domain/video_pipeline_status.hpp",
     "dual_machine_runtime/shared/include/vfdual/video_transport_contract.hpp",
+    "dual_machine_runtime/shared/include/vfdual/receiver_epoch_session.hpp",
 )
 
 COMPLEXITY_BUDGETS = {
@@ -42,6 +45,10 @@ COMPLEXITY_BUDGETS = {
     "dual_machine_runtime/host/windows/src/host_runtime_service.cpp": 2180,
     "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/MobileRuntimeCompositionRoot.java": 500,
     "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/VideoPreflightReassemblyWindow.java": 450,
+    "android_inference_benchmark/app/src/main/java/com/visionforge/mobile/application/VideoReassemblyResult.java": 80,
+    "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbe.java": 475,
+    "android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/video/HostVideoPreflightVerifier.java": 220,
+    "dual_machine_runtime/shared/src/access_unit_reassembler.cpp": 340,
 }
 
 

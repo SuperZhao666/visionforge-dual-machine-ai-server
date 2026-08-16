@@ -36,8 +36,10 @@ public final class VideoWireProtocolSelfTest {
 
         byte[] newEpoch = VideoWireProtocol.encodeForTest(
                 new VideoFrameIdentity(78L, 0L), false, 0, 1, new byte[] {1});
-        require(!VideoWireProtocol.isForwardFrameStart(
+        require(VideoWireProtocol.isForwardFrameStart(
                 repeatedHeader, VideoWireProtocol.parse(newEpoch, newEpoch.length)));
+        require(!VideoWireProtocol.isForwardFrameStart(
+                VideoWireProtocol.parse(newEpoch, newEpoch.length), repeatedHeader));
         require(VideoWireProtocol.HEADER_BYTES == 20);
     }
 

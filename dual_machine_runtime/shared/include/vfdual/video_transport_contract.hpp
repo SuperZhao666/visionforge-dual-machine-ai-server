@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <optional>
 
 namespace vfdual {
@@ -45,8 +44,8 @@ enum class VideoEpochObservation : std::uint8_t {
  *
  * A new epoch starts as a candidate.  It becomes active only after the caller
  * has reassembled and validated a complete IDR and the decoder restart gate
- * has accepted it.  Active and rejected candidates are remembered in a
- * bounded retired ring so late UDP traffic can never reclaim the session.
+ * has accepted it.  Retirement uses a monotonic high-water mark rather than a
+ * bounded ring, so history pressure can never make an old epoch admissible.
  */
 class VideoEpochCoordinator final {
  public:
@@ -61,15 +60,17 @@ class VideoEpochCoordinator final {
   [[nodiscard]] std::optional<std::uint64_t> active_epoch() const noexcept;
   [[nodiscard]] std::optional<std::uint64_t> candidate_epoch() const noexcept;
   [[nodiscard]] bool is_retired(std::uint64_t stream_epoch) const noexcept;
+  /** Historic API: now reports how many times the monotonic watermark advanced. */
   [[nodiscard]] std::size_t retired_count() const noexcept;
+  [[nodiscard]] std::optional<std::uint64_t> retired_through() const noexcept;
 
  private:
   void retire(std::uint64_t stream_epoch) noexcept;
 
-  std::size_t retired_capacity_{};
   std::optional<std::uint64_t> active_epoch_;
   std::optional<std::uint64_t> candidate_epoch_;
-  std::deque<std::uint64_t> retired_epochs_;
+  std::optional<std::uint64_t> retired_through_;
+  std::size_t retirement_advances_{};
 };
 
 /**

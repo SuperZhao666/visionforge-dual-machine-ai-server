@@ -72,10 +72,12 @@ public final class VideoWireProtocol {
             VideoFragmentHeader previous,
             VideoFragmentHeader current) {
         if (previous == null || current == null
-                || !previous.isFrameStart() || !current.isFrameStart()
-                || previous.identity.streamEpoch != current.identity.streamEpoch) {
+                || !previous.isFrameStart() || !current.isFrameStart()) {
             return false;
         }
-        return current.identity.frameSequence > previous.identity.frameSequence;
+        // A Host restart legitimately advances the epoch while resetting the
+        // 32-bit frame sequence to zero. Comparing only the sequence would
+        // therefore reject the first healthy frame of every new Host session.
+        return current.identity.compareTo(previous.identity) > 0;
     }
 }

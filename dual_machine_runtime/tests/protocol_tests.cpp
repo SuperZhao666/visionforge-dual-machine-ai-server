@@ -144,6 +144,21 @@ int main() {
     CHECK(!ordered_reassembler.push(frame_20_first, 23U));
     CHECK(ordered_reassembler.inflight_frame_count() == 0U);
 
+    // A candidate IDR may be admitted directly by the session preflight gate.
+    // Seed its sequence so out-of-order prediction frames cannot overtake a
+    // missing predecessor immediately after an epoch/decoder transition.
+    vfdual::AccessUnitReassembler seeded_reassembler;
+    CHECK(seeded_reassembler.activate_epoch(22U, 40U));
+    const vfdual::VideoFragment frame_42_complete{
+        {22U, 42U}, false, 0U, 1U, {std::byte{'C'}}};
+    const vfdual::VideoFragment frame_41_complete{
+        {22U, 41U}, false, 0U, 1U, {std::byte{'B'}}};
+    CHECK(!seeded_reassembler.push(frame_42_complete, 24U));
+    const auto seeded_41 = seeded_reassembler.push(frame_41_complete, 25U);
+    CHECK(seeded_41 && seeded_41->identity.frame_sequence == 41U);
+    const auto seeded_42 = seeded_reassembler.pop_completed();
+    CHECK(seeded_42 && seeded_42->identity.frame_sequence == 42U);
+
     vfdual::AccessUnitReassembler conflict_reassembler;
     CHECK(conflict_reassembler.activate_epoch(30U));
     CHECK(!conflict_reassembler.push(
@@ -172,6 +187,32 @@ int main() {
     CHECK(!epoch_reassembler.push(
         {{40U, 1U}, false, 0U, 1U, {std::byte{'Y'}}}, 2U));
     CHECK(epoch_reassembler.foreign_or_retired_epoch_drops() == 2U);
+
+    // Retirement must be permanent even after thousands of Host rotations.
+    for (std::uint64_t value = 42U; value <= 4'096U; ++value) {
+        CHECK(epoch_reassembler.activate_epoch(value));
+    }
+    CHECK(epoch_reassembler.retired_through() == 4'095U);
+    CHECK(epoch_reassembler.is_retired_epoch(40U));
+    CHECK(!epoch_reassembler.activate_epoch(40U));
+    CHECK(!epoch_reassembler.push(
+        {{40U, 2U}, false, 0U, 1U, {std::byte{'Z'}}}, 3U));
+
+    // Exact byte-budget admission: one incomplete AU may consume the entire
+    // budget, but a second byte must be rejected without overflow or leakage.
+    vfdual::AccessUnitReassembler byte_bounded(
+        4U, vfdual::kVideoPacketPayloadBytes);
+    CHECK(byte_bounded.activate_epoch(50U));
+    CHECK(!byte_bounded.push(
+        {{50U, 1U}, false, 0U, 2U,
+         std::vector<std::byte>(vfdual::kVideoPacketPayloadBytes,
+                                std::byte{'A'})}, 1U));
+    CHECK(byte_bounded.inflight_byte_count() ==
+          vfdual::kVideoPacketPayloadBytes);
+    CHECK(!byte_bounded.push(
+        {{50U, 2U}, false, 0U, 2U, {std::byte{'C'}}}, 2U));
+    CHECK(byte_bounded.inflight_byte_count() <=
+          vfdual::kVideoPacketPayloadBytes);
 
     const std::array<std::byte, 5> access_unit{
         std::byte{'1'}, std::byte{'2'}, std::byte{'3'},

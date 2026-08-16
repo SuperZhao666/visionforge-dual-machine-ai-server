@@ -89,6 +89,7 @@ private:
     struct Frame {
         std::uint16_t fragment_count{};
         std::vector<std::optional<std::vector<std::uint8_t>>> fragments;
+        std::uint16_t received_fragments{};
         std::size_t bytes{};
         TimePoint created_at{};
     };

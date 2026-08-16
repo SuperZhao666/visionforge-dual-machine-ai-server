@@ -20,7 +20,7 @@ void require(bool condition, const char* expression, const char* file, int line)
 #define VFDUAL_TEST_REQUIRE(expression) \
     require(static_cast<bool>(expression), #expression, __FILE__, __LINE__)
 
-std::string read_source(const char* relative_path) {
+    std::string read_source(const char* relative_path) {
     const std::string path = std::string{VFDUAL_SOURCE_DIR} + "/" + relative_path;
     std::ifstream input{path, std::ios::binary};
     VFDUAL_TEST_REQUIRE(input.good());

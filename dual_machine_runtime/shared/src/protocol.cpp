@@ -95,9 +95,9 @@ std::vector<std::byte> encode_video_packet(const VideoFragment& fragment) {
   return packet;
 }
 
-bool decode_video_packet(
+bool decode_video_packet_view(
     std::span<const std::byte> datagram,
-    VideoFragment& destination) noexcept {
+    VideoFragmentView& destination) noexcept {
   if (datagram.size() <= kVideoPacketHeaderBytes ||
       datagram.size() > kMaxDatagramBytes) {
     return false;
@@ -122,10 +122,23 @@ bool decode_video_packet(
   destination.repeated_content = magic == kVideoRepeatedPacketMagic;
   destination.fragment_index = index;
   destination.fragment_count = count;
+  destination.access_unit_part = datagram.subspan(kVideoPacketHeaderBytes);
+  return true;
+}
+
+bool decode_video_packet(
+    std::span<const std::byte> datagram,
+    VideoFragment& destination) noexcept {
+  VideoFragmentView view{};
+  if (!decode_video_packet_view(datagram, view)) {
+    return false;
+  }
+  destination.identity = view.identity;
+  destination.repeated_content = view.repeated_content;
+  destination.fragment_index = view.fragment_index;
+  destination.fragment_count = view.fragment_count;
   destination.access_unit_part.assign(
-      datagram.begin() +
-          static_cast<std::ptrdiff_t>(kVideoPacketHeaderBytes),
-      datagram.end());
+      view.access_unit_part.begin(), view.access_unit_part.end());
   return true;
 }
 }  // namespace vfdual
