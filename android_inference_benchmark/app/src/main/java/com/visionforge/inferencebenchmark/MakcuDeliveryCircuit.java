@@ -65,27 +65,3 @@ final class MakcuDeliveryCircuit {
         return singleLine.length() <= 160 ? singleLine : singleLine.substring(0, 160);
     }
 }
-
-/** Immutable delivery evidence consumed by the business coordinator and diagnostics. */
-final class MakcuDeliveryState {
-    final long usbWriteCompletionCount;
-    final long failureCount;
-    final long circuitTripCount;
-    final long lastUsbWriteCallMicros;
-    final int consecutiveFailures;
-    final boolean circuitOpen;
-    final String lastFailure;
-
-    MakcuDeliveryState(long usbWriteCompletionCount, long failureCount,
-                       long circuitTripCount, long lastUsbWriteCallMicros,
-                       int consecutiveFailures, boolean circuitOpen,
-                       String lastFailure) {
-        this.usbWriteCompletionCount = usbWriteCompletionCount;
-        this.failureCount = failureCount;
-        this.circuitTripCount = circuitTripCount;
-        this.lastUsbWriteCallMicros = lastUsbWriteCallMicros;
-        this.consecutiveFailures = consecutiveFailures;
-        this.circuitOpen = circuitOpen;
-        this.lastFailure = lastFailure == null ? "" : lastFailure;
-    }
-}

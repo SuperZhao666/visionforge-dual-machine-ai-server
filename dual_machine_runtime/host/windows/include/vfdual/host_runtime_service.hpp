@@ -59,7 +59,7 @@ struct HostStreamMetrics {
      * are scoped to this epoch; published_frames and capture_timeouts remain
      * continuous for the whole user-started stream.
      */
-    std::uint32_t stream_epoch{1U};
+    std::uint64_t stream_epoch{1U};
     std::uint64_t source_sequence{};
     std::uint64_t frame_id{};
     std::uint64_t capture_us{};

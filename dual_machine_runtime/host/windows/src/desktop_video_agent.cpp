@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 namespace vfdual {
 namespace {
@@ -75,6 +76,8 @@ DesktopVideoStepStatus map_capture_status(CaptureStatus status) noexcept {
             return DesktopVideoStepStatus::capture_outside_region;
         case CaptureStatus::access_lost:
             return DesktopVideoStepStatus::capture_access_lost;
+        case CaptureStatus::device_removed:
+            return DesktopVideoStepStatus::capture_device_removed;
         case CaptureStatus::frame_ready:
         case CaptureStatus::initialization_failed:
         case CaptureStatus::failed:
@@ -153,7 +156,8 @@ DesktopVideoInitializationStage hybrid_initialization_stage(
 bool DesktopVideoAgent::initialize(const DesktopVideoAgentConfig& config) noexcept {
     reset();
     if (config.local_host.empty() || config.phone_host.empty() ||
-        config.phone_port == 0U || config.encoder.width == 0U ||
+        config.phone_port == 0U || !valid_video_stream_epoch(config.stream_epoch) ||
+        config.encoder.width == 0U ||
         config.encoder.height == 0U || !config.data_plane_permit) {
         return fail_initialization(
             DesktopVideoInitializationStage::validate_config, E_INVALIDARG);
@@ -213,6 +217,7 @@ bool DesktopVideoAgent::initialize(const DesktopVideoAgentConfig& config) noexce
             candidate_ready = hybrid_pipeline_.initialize(
                 capture_.native_device(), capture_.native_context(),
                 HybridGpuVideoPipelineConfig{
+                    .stream_epoch = config.stream_epoch,
                     .encoder = config.encoder,
                     .local_host = config.local_host,
                     .local_port = config.local_port,
@@ -511,6 +516,16 @@ DesktopVideoStepMetrics DesktopVideoAgent::publish_next() noexcept {
         return result;
     }
 
+    if (next_frame_sequence_ == (std::numeric_limits<std::uint32_t>::max)()) {
+        // Force the owning runtime to rotate stream_epoch before any terminal
+        // sequence is published; sequence reuse inside one epoch is forbidden.
+        result.status = DesktopVideoStepStatus::publish_failed;
+        result.native_status = E_BOUNDS;
+        force_idr_next_ = true;
+        populate_common_metrics(result);
+        return result;
+    }
+
     const std::uint64_t encode_started = monotonic_microseconds();
     const bool periodic_idr = last_idr_us == 0U ||
         encode_started - last_idr_us >= kPeriodicIdrIntervalUs;
@@ -563,15 +578,32 @@ DesktopVideoStepMetrics DesktopVideoAgent::publish_next() noexcept {
     result.repeated_content = wire_repeated_content;
     const std::uint64_t publish_started = monotonic_microseconds();
     const VideoPublishResult published = publisher_.publish(
-        next_frame_id, access_unit, publish_started, wire_repeated_content);
+        {config_.stream_epoch, next_frame_sequence_}, access_unit,
+        publish_started, wire_repeated_content);
     const std::uint64_t publish_completed = monotonic_microseconds();
     result.publish_us = publish_completed - publish_started;
-    result.frame_id = next_frame_id;
-    next_frame_id = next_video_logical_frame_sequence(next_frame_id);
+    result.frame_id = next_frame_sequence_;
+    std::uint32_t following_sequence{};
+    const bool sequence_available = advance_video_frame_sequence(
+        next_frame_sequence_, following_sequence);
+    if (!sequence_available) {
+        result.status = DesktopVideoStepStatus::publish_failed;
+        result.native_status = E_BOUNDS;
+        force_idr_next_ = true;
+        populate_common_metrics(result);
+        return result;
+    }
+    next_frame_sequence_ = following_sequence;
     result.access_unit_bytes = encoded_bytes;
     describe_access_unit(access_unit, result);
     result.keyframe = encoded_keyframe;
-    if (encoded_keyframe) last_idr_us = encode_started;
+    if (published.completely_published() && encoded_keyframe) {
+        last_idr_us = encode_started;
+    } else if (explicit_recovery_idr || encoded_keyframe) {
+        // Partial keyframe publication leaves the Android reference chain
+        // unusable; request another real IDR on the next encode.
+        force_idr_next_ = true;
+    }
     result.datagrams_sent = published.fragments_sent;
     result.publish_stage = published.stage;
     if (result.capture_present_us != 0U &&
@@ -579,7 +611,7 @@ DesktopVideoStepMetrics DesktopVideoAgent::publish_next() noexcept {
         result.capture_to_publish_us =
             publish_completed - result.capture_present_us;
     }
-    if (!published.success) {
+    if (!published.completely_published()) {
         result.status = DesktopVideoStepStatus::publish_failed;
         result.native_status =
             static_cast<std::int32_t>(publisher_.last_socket_error());
@@ -715,7 +747,7 @@ void DesktopVideoAgent::release_runtime_resources() noexcept {
     hybrid_pipeline_.reset();
     hybrid_pipeline_active_ = false;
     async_shared_same_adapter_ = false;
-    next_frame_id = 0U;
+    next_frame_sequence_ = 0U;
     next_source_sequence_ = 0U;
     last_video_submission_us_ = 0U;
     last_submitted_content_sequence_ = 0U;

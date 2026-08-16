@@ -1,0 +1,17 @@
+FONT ASSETS INTENTIONALLY NOT REDISTRIBUTED
+
+The repaired source tree and all non-font runtime/vendor files are included.
+The following pre-existing font binaries from the user-supplied archive are not copied into this delivery.
+Restore them from the original archive at the exact paths below when a byte-for-byte local workspace is required.
+
+Path: android_inference_benchmark/app/src/main/assets/fonts/MaterialIcons-Regular.ttf
+Size: 356840
+SHA-256: ef149f08bdd2ff09a4e2c8573476b7b0f3fbb15b623954ade59899e7175bedda
+
+Path: server/visionforge-platform/deploy/xianyu-fulfillment/upstream/static/lib/bootstrap-icons/fonts/bootstrap-icons.woff
+Size: 176196
+SHA-256: 40f14c01ceff49ce457ff1e54fdf51b39498f845a85741cb08047172ac556bb9
+
+Path: server/visionforge-platform/deploy/xianyu-fulfillment/upstream/static/lib/bootstrap-icons/fonts/bootstrap-icons.woff2
+Size: 130764
+SHA-256: ae167342f8ad5aad834e774ddc99528b72ac9171a684f23ed79d83ea176ca04e

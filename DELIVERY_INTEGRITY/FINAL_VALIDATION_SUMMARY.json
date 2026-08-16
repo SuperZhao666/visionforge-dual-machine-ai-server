@@ -1,0 +1,19 @@
+{
+  "schema": "visionforge.mingsim.validation-summary.v2",
+  "final_git_head": "e33d08b390a7fbc74032f33aea37744c84ce4f6d",
+  "result": "PASS_WITH_EXPLICIT_ENVIRONMENT_AND_EXTERNAL_GAPS",
+  "evidence": {
+    "post_commit_portable_gate": "APP_HOST_E2E_RECONSTRUCTION/logs/app_host_portable_gate_post_commit.log",
+    "release_ctest": "APP_HOST_E2E_RECONSTRUCTION/logs/ctest_final_release_v2.log",
+    "sanitizer_ctest": "APP_HOST_E2E_RECONSTRUCTION/logs/ctest_sanitized.log",
+    "java_full": "APP_HOST_E2E_RECONSTRUCTION/logs/java_full_regression_final.log",
+    "java_strict": "APP_HOST_E2E_RECONSTRUCTION/logs/java_strict_regression_final.log",
+    "architecture": "APP_HOST_E2E_RECONSTRUCTION/logs/app_host_architecture_audit_final.json",
+    "protocol": "APP_HOST_E2E_RECONSTRUCTION/logs/video_transport_contract_audit_final.json",
+    "test_matrix": "APP_HOST_E2E_RECONSTRUCTION/docs/TEST_MATRIX.md"
+  },
+  "prohibited_claims": [
+    "zero defects in unexecuted hardware/provider environments",
+    "byte-identical recovery of the lost uncommitted worktree"
+  ]
+}

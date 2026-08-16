@@ -1,5 +1,8 @@
 package com.visionforge.inferencebenchmark;
 
+import com.visionforge.inferencebenchmark.video.VideoFrameIdentity;
+import com.visionforge.inferencebenchmark.video.VideoWireProtocol;
+
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.BindException;
@@ -13,10 +16,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * Development-only regression for the legacy v5 probe parser.
- * Formal release is blocked while this plaintext ABI remains reachable.
- */
+/** Development-only regression for the shared v6.0 VF2G/VF2R parser. */
 final class HostVideoPresenceProbeSelfTest {
     static void run() {
         acceptsNormalAndRepeatedVideoFragments();
@@ -64,17 +64,17 @@ final class HostVideoPresenceProbeSelfTest {
                 wrongMagic, wrongMagic.length));
 
         byte[] zeroCount = valid.clone();
-        writeUnsignedShort(zeroCount, 10, 0);
+        writeUnsignedShort(zeroCount, 18, 0);
         require(!HostVideoPresenceProbe.isValidVideoDatagram(
                 zeroCount, zeroCount.length));
 
         byte[] indexOutOfRange = valid.clone();
-        writeUnsignedShort(indexOutOfRange, 8, 1);
+        writeUnsignedShort(indexOutOfRange, 16, 1);
         require(!HostVideoPresenceProbe.isValidVideoDatagram(
                 indexOutOfRange, indexOutOfRange.length));
 
         byte[] excessiveCount = valid.clone();
-        writeUnsignedShort(excessiveCount, 10, 1_499);
+        writeUnsignedShort(excessiveCount, 18, 1_499);
         require(!HostVideoPresenceProbe.isValidVideoDatagram(
                 excessiveCount, excessiveCount.length));
         require(HostVideoPresenceProbe.logicalFrameSequence(
@@ -84,15 +84,18 @@ final class HostVideoPresenceProbeSelfTest {
     private static void extractsLogicalFrameSequenceWithoutRepeatFlag() {
         byte[] normal = packet(
                 HostVideoPresenceProbe.VIDEO_PACKET_MAGIC, 0, 1, 1);
-        writeInt(normal, 4, 0x0123_4567);
+        writeLong(normal, 4, 99L);
+        writeInt(normal, 12, 0x8123_4567);
+        require(HostVideoPresenceProbe.streamEpoch(normal, normal.length) == 99L);
         require(HostVideoPresenceProbe.logicalFrameSequence(
-                normal, normal.length) == 0x0123_4567L);
+                normal, normal.length) == 0x8123_4567L);
 
         byte[] repeated = packet(
                 HostVideoPresenceProbe.VIDEO_REPEATED_PACKET_MAGIC, 0, 1, 1);
-        writeInt(repeated, 4, 0x8123_4567);
+        writeLong(repeated, 4, 99L);
+        writeInt(repeated, 12, 37);
         require(HostVideoPresenceProbe.logicalFrameSequence(
-                repeated, repeated.length) == 0x0123_4567L);
+                repeated, repeated.length) == 37L);
     }
 
     private static void identifiesFrameStartsAndForwardSequences() {
@@ -107,9 +110,9 @@ final class HostVideoPresenceProbeSelfTest {
         require(HostVideoPresenceProbe.isForwardFrameSequence(100L, 101L));
         require(!HostVideoPresenceProbe.isForwardFrameSequence(100L, 100L));
         require(!HostVideoPresenceProbe.isForwardFrameSequence(1_000L, 900L));
-        require(HostVideoPresenceProbe.isForwardFrameSequence(
-                HostVideoPresenceProbe.LOGICAL_FRAME_ID_MASK - 1L, 1L));
         require(!HostVideoPresenceProbe.isForwardFrameSequence(
+                HostVideoPresenceProbe.LOGICAL_FRAME_ID_MASK, 0L));
+        require(HostVideoPresenceProbe.isForwardFrameSequence(
                 5L, HostVideoPresenceProbe.LOGICAL_FRAME_ID_MASK - 2L));
     }
 
@@ -205,14 +208,12 @@ final class HostVideoPresenceProbeSelfTest {
             int fragmentIndex,
             int fragmentCount,
             int payloadBytes) {
-        byte[] packet = new byte[
-                HostVideoPresenceProbe.VIDEO_HEADER_BYTES + payloadBytes];
-        writeInt(packet, 0, magic);
-        writeInt(packet, 4, 37);
-        writeUnsignedShort(packet, 8, fragmentIndex);
-        writeUnsignedShort(packet, 10, fragmentCount);
-        packet[HostVideoPresenceProbe.VIDEO_HEADER_BYTES] = 1;
-        return packet;
+        byte[] payload = new byte[payloadBytes];
+        payload[0] = 1;
+        return VideoWireProtocol.encodeForTest(
+                new VideoFrameIdentity(37L, 37L),
+                magic == HostVideoPresenceProbe.VIDEO_REPEATED_PACKET_MAGIC,
+                fragmentIndex, fragmentCount, payload);
     }
 
     private static void writeInt(byte[] bytes, int offset, int value) {
@@ -220,6 +221,12 @@ final class HostVideoPresenceProbeSelfTest {
         bytes[offset + 1] = (byte) (value >>> 16);
         bytes[offset + 2] = (byte) (value >>> 8);
         bytes[offset + 3] = (byte) value;
+    }
+
+    private static void writeLong(byte[] bytes, int offset, long value) {
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            bytes[offset++] = (byte) (value >>> shift);
+        }
     }
 
     private static void writeUnsignedShort(

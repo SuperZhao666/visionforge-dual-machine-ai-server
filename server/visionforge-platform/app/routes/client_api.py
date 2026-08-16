@@ -11,6 +11,7 @@ from app.config import config
 from app.database import get_connection
 from app.security import limiter
 from app.services.release_service import ReleaseService, ReleaseValidationError, public_manifest
+from dual_machine_service.release_manifest import CURRENT_RELEASE_ID, CURRENT_RELEASE_VERSION
 
 logger = logging.getLogger("client_api")
 router = APIRouter()
@@ -21,17 +22,24 @@ def _latest_release(channel: str = "stable") -> dict | None:
     return release_service.latest(channel)
 
 
+def _with_current_release_identity(payload: dict) -> dict:
+    result = dict(payload)
+    result["release_id"] = CURRENT_RELEASE_ID
+    result["release_version"] = CURRENT_RELEASE_VERSION
+    return result
+
+
 @router.get("/api/client/version")
 async def client_version():
     """Return the latest available client version and download info."""
     release = _latest_release("stable")
     if not release:
-        return {
-            "latest_version": "v17.8.81_update_lease_bridge_hardened",
+        return _with_current_release_identity({
+            "latest_version": CURRENT_RELEASE_VERSION,
             "download_url": str(config.SITE_URL or "").rstrip("/") + "/static/releases/",
             "release_notes": "稳定版本，推荐所有用户更新。",
-        }
-    return public_manifest(release)
+        })
+    return _with_current_release_identity(public_manifest(release))
 
 
 @router.get("/update/{channel}.json")
@@ -44,10 +52,10 @@ async def update_manifest(channel: str, schema: int | None = None):
     if not release:
         return JSONResponse({"ok": False, "message": "no published release"}, status_code=404)
     try:
-        return public_manifest(
+        return _with_current_release_identity(public_manifest(
             release,
             legacy_bridge_only=bool(release.get("payload_b64") and schema != 2),
-        )
+        ))
     except ReleaseValidationError as exc:
         return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
 

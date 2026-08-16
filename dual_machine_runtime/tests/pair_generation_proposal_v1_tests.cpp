@@ -341,12 +341,14 @@ void verify_builder_boundaries() {
     expect_build_error(
         fields,
         vfdual::PairGenerationProposalErrorCode::invalid_identity_binding);
+#if defined(_WIN32)
     fields = vector_fields();
     fields.host_ephemeral_public_key.fill(std::byte{0U});
     fields.host_ephemeral_public_key[0] = std::byte{0x04U};
     expect_build_error(
         fields,
         vfdual::PairGenerationProposalErrorCode::invalid_ephemeral_public_key);
+#endif
     fields = vector_fields();
     fields.android_ephemeral_public_key = fields.host_ephemeral_public_key;
     expect_build_error(
@@ -400,6 +402,22 @@ void verify_builder_boundaries() {
         fields,
         vfdual::PairGenerationProposalErrorCode::invalid_runtime_version);
 }
+
+#if !defined(_WIN32)
+void verify_unsupported_platform_fails_closed() {
+    const auto built =
+        vfdual::build_pair_generation_proposal_v1(vector_fields());
+    CHECK(!built.succeeded());
+    CHECK(built.error.code ==
+        vfdual::PairGenerationProposalErrorCode::crypto_unavailable);
+
+    const auto parsed = vfdual::parse_pair_generation_proposal_v1(
+        bytes_from_hex(kProposalCanonicalHex));
+    CHECK(!parsed.succeeded());
+    CHECK(parsed.error.code ==
+        vfdual::PairGenerationProposalErrorCode::crypto_unavailable);
+}
+#endif
 
 void verify_generation_boundary_and_sanitized_errors() {
     const auto proposal =
@@ -498,10 +516,14 @@ void verify_noexcept_allocation_boundaries_source_contract() {
 }  // namespace
 
 int main() {
+#if defined(_WIN32)
     verify_frozen_vector_and_restricted_final_mapping();
     verify_strict_parser();
-    verify_builder_boundaries();
     verify_generation_boundary_and_sanitized_errors();
+#else
+    verify_unsupported_platform_fails_closed();
+#endif
+    verify_builder_boundaries();
     verify_noexcept_allocation_boundaries_source_contract();
     std::cout << "pair_generation_proposal_v1_tests: PASS\n";
     return 0;

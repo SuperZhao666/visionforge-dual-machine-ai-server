@@ -1,0 +1,40 @@
+{
+  "schema": "visionforge.input-provenance.v1",
+  "files": [
+    {
+      "name": "DualMachineAI_Server_fix_VF-P2-004.zip",
+      "size_bytes": 117158379,
+      "sha256": "7c5ada9aef7134067a0aefb5e75139b205af2f4c3f40adbbca8004242d84fdc3",
+      "zip_entries": 7373,
+      "zip_crc_status": "PASS"
+    },
+    {
+      "name": "VisionForge_DualMachineAI_Server_complete_repair.zip",
+      "size_bytes": 178447414,
+      "sha256": "015ec5fcc8a019f8afc33dbc6f00e6ffb6d6c4e05c6e4d518246c5aa8e50f052",
+      "zip_entries": 2865,
+      "zip_crc_status": "PASS"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.zip",
+      "size_bytes": 178551005,
+      "sha256": "81142ce68b5c96a6bacc4bac6853b43e9505c3670c9f2c390183b32d41d0c7b7",
+      "zip_entries": 2878,
+      "zip_crc_status": "PASS"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15_MIRROR_A.zip",
+      "size_bytes": 178551005,
+      "sha256": "81142ce68b5c96a6bacc4bac6853b43e9505c3670c9f2c390183b32d41d0c7b7",
+      "zip_entries": 2878,
+      "zip_crc_status": "PASS"
+    },
+    {
+      "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15_MIRROR_B.zip",
+      "size_bytes": 178551005,
+      "sha256": "81142ce68b5c96a6bacc4bac6853b43e9505c3670c9f2c390183b32d41d0c7b7",
+      "zip_entries": 2878,
+      "zip_crc_status": "PASS"
+    }
+  ]
+}

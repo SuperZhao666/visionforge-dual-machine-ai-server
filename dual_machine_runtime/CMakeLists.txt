@@ -76,11 +76,43 @@ add_library(vfdual_protocol STATIC
     shared/src/protocol.cpp
     shared/src/usage_authorization_contract.cpp
     shared/src/usage_lease_gate.cpp
+    shared/src/video_transport_contract.cpp
 )
 target_include_directories(vfdual_protocol PUBLIC shared/include)
 target_compile_definitions(vfdual_protocol PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 if(WIN32)
     target_link_libraries(vfdual_protocol PRIVATE bcrypt)
+endif()
+
+# Platform-neutral App/Host domain model used as an executable architecture
+# specification.  The production adapters above keep their native APIs, while
+# this library compiles the protocol, epoch, bounded-reassembly, complete-IDR
+# delivery and control-ticket invariants on every CI worker.
+find_package(Threads REQUIRED)
+add_library(vfdual_e2e_domain_core STATIC
+    e2e_core/src/wire_protocol.cpp
+    e2e_core/src/video_transport_contract.cpp
+    e2e_core/src/reassembly.cpp
+    e2e_core/src/recovery.cpp
+    e2e_core/src/host_pipeline.cpp
+    e2e_core/src/host/domain/decoded_frame_metadata_ledger.cpp
+    e2e_core/src/host/domain/stream_identity_generator.cpp
+    e2e_core/src/host/domain/virtual_desktop_mapper.cpp
+    e2e_core/src/host/domain/video_pipeline_status.cpp
+    e2e_core/src/host/application/video_delivery_ledger.cpp
+    e2e_core/src/host/application/control_command_coordinator.cpp
+    e2e_core/src/host/application/host_streaming_orchestrator.cpp
+    e2e_core/src/host/infrastructure/datagram_fragmenter.cpp
+    e2e_core/src/host/infrastructure/file_epoch_reservation_store.cpp
+    e2e_core/src/host/interfaces/host_runtime_facade.cpp
+    e2e_core/src/host/interfaces/host_runtime_composition_root.cpp
+)
+target_include_directories(vfdual_e2e_domain_core PUBLIC e2e_core/include)
+target_link_libraries(vfdual_e2e_domain_core PUBLIC Threads::Threads)
+if(MSVC)
+    target_compile_options(vfdual_e2e_domain_core PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(vfdual_e2e_domain_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 # Cryptographic foundation only.  Do not link this target into VisionForgeHost
@@ -226,6 +258,8 @@ if(WIN32)
         host/windows/src/isolated_dhcp_server.cpp
         host/windows/src/host_cat6_monitor.cpp
         host/windows/src/host_runtime_service.cpp
+        host/windows/src/host_runtime_facade.cpp
+        host/windows/src/host_endpoint_discovery_facade.cpp
         host/windows/src/host_ui_telemetry.cpp
         host/windows/src/host_outbound_rate_tracker.cpp
         host/windows/src/host_application.cpp
@@ -442,6 +476,14 @@ if(WIN32)
         ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp)
     add_test(NAME vfdual_makcu_output_gate_tests COMMAND vfdual_makcu_output_gate_tests)
 
+    add_executable(vfdual_control_blocker_state_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp/ControlBlockerStateTests.cpp
+    )
+    target_include_directories(vfdual_control_blocker_state_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp)
+    add_test(NAME vfdual_control_blocker_state_tests
+        COMMAND vfdual_control_blocker_state_tests)
+
     add_executable(vfdual_yolo_postprocessor_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp/YoloPostprocessorTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../android_inference_benchmark/app/src/main/cpp/YoloPostprocessor.cpp
@@ -465,6 +507,51 @@ enable_testing()
 add_executable(vfdual_protocol_tests tests/protocol_tests.cpp)
 target_link_libraries(vfdual_protocol_tests PRIVATE vfdual_protocol)
 add_test(NAME vfdual_protocol_tests COMMAND vfdual_protocol_tests)
+
+add_executable(vfdual_video_transport_contract_tests
+    tests/video_transport_contract_tests.cpp)
+target_link_libraries(vfdual_video_transport_contract_tests PRIVATE vfdual_protocol)
+add_test(NAME vfdual_video_transport_contract_tests
+    COMMAND vfdual_video_transport_contract_tests)
+
+add_executable(vfdual_video_transport_simulation_tests
+    tests/video_transport_simulation_tests.cpp)
+target_link_libraries(vfdual_video_transport_simulation_tests PRIVATE vfdual_protocol)
+add_test(NAME vfdual_video_transport_simulation_tests
+    COMMAND vfdual_video_transport_simulation_tests)
+
+add_executable(vfdual_video_delivery_ledger_tests
+    tests/video_delivery_ledger_tests.cpp)
+target_include_directories(vfdual_video_delivery_ledger_tests PRIVATE shared/include)
+add_test(NAME vfdual_video_delivery_ledger_tests
+    COMMAND vfdual_video_delivery_ledger_tests)
+
+add_executable(vfdual_video_pipeline_status_tests
+    tests/video_pipeline_status_tests.cpp)
+target_include_directories(vfdual_video_pipeline_status_tests PRIVATE shared/include)
+add_test(NAME vfdual_video_pipeline_status_tests
+    COMMAND vfdual_video_pipeline_status_tests)
+
+add_executable(vfdual_receiver_epoch_session_tests
+    tests/receiver_epoch_session_tests.cpp)
+target_include_directories(vfdual_receiver_epoch_session_tests PRIVATE shared/include)
+add_test(NAME vfdual_receiver_epoch_session_tests
+    COMMAND vfdual_receiver_epoch_session_tests)
+
+add_executable(vfdual_host_capture_region_tests
+    host/windows/tests/host_capture_region_tests.cpp)
+target_include_directories(vfdual_host_capture_region_tests PRIVATE
+    host/windows/include)
+add_test(NAME vfdual_host_capture_region_tests
+    COMMAND vfdual_host_capture_region_tests)
+
+add_executable(vfdual_decoded_frame_metadata_ledger_tests
+    ../android_inference_benchmark/app/src/main/cpp/DecodedFrameMetadataLedgerTests.cpp)
+target_include_directories(vfdual_decoded_frame_metadata_ledger_tests PRIVATE
+    ../android_inference_benchmark/app/src/main/cpp
+    shared/include)
+add_test(NAME vfdual_decoded_frame_metadata_ledger_tests
+    COMMAND vfdual_decoded_frame_metadata_ledger_tests)
 
 add_executable(vfdual_usage_authorization_contract_tests
     tests/usage_authorization_contract_tests.cpp)
@@ -829,6 +916,29 @@ if(WIN32)
     target_link_libraries(vfdual_udp_socket_tests PRIVATE ws2_32)
     add_test(NAME vfdual_udp_socket_tests COMMAND vfdual_udp_socket_tests)
 endif()
+
+function(vfdual_add_e2e_domain_test target source)
+    add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE vfdual_e2e_domain_core)
+    target_include_directories(${target} PRIVATE e2e_core/tests)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_native_tests e2e_core/tests/native_tests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_decoded_frame_metadata_tests e2e_core/tests/DecodedFrameMetadataLedgerTests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_video_delivery_tests e2e_core/tests/video_delivery_ledger_tests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_video_pipeline_status_tests e2e_core/tests/video_pipeline_status_tests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_transport_contract_tests e2e_core/tests/video_transport_contract_tests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_host_facade_tests e2e_core/tests/host_runtime_facade_tests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_epoch_store_tests e2e_core/tests/stream_identity_epoch_store_tests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_virtual_desktop_tests e2e_core/tests/virtual_desktop_mapper_tests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_control_ticket_tests e2e_core/tests/control_command_coordinator_tests.cpp)
+vfdual_add_e2e_domain_test(vfdual_e2e_domain_composition_root_tests e2e_core/tests/host_runtime_composition_root_tests.cpp)
 
 # The native contracts intentionally use the standard assert macro. Release
 # configurations define NDEBUG globally, so undefine it for test executables

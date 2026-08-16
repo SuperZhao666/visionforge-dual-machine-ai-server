@@ -42,5 +42,21 @@ int main() {
   assert(!policy.observe_fragment(20'001'000, true, false, false));
   assert(!policy.observe_idle(20'300'999, true));
   assert(policy.observe_idle(20'301'000, true));
+
+  // A stream of successfully decoded synthetic repeats is transport progress,
+  // but it is not closed-loop visual progress. It must not reset the bounded
+  // fresh-content/IDR recovery timer forever after a physical move.
+  policy.reset();
+  assert(!policy.observe_fragment(30'000'000, true, false, false));
+  assert(!policy.observe_fragment(30'100'000, false, false, false));
+  assert(!policy.observe_fragment(30'149'999, false, false, false));
+  assert(policy.observe_fragment(30'150'000, false, false, false));
+  policy.mark_idr_requested(30'150'000);
+  assert(!policy.observe_fragment(30'649'999, false, false, false));
+  assert(policy.observe_fragment(30'650'000, false, false, false));
+  // A genuine content update resets both stall age and request backoff.
+  assert(!policy.observe_fragment(30'651'000, true, false, false));
+  assert(!policy.observe_fragment(30'800'999, false, false, false));
+  assert(policy.observe_fragment(30'801'000, false, false, false));
   return 0;
 }

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "vfdual/host_outbound_rate_tracker.hpp"
-#include "vfdual/host_runtime_service.hpp"
+#include "vfdual/host/application/host_runtime_models.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -31,7 +31,7 @@ public:
     explicit HostUiTelemetry(std::size_t capacity = 180U);
 
     void reset() noexcept;
-    [[nodiscard]] HostUiTelemetrySnapshot observe(const HostStreamMetrics& metrics,
+    [[nodiscard]] HostUiTelemetrySnapshot observe(const host::application::HostRuntimeReadModel& metrics,
                                                   std::uint64_t monotonic_ms);
     [[nodiscard]] HostUiTelemetrySnapshot snapshot() const;
 

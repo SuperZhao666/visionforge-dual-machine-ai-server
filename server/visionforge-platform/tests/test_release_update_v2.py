@@ -387,6 +387,8 @@ class ReleaseUpdateV2Tests(unittest.TestCase):
             fallback["download_url"],
             "https://visionforge.test/static/releases/",
         )
+        self.assertEqual(fallback["release_id"], "visionforge-dual-machine-1.0.8")
+        self.assertEqual(fallback["release_version"], "1.0.8")
 
     def test_signed_v2_publish_returns_envelope_and_creates_integrity_allowlist(self):
         payload = self._payload()

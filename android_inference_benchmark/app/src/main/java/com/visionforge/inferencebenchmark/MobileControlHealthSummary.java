@@ -10,6 +10,11 @@ final class MobileControlHealthSummary {
         return "processed_frames=" + value(decoderReport, "processed_frames")
                 + " active_stream_generation="
                 + value(decoderReport, "active_stream_generation")
+                + " control_blocker=" + value(decoderReport, "control_blocker")
+                + " blocker_age_us="
+                + value(decoderReport, "control_blocker_age_us")
+                + " blocker_transition_id="
+                + value(decoderReport, "control_blocker_transition_id")
                 + " delivery_fail_closes="
                 + value(decoderReport, "native_delivery_fail_close_requests")
                 + " stream_lifecycle_closes="
@@ -71,6 +76,12 @@ final class MobileControlHealthSummary {
                 + value(decoderReport, "lost_target_hold_duration_us")
                 + " pending_suppressed="
                 + value(decoderReport, "native_move_completion_pending_suppressed")
+                + " pending_age_us="
+                + value(decoderReport, "native_move_completion_pending_age_us")
+                + " pending_deadline_us="
+                + value(decoderReport, "native_move_completion_deadline_us")
+                + " pending_timeouts="
+                + value(decoderReport, "native_move_completion_timeouts")
                 + " ack_completions="
                 + value(decoderReport, "native_device_ack_completions")
                 + " ack_failures=" + value(decoderReport, "native_device_ack_failures")
@@ -92,6 +103,19 @@ final class MobileControlHealthSummary {
                 + value(decoderReport, "native_last_offer_interval_us")
                 + " visibility_min_us="
                 + value(decoderReport, "makcu_post_completion_visibility_min_us")
+                + " visibility_armed="
+                + value(decoderReport, "post_completion_visibility_armed")
+                + " visibility_age_us="
+                + value(decoderReport, "post_completion_visibility_age_us")
+                + " visibility_timeouts="
+                + value(decoderReport, "post_completion_visibility_timeouts")
+                + " detections=" + value(decoderReport, "last_detection_count")
+                + " max_confidence="
+                + value(decoderReport, "last_max_detection_confidence")
+                + " new_track_threshold="
+                + value(decoderReport, "tracker_new_track_confidence_threshold")
+                + " low_track_threshold="
+                + value(decoderReport, "tracker_low_confidence_threshold")
                 + " output_requested=" + value(decoderReport, "output_requested")
                 + " output_enabled=" + value(decoderReport, "output_enabled")
                 + " user_max_axis=" + value(decoderReport, "maximum_axis_delta")

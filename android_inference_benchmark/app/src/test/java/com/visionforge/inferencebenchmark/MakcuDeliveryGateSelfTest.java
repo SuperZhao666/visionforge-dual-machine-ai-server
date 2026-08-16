@@ -139,16 +139,18 @@ final class MakcuDeliveryGateSelfTest {
         MakcuPendingMoveSlot slot = new MakcuPendingMoveSlot();
         MakcuPendingMoveSlot.PendingMove snapshot =
                 new MakcuPendingMoveSlot.PendingMove();
-        slot.offer(17L, 23L);
+        slot.offer(17L, 23L, 31L);
         require(slot.takeInto(snapshot));
-        require(snapshot.packed == 17L && snapshot.ticket == 23L);
+        require(snapshot.packed == 17L && snapshot.ticket == 23L
+                && snapshot.deadlineNanos == 31L);
 
         // A stale failure for an identical displacement must not erase the
         // newer native ticket that replaced it.
-        slot.offer(17L, 29L);
+        slot.offer(17L, 29L, 37L);
         require(!slot.clearIfMatches(17L, 23L));
         require(slot.takeInto(snapshot));
-        require(snapshot.packed == 17L && snapshot.ticket == 29L);
+        require(snapshot.packed == 17L && snapshot.ticket == 29L
+                && snapshot.deadlineNanos == 37L);
     }
 
     private static void verifiesHotPathCanReuseOnePendingMoveSnapshot() {
@@ -157,14 +159,16 @@ final class MakcuDeliveryGateSelfTest {
                 new MakcuPendingMoveSlot.PendingMove();
         require(!slot.takeInto(destination));
 
-        slot.offer(31L, 37L);
+        slot.offer(31L, 37L, 41L);
         require(slot.takeInto(destination));
-        require(destination.packed == 31L && destination.ticket == 37L);
+        require(destination.packed == 31L && destination.ticket == 37L
+                && destination.deadlineNanos == 41L);
         require(!slot.hasPending());
 
-        slot.offer(41L, 43L);
+        slot.offer(41L, 43L, 47L);
         require(slot.takeInto(destination));
-        require(destination.packed == 41L && destination.ticket == 43L);
+        require(destination.packed == 41L && destination.ticket == 43L
+                && destination.deadlineNanos == 47L);
     }
 
     private static void waitUntil(Condition condition) {

@@ -21,6 +21,13 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.Log;
 
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeAuthorizationObserver;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeBinding;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeCompositionRoot;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeCommandProtocol;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimePhase;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeReadModel;
+import com.visionforge.inferencebenchmark.runtime.MobileRuntimeReadModelStore;
 import com.visionforge.inferencebenchmark.ui.DualMachineAuthorizationUiMapper;
 import com.visionforge.inferencebenchmark.ui.DualMachineAuthorizationUiState;
 
@@ -55,9 +62,10 @@ import java.util.function.BooleanSupplier;
  */
 public final class MobileRuntimeService extends Service {
     private static final String LOG_TAG = "VisionForgeMobileRuntime";
-    private static final String ACTION_ENSURE = "com.visionforge.mobile.runtime.ENSURE";
+    private static final String ACTION_ENSURE =
+            MobileRuntimeCommandProtocol.ACTION_ENSURE;
     private static final String ACTION_REFRESH_POWER_POLICY =
-            "com.visionforge.mobile.runtime.REFRESH_POWER_POLICY";
+            MobileRuntimeCommandProtocol.ACTION_REFRESH_POWER_POLICY;
     private static final String NOTIFICATION_CHANNEL = "visionforge_runtime";
     private static final int NOTIFICATION_ID = 320;
     private static final String LEGACY_RUNTIME_PREFERENCES =
@@ -107,37 +115,6 @@ public final class MobileRuntimeService extends Service {
     private static final String RUNTIME_WIFI_LOCK_TAG =
             "VisionForge:MobileRuntimeWifi";
 
-    enum Phase { READY, STARTING, RUNNING, FAILED, STOPPED }
-
-    static final class RuntimeStatus {
-        final Phase phase;
-        final String detail;
-        final String failureCode;
-        final long revision;
-
-        RuntimeStatus(Phase phase, String detail, long revision) {
-            this(phase, detail, "none", revision);
-        }
-
-        RuntimeStatus(
-                Phase phase,
-                String detail,
-                String failureCode,
-                long revision) {
-            this.phase = phase;
-            this.detail = detail;
-            this.failureCode = failureCode == null || failureCode.isBlank()
-                    ? "unknown" : failureCode;
-            this.revision = revision;
-        }
-    }
-
-    interface AuthorizationObserver {
-        void onAuthorizationChanged(
-                DualMachineAuthorizationUiState state,
-                String note);
-    }
-
     /** Immutable cross-executor owner for one authorization/pipeline pair. */
     private static final class FormalPipelineOwnerReceipt {
         final DualMachineAuthorizationRuntime runtime;
@@ -174,8 +151,9 @@ public final class MobileRuntimeService extends Service {
     }
 
     /** Same-process command surface; the service is not exported. */
-    final class LocalBinder extends Binder {
-        void setAuthorizationObserver(AuthorizationObserver observer) {
+    public final class LocalBinder extends Binder implements MobileRuntimeBinding {
+        @Override
+        public void setAuthorizationObserver(MobileRuntimeAuthorizationObserver observer) {
             authorizationObserver = observer;
             if (observer != null) {
                 postAuthorizationUpdate(
@@ -183,40 +161,49 @@ public final class MobileRuntimeService extends Service {
             }
         }
 
-        void setActivityForeground(boolean foreground) {
+        @Override
+        public void setActivityForeground(boolean foreground) {
             updateActivityForeground(foreground);
         }
 
-        DualMachineAuthorizationUiState authorizationState() {
+        @Override
+        public DualMachineAuthorizationUiState authorizationState() {
             return authorizationUiState;
         }
 
-        void activateCard(String cardCode) {
+        @Override
+        public void activateCard(String cardCode) {
             requestCardActivation(cardCode);
         }
 
-        void resumePendingActivation() {
+        @Override
+        public void resumePendingActivation() {
             requestPendingActivationResume();
         }
 
-        void refreshAuthorization() {
+        @Override
+        public void refreshAuthorization() {
             requestAuthorizationRefresh();
         }
 
-        void selectGameModel(String modelToken) {
+        @Override
+        public void selectGameModel(String modelToken) {
             requestGameModelSelection(modelToken, true);
         }
 
-        void selectOutputRoute(String routeToken) {
+        @Override
+        public void selectOutputRoute(String routeToken) {
             requestOutputRouteSelection(routeToken);
         }
 
-        String outputRouteReport() {
+        @Override
+        public String outputRouteReport() {
             return controlRuntime == null ? "runtime_not_ready"
                     : controlRuntime.outputRouteReport();
         }
 
-        void runDebugBluetoothHidMoveProbe(
+        @Override
+        public void runDebugBluetoothHidMoveProbe(
                 int deltaX,
                 int deltaY,
                 int reports,
@@ -225,8 +212,8 @@ public final class MobileRuntimeService extends Service {
         }
     }
 
-    private static volatile RuntimeStatus runtimeStatus =
-            new RuntimeStatus(Phase.STOPPED, "runtime_not_started", 0L);
+    private static volatile MobileRuntimeReadModel runtimeStatus =
+            new MobileRuntimeReadModel(MobileRuntimePhase.STOPPED, "runtime_not_started", 0L);
     private static volatile String latestEthernetDiagnostics =
             "ethernet_not_observed "
                     + EthernetNetworkDiagnostics.kernelInterfaceSnapshot(
@@ -361,6 +348,8 @@ public final class MobileRuntimeService extends Service {
     private volatile MobileTransportEndpoint formalSessionEndpoint;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final LocalBinder localBinder = new LocalBinder();
+    private final MobileRuntimeCompositionRoot compositionRoot =
+            new MobileRuntimeCompositionRoot(localBinder);
     private final AtomicBoolean authorizationOperationInFlight =
             new AtomicBoolean();
     private final AtomicBoolean authorizationMaintenanceQueued =
@@ -376,7 +365,7 @@ public final class MobileRuntimeService extends Service {
     private final AtomicBoolean automaticFormalStopQueued =
             new AtomicBoolean();
     private final SecureRandom authorizationRandom = new SecureRandom();
-    private volatile AuthorizationObserver authorizationObserver;
+    private volatile MobileRuntimeAuthorizationObserver authorizationObserver;
     private volatile DualMachineAuthorizationUiState authorizationUiState =
             DualMachineAuthorizationUiState.readyForActivation();
     private volatile DualMachineAuthorizationRuntime authorizationRuntime;
@@ -397,21 +386,27 @@ public final class MobileRuntimeService extends Service {
                 .setAction(ACTION_REFRESH_POWER_POLICY));
     }
 
-    static RuntimeStatus status() {
-        return runtimeStatus;
+    static MobileRuntimeReadModel status() {
+        return MobileRuntimeReadModelStore.snapshot();
     }
 
     static String ethernetDiagnostics() {
-        return latestEthernetDiagnostics;
+        return MobileRuntimeReadModelStore.ethernetDiagnostics();
     }
 
     static String cat6ReadyDiagnostics() {
         return latestCat6ReadyDiagnostics;
     }
 
+    private void publishEthernetDiagnostics() {
+        compositionRoot.publishEthernetDiagnostics(latestEthernetDiagnostics);
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
+        compositionRoot.publish(runtimeStatus);
+        compositionRoot.publishEthernetDiagnostics(latestEthernetDiagnostics);
         events = new MobileEventLogger(this);
         externalHealthSnapshotWriter = new MobileExternalHealthSnapshotWriter(
                 getExternalFilesDir(null));
@@ -440,19 +435,19 @@ public final class MobileRuntimeService extends Service {
         clearLegacyPipelineRestoreFlag();
         if (!PROCESS_RETRY_GATE.canAttempt()) {
             updateStatus(
-                    Phase.FAILED,
+                    MobileRuntimePhase.FAILED,
                     "automatic_recovery_suppressed failure_code="
                             + PROCESS_RETRY_GATE.failureCode()
                             + " reason={" + PROCESS_RETRY_GATE.failureDetail() + "}");
             updateNotification(R.string.runtime_notification_failed);
         } else if (networkObserverRegistered) {
             updateStatus(
-                    Phase.READY,
+                    MobileRuntimePhase.READY,
                     "transport_required preferred="
                             + EthernetTransportContract.requiredLink());
         } else {
             updateStatus(
-                    Phase.FAILED,
+                    MobileRuntimePhase.FAILED,
                     "ethernet_observer_registration_failed diagnostics={"
                             + latestEthernetDiagnostics + "}");
         }
@@ -482,16 +477,24 @@ public final class MobileRuntimeService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        String action = intent == null ? ACTION_ENSURE : intent.getAction();
-        if (ACTION_REFRESH_POWER_POLICY.equals(action)) {
+        MobileRuntimeCommandProtocol.Command command =
+                MobileRuntimeCommandProtocol.parse(
+                        intent == null ? null : intent.getAction(),
+                        true);
+        if (command == MobileRuntimeCommandProtocol.Command.REFRESH_POWER_POLICY) {
             refreshRuntimeLocks();
+        } else if (command == MobileRuntimeCommandProtocol.Command.UNKNOWN
+                && events != null) {
+            events.write(
+                    "mobile_runtime_command_rejected",
+                    "reason=unknown_action side_effect=false");
         }
         return START_NOT_STICKY;
     }
 
     @Override
     public IBinder onBind(Intent intent) {
-        return localBinder;
+        return (IBinder) compositionRoot.binding();
     }
 
     @Override
@@ -1373,7 +1376,7 @@ public final class MobileRuntimeService extends Service {
                         System.nanoTime(), true)
                         && pipelineDesired
                         && pipelineStarted
-                        && runtimeStatus.phase == Phase.RUNNING
+                        && runtimeStatus.phase == MobileRuntimePhase.RUNNING
                         && sessionEndpoint != null;
                 boolean preparedFormalGap = sessionEndpoint != null
                         && pipeline.isPreparedDataPlaneClosed();
@@ -1434,7 +1437,7 @@ public final class MobileRuntimeService extends Service {
             cancelReceiverLivenessProbe();
             controlRuntime.failClosed("game_model_hot_reload");
             updateStatus(
-                    Phase.STARTING,
+                    MobileRuntimePhase.STARTING,
                     "game_model_hot_reload from=" + previous.token
                             + " to=" + selected.token);
             updateNotification(R.string.runtime_notification_starting);
@@ -1730,7 +1733,7 @@ public final class MobileRuntimeService extends Service {
             pipelineStarted = true;
             pipelineNetworkHandle = expectedEndpoint.networkHandle;
             gameModelHotReloadInProgress = false;
-            updateStatus(Phase.RUNNING, runningDetail);
+            updateStatus(MobileRuntimePhase.RUNNING, runningDetail);
             updateNotification(R.string.runtime_notification_running);
             scheduleReceiverLivenessProbe(
                     RECEIVER_ACTIVE_LIVENESS_PROBE_MILLIS, true);
@@ -1843,7 +1846,7 @@ public final class MobileRuntimeService extends Service {
                             pipelineStarted = false;
                             pipelineNetworkHandle = 0L;
                             updateStatus(
-                                    Phase.FAILED,
+                                    MobileRuntimePhase.FAILED,
                                     "game_model_hot_reload_failed requested="
                                             + requested.token
                                             + " reason={" + failedMessage + "}"
@@ -2509,8 +2512,8 @@ public final class MobileRuntimeService extends Service {
         cancelReceiverLivenessProbe();
         if (controlRuntime != null) controlRuntime.failClosed(reason);
         reconcileRuntimeLocksAfterDataPlaneClose(reason);
-        if (hadPermit || wasStarted || runtimeStatus.phase == Phase.STARTING) {
-            updateStatus(Phase.READY,
+        if (hadPermit || wasStarted || runtimeStatus.phase == MobileRuntimePhase.STARTING) {
+            updateStatus(MobileRuntimePhase.READY,
                     "pipeline_data_plane_closed reason=" + reason);
             updateNotification(R.string.runtime_notification_ready);
         }
@@ -2545,7 +2548,7 @@ public final class MobileRuntimeService extends Service {
         if (controlRuntime != null) controlRuntime.failClosed(reason);
         if (pipelinePreparationAttempted) stopPreparedPipeline();
         reconcileRuntimeLocksAfterDataPlaneClose(reason);
-        updateStatus(Phase.READY,
+        updateStatus(MobileRuntimePhase.READY,
                 "formal_usage_armed reason=" + reason);
         updateNotification(R.string.runtime_notification_ready);
     }
@@ -2774,7 +2777,7 @@ public final class MobileRuntimeService extends Service {
         if (controlRuntime != null) controlRuntime.failClosed(reason);
         reconcileRuntimeLocksAfterDataPlaneClose(reason);
         updateStatus(
-                Phase.READY,
+                MobileRuntimePhase.READY,
                 "pipeline_data_plane_closed reason=" + reason
                         + " model_commit_preserved="
                         + preservePreparedModelCommit);
@@ -2926,7 +2929,7 @@ public final class MobileRuntimeService extends Service {
                     throw new IOException(
                             "required transport changed during Host video preflight");
                 }
-                updateStatus(Phase.STARTING,
+                updateStatus(MobileRuntimePhase.STARTING,
                         "formal_usage_preparing host_authorization=false");
                 updateNotification(R.string.runtime_notification_starting);
                 String nativeDirectory = lastNativeDirectory == null
@@ -3042,7 +3045,7 @@ public final class MobileRuntimeService extends Service {
                         pipelinePreparationAttempted);
                 if (!PROCESS_RETRY_GATE.canAttempt()) {
                     updateStatus(
-                            Phase.FAILED,
+                            MobileRuntimePhase.FAILED,
                             "automatic_recovery_suppressed failure_code="
                                     + PROCESS_RETRY_GATE.failureCode()
                                     + " reason={"
@@ -3177,7 +3180,7 @@ public final class MobileRuntimeService extends Service {
                         && pipelineStarted
                         && pipelineNetworkHandle == networkHandle
                         && nativeVideoReceiverRunningSafely()) {
-                    updateStatus(Phase.RUNNING,
+                    updateStatus(MobileRuntimePhase.RUNNING,
                             "formal_usage_lease_continued host_authorization=false");
                     updateNotification(R.string.runtime_notification_running);
                     continued = true;
@@ -3214,7 +3217,7 @@ public final class MobileRuntimeService extends Service {
                     } else {
                         pipelineStarted = true;
                         pipelineNetworkHandle = networkHandle;
-                        updateStatus(Phase.RUNNING,
+                        updateStatus(MobileRuntimePhase.RUNNING,
                                 "formal_usage_running host_authorization=false");
                         updateNotification(R.string.runtime_notification_running);
                     }
@@ -3563,7 +3566,7 @@ public final class MobileRuntimeService extends Service {
                     });
             return;
         }
-        if (runtimeStatus.phase == Phase.STARTING) {
+        if (runtimeStatus.phase == MobileRuntimePhase.STARTING) {
             return;
         }
         long now = SystemClock.elapsedRealtime();
@@ -4514,7 +4517,7 @@ public final class MobileRuntimeService extends Service {
             String note) {
         DualMachineAuthorizationUiState previous = authorizationUiState;
         authorizationUiState = next;
-        AuthorizationObserver observer = authorizationObserver;
+        MobileRuntimeAuthorizationObserver observer = authorizationObserver;
         if (observer == null
                 || (next.equals(previous)
                 && (note == null || note.isEmpty()))) {
@@ -4524,7 +4527,7 @@ public final class MobileRuntimeService extends Service {
     }
 
     private void postAuthorizationUpdate(
-            AuthorizationObserver observer,
+            MobileRuntimeAuthorizationObserver observer,
             DualMachineAuthorizationUiState state,
             String note) {
         mainHandler.post(() -> {
@@ -4603,13 +4606,13 @@ public final class MobileRuntimeService extends Service {
         pipelineStarted = false;
         pipelineNetworkHandle = 0L;
         reconcileRuntimeLocksAfterDataPlaneClose(reason);
-        updateStatus(Phase.READY, "pipeline_stopped reason=" + reason);
+        updateStatus(MobileRuntimePhase.READY, "pipeline_stopped reason=" + reason);
         updateNotification(R.string.runtime_notification_ready);
     }
 
     private boolean pipelineResourcesMayBeRunning() {
         return pipelineStarted
-                || runtimeStatus.phase == Phase.STARTING
+                || runtimeStatus.phase == MobileRuntimePhase.STARTING
                 || pipeline.isPreparedDataPlaneClosed()
                 || nativeVideoReceiverRunningSafely();
     }
@@ -4634,6 +4637,7 @@ public final class MobileRuntimeService extends Service {
             latestEthernetDiagnostics =
                     "observer_registration accepted=false rejection_reason="
                             + "connectivity_manager_unavailable";
+            publishEthernetDiagnostics();
             events.write("mobile_ethernet_observer_registration_failed",
                     latestEthernetDiagnostics);
             return false;
@@ -4678,6 +4682,7 @@ public final class MobileRuntimeService extends Service {
                     "observer_registration accepted=false rejection_reason="
                             + "network_callback_registration_exception stack={"
                             + MobileThrowableDiagnostics.format(failure) + "}";
+            publishEthernetDiagnostics();
             events.write("mobile_ethernet_observer_registration_failed",
                     latestEthernetDiagnostics);
             networkCallback = null;
@@ -4855,6 +4860,7 @@ public final class MobileRuntimeService extends Service {
         }
         latestEthernetDiagnostics =
                 "transition=" + transition + " " + evaluationDetail;
+        publishEthernetDiagnostics();
         MobileTransportEndpoint selectedEndpoint;
         if (candidateReady && evaluatedEndpoint != null) {
             selectedEndpoint = transportCatalog.upsert(evaluatedEndpoint);
@@ -4934,6 +4940,7 @@ public final class MobileRuntimeService extends Service {
         latestEthernetDiagnostics =
                 "transition=" + source
                         + " " + diagnosticState;
+                publishEthernetDiagnostics();
         MobileEventLogger logger = events;
         if (logger != null && ethernetDiagnosticsLogPolicy.shouldWrite(
                 diagnosticState, TimeUnit.NANOSECONDS.toMillis(System.nanoTime()))) {
@@ -4955,6 +4962,7 @@ public final class MobileRuntimeService extends Service {
                             + network.getNetworkHandle() + " stack={"
                             + MobileThrowableDiagnostics.format(failure) + "}";
             latestEthernetDiagnostics = detail;
+            publishEthernetDiagnostics();
             events.write("mobile_ethernet_link_properties_read_failed", detail);
             return null;
         }
@@ -5764,9 +5772,9 @@ public final class MobileRuntimeService extends Service {
                 owner,
                 () -> {
                     controlRuntime.failClosed(event);
-                    if (runtimeStatus.phase != Phase.FAILED
+                    if (runtimeStatus.phase != MobileRuntimePhase.FAILED
                             || !runtimeStatus.detail.startsWith(event)) {
-                        updateStatus(Phase.FAILED, event + " " + detail);
+                        updateStatus(MobileRuntimePhase.FAILED, event + " " + detail);
                         updateNotification(
                                 R.string.runtime_notification_failed);
                     }
@@ -5789,7 +5797,7 @@ public final class MobileRuntimeService extends Service {
         boolean runtimeHealthy = formalDataPlanePermitOpen.get()
                 && pipelineDesired
                 && pipelineStarted
-                && runtimeStatus.phase == Phase.RUNNING
+                && runtimeStatus.phase == MobileRuntimePhase.RUNNING
                 && requiredEthernetNetwork() != null
                 && snapshot.videoLinkLive
                 && snapshot.decoderReady
@@ -5897,7 +5905,7 @@ public final class MobileRuntimeService extends Service {
         cleanup.run(
                 MobileServiceDestroyCleanup.Step.STOPPED_STATUS_PUBLISH,
                 () -> updateStatus(
-                        Phase.STOPPED, "runtime_service_stopped"));
+                        MobileRuntimePhase.STOPPED, "runtime_service_stopped"));
     }
 
     private void publishDestroyOutcome(
@@ -6084,7 +6092,7 @@ public final class MobileRuntimeService extends Service {
     private synchronized void refreshRuntimeLocks() {
         if (!shouldRetainAutomaticRuntimeLocks()
                 && !(pipelineDesired && PROCESS_RETRY_GATE.canAttempt()
-                && (pipelineStarted || runtimeStatus.phase == Phase.STARTING))) {
+                && (pipelineStarted || runtimeStatus.phase == MobileRuntimePhase.STARTING))) {
             releaseRuntimeLocks();
             events.write(
                     "mobile_power_policy_refreshed",
@@ -6178,7 +6186,7 @@ public final class MobileRuntimeService extends Service {
                             + " release=process_cold_start"
                             + " reason={" + result.message + "}");
         }
-        updateStatus(Phase.FAILED,
+        updateStatus(MobileRuntimePhase.FAILED,
                 result.message
                         + " failure_code=" + result.failureCode
                         + " retryable="
@@ -6280,19 +6288,19 @@ public final class MobileRuntimeService extends Service {
         manager.notify(NOTIFICATION_ID, notification(textResource));
     }
 
-    private boolean updateStatus(Phase phase, String detail) {
+    private boolean updateStatus(MobileRuntimePhase phase, String detail) {
         return updateStatus(phase, detail, "none");
     }
 
     private boolean updateStatus(
-            Phase phase,
+            MobileRuntimePhase phase,
             String detail,
             String failureCode) {
-        RuntimeStatus previous;
-        RuntimeStatus current;
+        MobileRuntimeReadModel previous;
+        MobileRuntimeReadModel current;
         synchronized (MobileRuntimeService.class) {
             previous = runtimeStatus;
-            RuntimeStatus candidate = new RuntimeStatus(
+            MobileRuntimeReadModel candidate = new MobileRuntimeReadModel(
                     phase,
                     detail,
                     failureCode,
@@ -6307,12 +6315,13 @@ public final class MobileRuntimeService extends Service {
                             candidate.detail,
                             candidate.failureCode);
             if (!decision.shouldPublish) return false;
-            current = new RuntimeStatus(
+            current = new MobileRuntimeReadModel(
                     candidate.phase,
                     candidate.detail,
                     candidate.failureCode,
                     decision.revision);
             runtimeStatus = current;
+            compositionRoot.publish(current);
         }
         MobileEventLogger logger = events;
         if (logger != null && previous.phase != current.phase) {

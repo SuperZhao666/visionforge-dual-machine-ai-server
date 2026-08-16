@@ -26,9 +26,11 @@ public:
     if (awaiting_idr_) {
       return ReceiverReferenceDecision::reject_awaiting_idr;
     }
+    std::uint32_t expected{};
     if (!last_accepted_sequence_.has_value() ||
-        logical_frame_sequence != vfdual::next_video_logical_frame_sequence(
-                                      *last_accepted_sequence_)) {
+        !vfdual::advance_video_frame_sequence(
+            *last_accepted_sequence_, expected) ||
+        logical_frame_sequence != expected) {
       return ReceiverReferenceDecision::reject_sequence_gap;
     }
     return ReceiverReferenceDecision::admit;

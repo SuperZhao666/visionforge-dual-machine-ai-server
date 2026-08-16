@@ -121,6 +121,8 @@ int main(int argc, char** argv) {
     const std::uint32_t frame_count = options.maximum_frames == 0U
         ? available_frame_count
         : std::min(options.maximum_frames, available_frame_count);
+    constexpr std::uint64_t kReplayEpoch = 0x4453'5245'504c'4159ULL &
+        vfdual::kVideoStreamEpochMax;
     vfdual::UdpVideoPublisher publisher;
     if (!publisher.connect_to(
             options.host, options.port, options.source_port, {},
@@ -138,8 +140,8 @@ int main(int argc, char** argv) {
         const auto monotonic_us = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
         const auto access_unit_index = static_cast<std::size_t>(frame_id - 1U) % access_units.size();
-        const auto result = publisher.publish(frame_id, access_units[access_unit_index], monotonic_us);
-        if (!result.success) {
+        const auto result = publisher.publish({kReplayEpoch, frame_id}, access_units[access_unit_index], monotonic_us);
+        if (!result.completely_published()) {
             std::cerr << "event=dataset_replay_failed frame_id=" << frame_id
                       << " socket_error=" << publisher.last_socket_error() << '\n';
             return 6;
@@ -161,8 +163,8 @@ int main(int argc, char** argv) {
         const auto monotonic_us = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
         const auto flush_access_unit_index = static_cast<std::size_t>(frame_count - 1U) % access_units.size();
-        const auto result = publisher.publish(frame_id, access_units[flush_access_unit_index], monotonic_us);
-        if (!result.success) {
+        const auto result = publisher.publish({kReplayEpoch, frame_id}, access_units[flush_access_unit_index], monotonic_us);
+        if (!result.completely_published()) {
             std::cerr << "event=dataset_replay_failed flush_frame_id=" << frame_id
                       << " socket_error=" << publisher.last_socket_error() << '\n';
             return 6;

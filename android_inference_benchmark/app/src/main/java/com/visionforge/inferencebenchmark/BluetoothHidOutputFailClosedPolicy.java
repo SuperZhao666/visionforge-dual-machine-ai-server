@@ -14,6 +14,10 @@ final class BluetoothHidOutputFailClosedPolicy {
     static final String REASON_SEND_REPORT_FALSE = "send_report_false";
     static final String REASON_NATIVE_MOVE_COMPLETION_REJECTED =
             "native_move_completion_rejected";
+    static final String REASON_MOVE_DEADLINE_EXPIRED_BEFORE_SEND =
+            "move_deadline_expired_before_send";
+    static final String REASON_MOVE_DEADLINE_EXPIRED_AFTER_SEND =
+            "move_deadline_expired_after_send";
 
     private static final Decision READY_DECISION =
             new Decision(true, REASON_READY);

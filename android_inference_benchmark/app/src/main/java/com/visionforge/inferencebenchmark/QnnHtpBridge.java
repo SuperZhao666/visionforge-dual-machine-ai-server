@@ -127,7 +127,14 @@ final class QnnHtpBridge {
 
     /** Stable JNI callback wrapper; the native bridge binds ControlOutputMoveDispatcher. */
     static boolean offerNativeMove(int deltaX, int deltaY, long ticket) {
-        return ControlOutputMoveDispatcher.offerNativeMove(deltaX, deltaY, ticket);
+        return offerNativeMove(
+                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
+    }
+
+    static boolean offerNativeMove(
+            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
+        return ControlOutputMoveDispatcher.offerNativeMove(
+                deltaX, deltaY, ticket, remainingBudgetUs);
     }
 
     /** Firmware echo + prompt result for the exact native move ticket. */

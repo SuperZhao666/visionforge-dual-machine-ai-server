@@ -1,5 +1,8 @@
 package com.visionforge.inferencebenchmark;
 
+import com.visionforge.inferencebenchmark.video.VideoFragmentHeader;
+import com.visionforge.inferencebenchmark.video.VideoWireProtocol;
+
 import java.io.IOException;
 import java.net.BindException;
 import java.net.DatagramPacket;
@@ -22,15 +25,12 @@ import java.util.function.BooleanSupplier;
  * before the server is asked to create the first billable lease.</p>
  */
 final class HostVideoPresenceProbe {
-    static final int VIDEO_HEADER_BYTES = 12;
-    static final int VIDEO_PAYLOAD_BYTES = 1_400;
-    static final int MAX_DATAGRAM_BYTES = VIDEO_HEADER_BYTES + VIDEO_PAYLOAD_BYTES;
-    static final int VIDEO_PACKET_MAGIC = 0x56465247; // "VFRG"
-    static final int VIDEO_REPEATED_PACKET_MAGIC = 0x56465252; // "VFRR"
-    static final long LOGICAL_FRAME_ID_MASK = 0x7fff_ffffL;
-    private static final int MAX_ACCESS_UNIT_BYTES = 2 * 1024 * 1024;
-    private static final int MAX_FRAGMENT_COUNT =
-            (MAX_ACCESS_UNIT_BYTES + VIDEO_PAYLOAD_BYTES - 1) / VIDEO_PAYLOAD_BYTES;
+    static final int VIDEO_HEADER_BYTES = VideoWireProtocol.HEADER_BYTES;
+    static final int VIDEO_PAYLOAD_BYTES = VideoWireProtocol.PAYLOAD_BYTES;
+    static final int MAX_DATAGRAM_BYTES = VideoWireProtocol.MAX_DATAGRAM_BYTES;
+    static final int VIDEO_PACKET_MAGIC = VideoWireProtocol.NORMAL_MAGIC;
+    static final int VIDEO_REPEATED_PACKET_MAGIC = VideoWireProtocol.REPEATED_MAGIC;
+    static final long LOGICAL_FRAME_ID_MASK = 0xffff_ffffL;
 
     private final MobileRuntimeEventSink events;
     private final HostVideoPreflightLogPolicy failureLogPolicy =
@@ -120,7 +120,7 @@ final class HostVideoPresenceProbe {
                 + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         int rejectedDatagrams = 0;
         int confirmedForwardFrameStarts = 0;
-        long previousFrameStartSequence = -1L;
+        VideoFragmentHeader previousFrameStart = null;
         DatagramSocket socket = null;
         try {
             InetAddress localAddress = InetAddress.getByName(endpoint.localIpv4);
@@ -152,7 +152,7 @@ final class HostVideoPresenceProbe {
             }
 
             // One extra byte lets DatagramSocket expose an oversized packet
-            // instead of truncating it into an apparently valid 1412 bytes.
+            // instead of truncating it into an apparently valid 1420 bytes.
             byte[] bytes = new byte[MAX_DATAGRAM_BYTES + 1];
             DatagramPacket datagram = new DatagramPacket(bytes, bytes.length);
             while (true) {
@@ -171,31 +171,27 @@ final class HostVideoPresenceProbe {
                 } catch (SocketTimeoutException timeout) {
                     throw notObserved(timeoutMillis, rejectedDatagrams);
                 }
-                if (!expectedHost.equals(datagram.getAddress())
-                        || !isValidVideoDatagram(bytes, datagram.getLength())) {
+                VideoFragmentHeader header = VideoWireProtocol.parse(
+                        bytes, datagram.getLength());
+                if (!expectedHost.equals(datagram.getAddress()) || header == null) {
                     rejectedDatagrams++;
                     continue;
                 }
-                long logicalFrameSequence = logicalFrameSequence(
-                        bytes, datagram.getLength());
+                long logicalFrameSequence = header.identity.frameSequence;
                 if (minimumForwardFrameStarts > 1) {
-                    if (!isFrameStartDatagram(bytes, datagram.getLength())) {
-                        continue;
-                    }
-                    if (previousFrameStartSequence < 0L) {
-                        previousFrameStartSequence = logicalFrameSequence;
+                    if (!header.isFrameStart()) continue;
+                    if (previousFrameStart == null) {
+                        previousFrameStart = header;
                         confirmedForwardFrameStarts = 1;
                         continue;
                     }
-                    if (!isForwardFrameSequence(
-                            previousFrameStartSequence,
-                            logicalFrameSequence)) {
+                    if (!VideoWireProtocol.isForwardFrameStart(
+                            previousFrameStart, header)) {
                         continue;
                     }
-                    previousFrameStartSequence = logicalFrameSequence;
+                    previousFrameStart = header;
                     confirmedForwardFrameStarts++;
-                    if (confirmedForwardFrameStarts
-                            < minimumForwardFrameStarts) {
+                    if (confirmedForwardFrameStarts < minimumForwardFrameStarts) {
                         continue;
                     }
                 } else {
@@ -204,6 +200,7 @@ final class HostVideoPresenceProbe {
                 long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(
                         Math.max(0L, System.nanoTime() - startedNanos));
                 HostVideoObservation observation = new HostVideoObservation(
+                        header.identity.streamEpoch,
                         logicalFrameSequence,
                         datagram.getPort(),
                         datagram.getLength(),
@@ -215,7 +212,8 @@ final class HostVideoPresenceProbe {
                             "network_handle=" + endpoint.networkHandle
                                     + " port=" + port
                                     + " accepted_bytes=" + datagram.getLength()
-                                    + " logical_frame_id="
+                                    + " stream_epoch=" + observation.streamEpoch
+                                    + " frame_sequence="
                                     + observation.logicalFrameSequence
                                     + " confirmed_forward_frame_starts="
                                     + observation.confirmedForwardFrameStarts
@@ -272,43 +270,28 @@ final class HostVideoPresenceProbe {
     }
 
     static boolean isValidVideoDatagram(byte[] bytes, int length) {
-        if (bytes == null || length <= VIDEO_HEADER_BYTES
-                || length > MAX_DATAGRAM_BYTES || length > bytes.length) {
-            return false;
-        }
-        int magic = readInt(bytes, 0);
-        if (magic != VIDEO_PACKET_MAGIC
-                && magic != VIDEO_REPEATED_PACKET_MAGIC) {
-            return false;
-        }
-        int fragmentIndex = readUnsignedShort(bytes, 8);
-        int fragmentCount = readUnsignedShort(bytes, 10);
-        return fragmentCount > 0
-                && fragmentCount <= MAX_FRAGMENT_COUNT
-                && fragmentIndex < fragmentCount;
+        return VideoWireProtocol.parse(bytes, length) != null;
+    }
+
+    static long streamEpoch(byte[] bytes, int length) {
+        VideoFragmentHeader header = VideoWireProtocol.parse(bytes, length);
+        return header == null ? -1L : header.identity.streamEpoch;
     }
 
     static long logicalFrameSequence(byte[] bytes, int length) {
-        if (!isValidVideoDatagram(bytes, length)) return -1L;
-        return Integer.toUnsignedLong(readInt(bytes, 4))
-                & LOGICAL_FRAME_ID_MASK;
+        VideoFragmentHeader header = VideoWireProtocol.parse(bytes, length);
+        return header == null ? -1L : header.identity.frameSequence;
     }
 
     static boolean isFrameStartDatagram(byte[] bytes, int length) {
-        return isValidVideoDatagram(bytes, length)
-                && readUnsignedShort(bytes, 8) == 0;
+        VideoFragmentHeader header = VideoWireProtocol.parse(bytes, length);
+        return header != null && header.isFrameStart();
     }
 
     static boolean isForwardFrameSequence(long previous, long current) {
-        if (previous < 0L || previous > LOGICAL_FRAME_ID_MASK
-                || current < 0L || current > LOGICAL_FRAME_ID_MASK
-                || previous == current) {
-            return false;
-        }
-        long forwardDistance = (current - previous)
-                & LOGICAL_FRAME_ID_MASK;
-        return forwardDistance > 0L
-                && forwardDistance <= (LOGICAL_FRAME_ID_MASK + 1L) / 2L;
+        return previous >= 0L && previous <= LOGICAL_FRAME_ID_MASK
+                && current >= 0L && current <= LOGICAL_FRAME_ID_MASK
+                && current > previous;
     }
 
     static boolean isLocalAddressUnavailable(Throwable failure) {
@@ -377,19 +360,9 @@ final class HostVideoPresenceProbe {
                 "host_video_preflight_cancelled", cause);
     }
 
-    private static int readInt(byte[] bytes, int offset) {
-        return ((bytes[offset] & 0xff) << 24)
-                | ((bytes[offset + 1] & 0xff) << 16)
-                | ((bytes[offset + 2] & 0xff) << 8)
-                | (bytes[offset + 3] & 0xff);
-    }
-
-    private static int readUnsignedShort(byte[] bytes, int offset) {
-        return ((bytes[offset] & 0xff) << 8)
-                | (bytes[offset + 1] & 0xff);
-    }
-
     static final class HostVideoNotObservedException extends IOException {
+        private static final long serialVersionUID = 1L;
+
         HostVideoNotObservedException(String message) {
             super(message);
         }
@@ -400,22 +373,27 @@ final class HostVideoPresenceProbe {
     }
 
     static final class HostVideoProbeCancelledException extends IOException {
+        private static final long serialVersionUID = 1L;
+
         HostVideoProbeCancelledException(String message, Throwable cause) {
             super(message, cause);
         }
     }
 
     static final class HostVideoObservation {
+        final long streamEpoch;
         final long logicalFrameSequence;
         final int sourcePort;
         final int datagramBytes;
         final int confirmedForwardFrameStarts;
 
         HostVideoObservation(
+                long streamEpoch,
                 long logicalFrameSequence,
                 int sourcePort,
                 int datagramBytes,
                 int confirmedForwardFrameStarts) {
+            this.streamEpoch = streamEpoch;
             this.logicalFrameSequence = logicalFrameSequence;
             this.sourcePort = sourcePort;
             this.datagramBytes = datagramBytes;

@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
         invalid_config.local_host = "127.0.0.1";
         invalid_config.phone_host = "127.0.0.1";
         invalid_config.phone_port = 5600;
+        invalid_config.stream_epoch = 1U;
         invalid_config.encoder.width = vfdual::kAiCaptureEdge;
         invalid_config.encoder.height = vfdual::kAiCaptureEdge;
         invalid_config.data_plane_permit = []() noexcept { return true; };
@@ -95,13 +96,14 @@ int main(int argc, char** argv) {
     config.adapter_index = output->adapter_index;
     config.output_index = output->output_index;
     config.capture_region = vfdual::DesktopCaptureRegion{
-        (output->width - encode_width) / 2U,
-        (output->height - encode_height) / 2U,
+        static_cast<std::int32_t>((output->width - encode_width) / 2U),
+        static_cast<std::int32_t>((output->height - encode_height) / 2U),
         encode_width,
         encode_height};
     config.local_host = "127.0.0.1";
     config.phone_host = "127.0.0.1";
     config.phone_port = 5600;
+    config.stream_epoch = 1U;
     config.data_plane_permit = []() noexcept { return true; };
     if (!agent.initialize(config)) {
         std::cerr << "initialize_failed adapter=" << config.adapter_index
@@ -232,6 +234,7 @@ int main(int argc, char** argv) {
     std::cerr << "agent_reset_complete\n";
     const bool terminal_failure =
         result.status == vfdual::DesktopVideoStepStatus::capture_access_lost ||
+        result.status == vfdual::DesktopVideoStepStatus::capture_device_removed ||
         result.status == vfdual::DesktopVideoStepStatus::capture_failed ||
         result.status == vfdual::DesktopVideoStepStatus::bridge_failed ||
         result.status == vfdual::DesktopVideoStepStatus::encode_failed ||

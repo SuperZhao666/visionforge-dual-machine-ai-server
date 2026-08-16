@@ -5,6 +5,7 @@ final class MakcuPendingMoveSlot {
     static final class PendingMove {
         long packed;
         long ticket;
+        long deadlineNanos;
 
         PendingMove() {
         }
@@ -12,13 +13,22 @@ final class MakcuPendingMoveSlot {
 
     private long packed;
     private long ticket;
+    private long deadlineNanos;
 
     synchronized void offer(long packed, long ticket) {
+        offer(packed, ticket, Long.MAX_VALUE);
+    }
+
+    synchronized void offer(long packed, long ticket, long deadlineNanos) {
         if (packed == 0L || ticket <= 0L) {
             throw new IllegalArgumentException("MAKCU move and ticket must be non-zero");
         }
+        if (deadlineNanos <= 0L) {
+            throw new IllegalArgumentException("MAKCU move deadline must be positive");
+        }
         this.packed = packed;
         this.ticket = ticket;
+        this.deadlineNanos = deadlineNanos;
     }
 
     synchronized boolean takeInto(PendingMove destination) {
@@ -26,8 +36,10 @@ final class MakcuPendingMoveSlot {
         if (packed == 0L) return false;
         destination.packed = packed;
         destination.ticket = ticket;
+        destination.deadlineNanos = deadlineNanos;
         packed = 0L;
         ticket = 0L;
+        deadlineNanos = 0L;
         return true;
     }
 
@@ -35,6 +47,7 @@ final class MakcuPendingMoveSlot {
         long rejectedTicket = ticket;
         packed = 0L;
         ticket = 0L;
+        deadlineNanos = 0L;
         return rejectedTicket;
     }
 
@@ -44,6 +57,7 @@ final class MakcuPendingMoveSlot {
         }
         this.packed = 0L;
         this.ticket = 0L;
+        this.deadlineNanos = 0L;
         return true;
     }
 

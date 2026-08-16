@@ -16,6 +16,9 @@ final class BluetoothHidMouseTransportCoreSelfTest {
         verifiesNativeRecoverySuspendsAndResumesDelivery();
         verifiesSynchronousMoveBufferIsReused();
         verifiesReconnectListenerRunsOutsideTransportMonitor();
+        verifiesExpiredMoveIsRejectedBeforeSend();
+        verifiesDeadlineCrossedAfterSendFailsClosed();
+        verifiesAsynchronousSessionRecoveryNotifiesCoordinatorImmediately();
     }
 
     private static void verifiesMoveOnlyReportAndClamping() {
@@ -201,6 +204,57 @@ final class BluetoothHidMouseTransportCoreSelfTest {
         require(stateReadCompleted.get());
     }
 
+    private static void verifiesExpiredMoveIsRejectedBeforeSend() {
+        FakeSessionPort port = new FakeSessionPort();
+        FakeNanoClock clock = new FakeNanoClock();
+        BluetoothHidMouseTransportCore transport =
+                new BluetoothHidMouseTransportCore(
+                        port, new FakeMoveCompletionPort(), clock);
+        require(transport.setOutputDeliveryAllowed(true));
+        require(!transport.offerMoveFromNative(1, 0, 91L, 0L));
+        require(port.sentReports == 0);
+    }
+
+    private static void verifiesDeadlineCrossedAfterSendFailsClosed() {
+        FakeSessionPort port = new FakeSessionPort();
+        FakeNanoClock clock = new FakeNanoClock();
+        port.onSend = () -> clock.advanceNanos(20_000L);
+        FakeMoveCompletionPort completionPort = new FakeMoveCompletionPort();
+        BluetoothHidMouseTransportCore transport =
+                new BluetoothHidMouseTransportCore(port, completionPort, clock);
+        require(transport.setOutputDeliveryAllowed(true));
+        require(!transport.offerMoveFromNative(1, 0, 92L, 10L));
+        require(port.sentReports == 1);
+        require(completionPort.attempts == 0);
+        require(transport.deliveryState().circuitOpen);
+        require(BluetoothHidOutputFailClosedPolicy
+                .REASON_MOVE_DEADLINE_EXPIRED_AFTER_SEND.equals(
+                        transport.deliveryState().lastFailure));
+    }
+
+    private static void verifiesAsynchronousSessionRecoveryNotifiesCoordinatorImmediately() {
+        FakeSessionPort port = new FakeSessionPort();
+        port.nextSendResult = false;
+        BluetoothHidMouseTransportCore transport = createTransport(port);
+        require(transport.setOutputDeliveryAllowed(true));
+        require(!transport.offerMoveFromNative(1, 0, 93L));
+        require(transport.deliveryState().circuitOpen);
+
+        AtomicBoolean notifiedReady = new AtomicBoolean();
+        transport.setReconnectListener(notifiedReady::set);
+        port.nextSendResult = true;
+        port.publishSessionState();
+
+        require(notifiedReady.get());
+        require(!transport.deliveryState().circuitOpen);
+        require(transport.setOutputDeliveryAllowed(true));
+        require(transport.offerMoveFromNative(1, 0, 94L));
+        transport.dispose();
+        notifiedReady.set(false);
+        port.publishSessionState();
+        require(!notifiedReady.get());
+    }
+
     private static void assertSessionLossFailsClosed(
             BluetoothHidOutputFailClosedPolicy.SessionState failedState, String expectedReason) {
         FakeSessionPort port = new FakeSessionPort();
@@ -251,6 +305,8 @@ final class BluetoothHidMouseTransportCoreSelfTest {
         byte[] lastReport = new byte[0];
         byte[] firstInputReport;
         byte[] lastInputReport;
+        Runnable onSend;
+        Runnable stateListener;
 
         @Override
         public BluetoothHidOutputFailClosedPolicy.SessionState sessionState() {
@@ -263,11 +319,36 @@ final class BluetoothHidMouseTransportCoreSelfTest {
             if (firstInputReport == null) firstInputReport = report;
             lastInputReport = report;
             lastReport = report.clone();
+            if (onSend != null) onSend.run();
             return nextSendResult;
         }
 
         @Override
         public void connectFirstSupportedHost() {
+        }
+
+        @Override
+        public void setSessionStateListener(Runnable listener) {
+            stateListener = listener;
+        }
+
+        void publishSessionState() {
+            Runnable listener = stateListener;
+            if (listener != null) listener.run();
+        }
+    }
+
+    private static final class FakeNanoClock
+            implements BluetoothHidMouseTransportCore.NanoClock {
+        long nowNanos = 1_000_000L;
+
+        @Override
+        public long nowNanos() {
+            return nowNanos;
+        }
+
+        void advanceNanos(long delta) {
+            nowNanos += delta;
         }
     }
 }

@@ -20,6 +20,7 @@ enum class MotionPlannerSuppressionReason : std::uint8_t {
   deadzone,
   direction_flip,
   response_guard,
+  subcount_resolution,
   settle_guard,
 };
 
@@ -166,6 +167,7 @@ struct MobileMotionPlannerMetrics {
   std::uint64_t direction_reorientations{};
   std::uint64_t deadzone_suppressions{};
   std::uint64_t response_guard_suppressions{};
+  std::uint64_t subcount_resolution_suppressions{};
   std::uint64_t settle_guard_suppressions{};
   std::uint64_t response_limited_axes{};
   std::uint64_t jerk_limited_axes{};

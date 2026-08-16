@@ -1,0 +1,88 @@
+name: VisionForge App Host E2E Architecture
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'recovery/**'
+      - 'fix/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visionforge-app-host-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-contracts:
+    name: Portable protocol, architecture, and state-machine gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run the fail-closed portable App/Host gate
+        shell: bash
+        run: tools/run_app_host_e2e_portable_checks.sh
+
+  native-sanitizers:
+    name: Native ASan and UBSan regression
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure sanitizer build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S dual_machine_runtime -B build/app-host-sanitized \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+
+      - name: Build and execute sanitizer tests
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          cmake --build build/app-host-sanitized --parallel
+          ctest --test-dir build/app-host-sanitized --output-on-failure
+
+  windows-host:
+    name: Windows Host production adapter compile and tests
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure Visual Studio Release build
+        shell: pwsh
+        run: |
+          cmake -S dual_machine_runtime -B build/app-host-windows `
+            -G 'Visual Studio 17 2022' -A x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Host and run CTest
+        shell: pwsh
+        run: |
+          cmake --build build/app-host-windows --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build/app-host-windows -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

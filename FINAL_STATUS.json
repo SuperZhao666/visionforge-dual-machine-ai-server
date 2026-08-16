@@ -1,0 +1,94 @@
+{
+  "schema": "visionforge.mingsim.final-status.v3",
+  "generated_at_utc": "2026-08-16T03:07:48.296441+00:00",
+  "delivery_name": "VisionForge_MINGSIM_COMPLETE_BETTER_BEST_2026-08-16",
+  "delivery_type": "complete distributable source tree with runtime assets, tests, evidence, Git history and integrity data",
+  "truth_boundary": "deterministic reconstruction and improvement from the last byte-verified complete baseline; not a byte-identical recovery of the lost uncommitted worktree",
+  "verified_input_baseline": {
+    "file": "VisionForge_DualMachineAI_Server_complete_repair.zip",
+    "size_bytes": 178447414,
+    "sha256": "015ec5fcc8a019f8afc33dbc6f00e6ffb6d6c4e05c6e4d518246c5aa8e50f052",
+    "zip_entries": 2865,
+    "zip_crc": "PASS"
+  },
+  "git": {
+    "branch": "recovery/app-host-e2e-better-best",
+    "final_head": "e33d08b390a7fbc74032f33aea37744c84ce4f6d",
+    "verified_baseline_head": "bb262cdcb0f58063c416763764edf4493de52aa3",
+    "changed_files_from_baseline": 203,
+    "diff_summary": "203 files changed, 43516 insertions(+), 766 deletions(-)",
+    "bundle": "DELIVERY_INTEGRITY/VisionForge_MINGSIM_FULL_HISTORY.bundle",
+    "bundle_sha256": "e0e0a7f5ee0bb6833707bdcfd887e8285676915bc4de7231473613cc3821c526",
+    "bundle_verify": "PASS",
+    "binary_patch": "DELIVERY_INTEGRITY/VERIFIED_BASELINE_TO_FINAL.patch",
+    "binary_patch_sha256": "df817dd14fa8b003042771e28739f1d54bb2e7afb98c4b02aaef0fbc4b13de73"
+  },
+  "complete_asset_trees": [
+    {
+      "path": "android_inference_benchmark/app/src/main/jniLibs",
+      "file_count": 11,
+      "logical_bytes": 119546520
+    },
+    {
+      "path": "android_inference_benchmark/app/src/main/assets/qnn",
+      "file_count": 6,
+      "logical_bytes": 47670268
+    },
+    {
+      "path": "security-defense/vendor",
+      "file_count": 1739,
+      "logical_bytes": 10060720
+    },
+    {
+      "path": "server/visionforge-platform/deploy/xianyu-fulfillment/upstream",
+      "file_count": 119,
+      "logical_bytes": 6996585
+    }
+  ],
+  "portable_validation": {
+    "post_commit_aggregate_gate": "PASS",
+    "cpp_release_ctest": "23/23 PASS",
+    "cpp_randomized_transport": "256 success matrices + 128 loss/conflict matrices PASS",
+    "cpp_asan_ubsan": "23/23 PASS",
+    "java_full": "210 sources compiled; regression PASS",
+    "java_strict": "35 critical sources compiled with -Xlint:all -Werror; regression PASS",
+    "architecture_and_complexity_gate": "PASS",
+    "cross_language_video_contract_gate": "PASS",
+    "checker_self_tests": "2/2 PASS",
+    "python_compileall": "PASS",
+    "release_manifest_consistency": "PASS; self-tests 3/3",
+    "project_shell_syntax": "32 PASS",
+    "structured_files": "JSON 16 PASS; YAML 14 files / 17 documents PASS"
+  },
+  "not_run": {
+    "environment": [
+      "Android Gradle app task: Gradle 9.2.1 distribution was not cached and this isolated runtime could not resolve services.gradle.org",
+      "Platform/Sidecar full pytest: locked bcrypt/slowapi/limits environment was unavailable and dependency download was blocked"
+    ],
+    "external": [
+      "Windows DXGI/NVENC/Media Foundation build and target-GPU execution",
+      "Android SDK/NDK/MediaCodec and Qualcomm QNN/HTP target-device execution",
+      "Physical MAKCU USB and Bluetooth HID acceptance",
+      "CAT6/Wi-Fi failover and 2/8/24-hour soak",
+      "Live payment provider, SMTP, production signing and disaster recovery"
+    ]
+  },
+  "distribution_exclusions": [
+    ".git internal object directory",
+    "build/test caches",
+    "real .env files",
+    "private keys and keystores",
+    "machine-local SDK paths",
+    "font binaries"
+  ],
+  "security_scans": {
+    "symlinks": 0,
+    "font_binaries": 0,
+    "private_key_filenames": 0,
+    "private_key_markers": 0,
+    "real_env_files": 0,
+    "allowed_env_templates": [
+      "server/visionforge-platform/deploy/xianyu-fulfillment/.env.example"
+    ]
+  }
+}

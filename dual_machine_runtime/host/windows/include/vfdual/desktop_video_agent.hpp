@@ -19,6 +19,8 @@
 namespace vfdual {
 
 struct DesktopVideoAgentConfig {
+    /** Positive 63-bit wire-session identity; rotated on every Host rebuild. */
+    std::uint64_t stream_epoch{};
     std::uint32_t adapter_index{};
     std::uint32_t output_index{};
     std::uint32_t capture_timeout_ms{16};
@@ -37,6 +39,7 @@ enum class DesktopVideoStepStatus {
     data_plane_closed,
     capture_timeout,
     capture_access_lost,
+    capture_device_removed,
     capture_failed,
     bridge_failed,
     encode_failed,
@@ -199,7 +202,7 @@ private:
     MediaFoundationH264Encoder media_foundation_encoder_;
     UdpVideoPublisher publisher_;
     DesktopVideoAgentConfig config_{};
-    std::uint32_t next_frame_id{};
+    std::uint32_t next_frame_sequence_{};
     std::uint64_t next_source_sequence_{};
     std::uint64_t last_video_submission_us_{};
     std::uint64_t last_submitted_content_sequence_{};

@@ -79,6 +79,8 @@ int main() {
         read_source("host/windows/src/streamer_desktop_main.cpp");
     const std::string runtime_source =
         read_source("host/windows/src/host_runtime_service.cpp");
+    const std::string endpoint_discovery_source =
+        read_source("host/windows/src/host_endpoint_discovery_facade.cpp");
     const std::string runtime_header =
         read_source("host/windows/include/vfdual/host_runtime_service.hpp");
     const std::string idle_ui_header =
@@ -361,7 +363,7 @@ int main() {
     VFDUAL_TEST_REQUIRE(start_streamer.find("catch (const std::exception& exception)") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(start_streamer.find("catch (...)") != std::string::npos);
-    VFDUAL_TEST_REQUIRE(start_streamer.find("runtime_service_.start(settings, error)") !=
+    VFDUAL_TEST_REQUIRE(start_streamer.find("runtime_facade_.start(settings, error)") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(start_streamer.find("post_startup_completed_result(") !=
                          std::string::npos);
@@ -385,10 +387,12 @@ int main() {
     VFDUAL_TEST_REQUIRE(refresh_mobile.find("catch (...)") != std::string::npos);
     VFDUAL_TEST_REQUIRE(refresh_mobile.find("post_mobile_refresh_completed_result(") !=
                          std::string::npos);
-    VFDUAL_TEST_REQUIRE(refresh_mobile.find(
+    VFDUAL_TEST_REQUIRE(refresh_mobile.find("discovery->discover(") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(endpoint_discovery_source.find(
                             "ensure_host_firewall_rules_automatically()") !=
                          std::string::npos);
-    VFDUAL_TEST_REQUIRE(refresh_mobile.find(
+    VFDUAL_TEST_REQUIRE(endpoint_discovery_source.find(
                             "measure_wireless_lan_mobile_session(") !=
                          std::string::npos);
 

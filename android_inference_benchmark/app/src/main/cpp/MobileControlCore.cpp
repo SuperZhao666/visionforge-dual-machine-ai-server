@@ -90,6 +90,30 @@ float bounded_measured_ego_axis(
 
 }  // namespace
 
+const char* control_suppression_reason_name(
+    ControlSuppressionReason reason) noexcept {
+  switch (reason) {
+    case ControlSuppressionReason::none: return "none";
+    case ControlSuppressionReason::invalid_time: return "invalid_time";
+    case ControlSuppressionReason::stale_frame: return "stale_frame";
+    case ControlSuppressionReason::non_monotonic_frame:
+      return "non_monotonic_frame";
+    case ControlSuppressionReason::no_valid_target: return "no_valid_target";
+    case ControlSuppressionReason::detected_not_control_eligible:
+      return "detected_not_control_eligible";
+    case ControlSuppressionReason::lock_held: return "lock_held";
+    case ControlSuppressionReason::switch_pending: return "switch_pending";
+    case ControlSuppressionReason::deadzone: return "deadzone";
+    case ControlSuppressionReason::settle_guard: return "settle_guard";
+    case ControlSuppressionReason::response_guard: return "response_guard";
+    case ControlSuppressionReason::device_resolution_guard:
+      return "device_resolution_guard";
+    case ControlSuppressionReason::direction_flip: return "direction_flip";
+    case ControlSuppressionReason::motion_invalid: return "motion_invalid";
+  }
+  return "unknown";
+}
+
 MobileControlCore::MobileControlCore(const MobileControlConfig& config) {
   (void)configure(config);
 }
@@ -1288,6 +1312,8 @@ ControlSuppressionReason MobileControlCore::control_suppression_reason(
       return ControlSuppressionReason::settle_guard;
     case MotionPlannerSuppressionReason::response_guard:
       return ControlSuppressionReason::response_guard;
+    case MotionPlannerSuppressionReason::subcount_resolution:
+      return ControlSuppressionReason::device_resolution_guard;
     case MotionPlannerSuppressionReason::direction_flip:
       return ControlSuppressionReason::direction_flip;
     case MotionPlannerSuppressionReason::invalid_input:
@@ -1499,6 +1525,13 @@ MobileControlOutput MobileControlCore::process(
     return active_output(frame, false);
   }
   clear_pending_switch();
+  if (!detections.empty()) {
+    ++metrics_.detected_not_control_eligible_frames;
+    return {
+        .suppression_reason =
+            ControlSuppressionReason::detected_not_control_eligible,
+    };
+  }
   return {.suppression_reason = ControlSuppressionReason::no_valid_target};
 }
 

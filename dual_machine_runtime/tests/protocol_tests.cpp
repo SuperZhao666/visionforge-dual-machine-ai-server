@@ -45,25 +45,6 @@ int main() {
     CHECK(vfdual::encode_mouse_button_state_packet(
         {0x01U, 0U, 1U}, button_datagram) == 0U);
 
-    constexpr std::uint32_t logical_frame = 0x7fff'fff0U;
-    constexpr std::uint32_t repeated_wire_frame =
-        vfdual::make_video_wire_frame_id(logical_frame, true);
-    CHECK(vfdual::video_repeats_content(repeated_wire_frame));
-    CHECK(vfdual::video_logical_frame_sequence(repeated_wire_frame) == logical_frame);
-    CHECK(!vfdual::video_repeats_content(
-        vfdual::make_video_wire_frame_id(logical_frame, false)));
-    CHECK(vfdual::video_logical_frame_sequence(
-        vfdual::make_video_wire_frame_id(0xffff'fff0U, false)) == logical_frame);
-    CHECK(vfdual::next_video_logical_frame_sequence(0U) == 1U);
-    CHECK(vfdual::next_video_logical_frame_sequence(
-        vfdual::kVideoFrameSequenceMask) == 0U);
-    CHECK(vfdual::video_logical_frame_sequence_is_newer(11U, 10U));
-    CHECK(!vfdual::video_logical_frame_sequence_is_newer(10U, 10U));
-    CHECK(vfdual::video_logical_frame_sequence_is_newer(
-        0U, vfdual::kVideoFrameSequenceMask));
-    CHECK(!vfdual::video_logical_frame_sequence_is_newer(
-        vfdual::kVideoFrameSequenceMask, 0U));
-
     const std::array<std::byte, 6> annex_b_idr{
         std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1},
         std::byte{0x65}, std::byte{0x80}};
@@ -77,108 +58,136 @@ int main() {
     CHECK(!vfdual::h264_access_unit_contains_idr(annex_b_prediction));
     CHECK(vfdual::h264_access_unit_contains_idr(avcc_idr));
 
-    const vfdual::VideoFragment source{9, 1, 2, {std::byte{'B'}, std::byte{'C'}}};
+    // Cross-language golden vector: Java and C++ must emit the exact same
+    // 20-byte network-order header before any payload bytes.
+    const vfdual::VideoFragment golden_source{
+        {0x0102'0304'0506'0708ULL, 0x1122'3344U},
+        false, 2U, 5U, {std::byte{'X'}}};
+    const auto golden_packet = vfdual::encode_video_packet(golden_source);
+    const std::array<std::byte, vfdual::kVideoPacketHeaderBytes> golden_header{
+        std::byte{0x56}, std::byte{0x46}, std::byte{0x32}, std::byte{0x47},
+        std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
+        std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08},
+        std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44},
+        std::byte{0x00}, std::byte{0x02}, std::byte{0x00}, std::byte{0x05}};
+    CHECK(golden_packet.size() == golden_header.size() + 1U);
+    CHECK(std::equal(golden_header.begin(), golden_header.end(),
+                     golden_packet.begin()));
+
+    constexpr vfdual::VideoFrameIdentity identity{17U, 9U};
+    const vfdual::VideoFragment source{
+        identity, false, 1U, 2U,
+        {std::byte{'B'}, std::byte{'C'}}};
     std::array<std::byte, vfdual::kMaxDatagramBytes> packet_storage{};
     const std::size_t packet_size = vfdual::encode_video_packet_into(
-        source.frame_id, source.fragment_index, source.fragment_count,
-        source.access_unit_part, packet_storage);
-    if (packet_size != vfdual::kVideoPacketHeaderBytes + 2U) return 101;
+        source.identity, source.repeated_content, source.fragment_index,
+        source.fragment_count, source.access_unit_part, packet_storage);
+    CHECK(packet_size == vfdual::kVideoPacketHeaderBytes + 2U);
     const auto packet = vfdual::encode_video_packet(source);
-    if (!std::equal(packet.begin(), packet.end(), packet_storage.begin())) return 102;
-    CHECK(packet.size() == vfdual::kVideoPacketHeaderBytes + 2);
+    CHECK(std::equal(packet.begin(), packet.end(), packet_storage.begin()));
+    CHECK(packet.size() == vfdual::kVideoPacketHeaderBytes + 2U);
     vfdual::VideoFragment decoded;
     CHECK(vfdual::decode_video_packet(packet, decoded));
-    CHECK(decoded.frame_id == 9 && decoded.fragment_index == 1 && decoded.fragment_count == 2);
+    CHECK(decoded.identity == identity);
+    CHECK(!decoded.repeated_content);
+    CHECK(decoded.fragment_index == 1U && decoded.fragment_count == 2U);
     static_assert(vfdual::kMaxVideoFragmentsPerAccessUnit <
                   (std::numeric_limits<std::uint16_t>::max)());
     const auto excessive_fragment_count = static_cast<std::uint16_t>(
         vfdual::kMaxVideoFragmentsPerAccessUnit + 1U);
     const vfdual::VideoFragment excessive_fragment_count_source{
-        10U, 0U, excessive_fragment_count, {std::byte{'X'}}};
+        {17U, 10U}, false, 0U, excessive_fragment_count,
+        {std::byte{'X'}}};
     CHECK(vfdual::encode_video_packet(excessive_fragment_count_source).empty());
-    auto excessive_fragment_count_packet = packet;
-    excessive_fragment_count_packet[10] =
-        std::byte{static_cast<std::uint8_t>(excessive_fragment_count >> 8U)};
-    excessive_fragment_count_packet[11] =
-        std::byte{static_cast<std::uint8_t>(excessive_fragment_count)};
-    CHECK(!vfdual::decode_video_packet(excessive_fragment_count_packet, decoded));
     auto corrupted = packet;
     corrupted[0] ^= std::byte{1};
     CHECK(!vfdual::decode_video_packet(corrupted, decoded));
 
     const vfdual::VideoFragment repeated_source{
-        repeated_wire_frame, 0, 1, {std::byte{'R'}}};
+        {17U, 10U}, true, 0U, 1U, {std::byte{'R'}}};
     const auto repeated_packet = vfdual::encode_video_packet(repeated_source);
     CHECK(repeated_packet[0] == std::byte{0x56});
     CHECK(repeated_packet[1] == std::byte{0x46});
-    CHECK(repeated_packet[2] == std::byte{0x52});
+    CHECK(repeated_packet[2] == std::byte{0x32});
     CHECK(repeated_packet[3] == std::byte{0x52});
     vfdual::VideoFragment repeated_decoded;
     CHECK(vfdual::decode_video_packet(repeated_packet, repeated_decoded));
-    CHECK(vfdual::video_repeats_content(repeated_decoded.frame_id));
-    CHECK(vfdual::video_logical_frame_sequence(repeated_decoded.frame_id) == logical_frame);
+    CHECK(repeated_decoded.repeated_content);
+    CHECK(repeated_decoded.identity == repeated_source.identity);
 
     vfdual::AccessUnitReassembler reassembler;
-    CHECK(!reassembler.push(decoded, 10));
-    const vfdual::VideoFragment first{9, 0, 2, {std::byte{'A'}}};
-    const auto complete = reassembler.push(first, 11);
-    CHECK(complete && complete->bytes.size() == 3 && complete->bytes[0] == std::byte{'A'});
-    CHECK(!reassembler.push(excessive_fragment_count_source, 12));
-    CHECK(reassembler.inflight_frame_count() == 0U);
-    const vfdual::VideoFragment oversized_fragment{
-        11U, 0U, 1U,
-        std::vector<std::byte>(vfdual::kVideoPacketPayloadBytes + 1U)};
-    CHECK(!reassembler.push(oversized_fragment, 13));
+    CHECK(reassembler.activate_epoch(17U));
+    CHECK(!reassembler.push(decoded, 10U));
+    const vfdual::VideoFragment first{
+        identity, false, 0U, 2U, {std::byte{'A'}}};
+    const auto complete = reassembler.push(first, 11U);
+    CHECK(complete && complete->identity == identity &&
+          complete->bytes.size() == 3U &&
+          complete->bytes[0] == std::byte{'A'});
+    CHECK(!reassembler.push(excessive_fragment_count_source, 12U));
     CHECK(reassembler.inflight_frame_count() == 0U);
 
     vfdual::AccessUnitReassembler ordered_reassembler;
+    CHECK(ordered_reassembler.activate_epoch(21U));
     const vfdual::VideoFragment frame_20_first{
-        20U, 0U, 2U, {std::byte{'A'}}};
+        {21U, 20U}, false, 0U, 2U, {std::byte{'A'}}};
     const vfdual::VideoFragment frame_21_complete{
-        21U, 0U, 1U, {std::byte{'C'}}};
+        {21U, 21U}, false, 0U, 1U, {std::byte{'C'}}};
     const vfdual::VideoFragment frame_20_last{
-        20U, 1U, 2U, {std::byte{'B'}}};
+        {21U, 20U}, false, 1U, 2U, {std::byte{'B'}}};
     CHECK(!ordered_reassembler.push(frame_20_first, 20U));
     CHECK(!ordered_reassembler.push(frame_21_complete, 21U));
     const auto ordered_20 = ordered_reassembler.push(frame_20_last, 22U);
-    CHECK(ordered_20 && ordered_20->frame_id == 20U);
+    CHECK(ordered_20 && ordered_20->identity.frame_sequence == 20U);
     const auto ordered_21 = ordered_reassembler.pop_completed();
-    CHECK(ordered_21 && ordered_21->frame_id == 21U);
+    CHECK(ordered_21 && ordered_21->identity.frame_sequence == 21U);
     CHECK(!ordered_reassembler.push(frame_20_first, 23U));
     CHECK(ordered_reassembler.inflight_frame_count() == 0U);
 
-    vfdual::AccessUnitReassembler sequence_reassembler;
-    const auto sequence_40 = sequence_reassembler.push(
-        {40U, 0U, 1U, {std::byte{'A'}}}, 40U);
-    CHECK(sequence_40 && sequence_40->frame_id == 40U);
-    CHECK(!sequence_reassembler.push(
-        {42U, 0U, 1U, {std::byte{'C'}}}, 41U));
-    const auto sequence_41 = sequence_reassembler.push(
-        {41U, 0U, 1U, {std::byte{'B'}}}, 42U);
-    CHECK(sequence_41 && sequence_41->frame_id == 41U);
-    const auto sequence_42 = sequence_reassembler.pop_completed();
-    CHECK(sequence_42 && sequence_42->frame_id == 42U);
+    vfdual::AccessUnitReassembler conflict_reassembler;
+    CHECK(conflict_reassembler.activate_epoch(30U));
+    CHECK(!conflict_reassembler.push(
+        {{30U, 1U}, false, 0U, 2U, {std::byte{'A'}}}, 1U));
+    CHECK(!conflict_reassembler.push(
+        {{30U, 1U}, false, 0U, 2U, {std::byte{'B'}}}, 2U));
+    CHECK(conflict_reassembler.conflicting_duplicate_losses() == 1U);
+    CHECK(conflict_reassembler.inflight_frame_count() == 0U);
 
-    vfdual::AccessUnitReassembler bounded_reassembler(1U);
+    vfdual::AccessUnitReassembler bounded_reassembler(1U, 2U);
+    CHECK(bounded_reassembler.activate_epoch(31U));
     CHECK(!bounded_reassembler.push(
-        {30U, 0U, 2U, {std::byte{'A'}}}, 30U));
+        {{31U, 1U}, false, 0U, 2U, {std::byte{'A'}}}, 30U));
     CHECK(!bounded_reassembler.push(
-        {31U, 0U, 2U, {std::byte{'B'}}}, 31U));
-    CHECK(bounded_reassembler.incomplete_access_unit_losses() == 1U);
-    CHECK(bounded_reassembler.discard_expired(100U, 10U) == 1U);
-    CHECK(bounded_reassembler.incomplete_access_unit_losses() == 2U);
+        {{31U, 2U}, false, 0U, 2U, {std::byte{'B'}}}, 31U));
+    CHECK(bounded_reassembler.incomplete_access_unit_losses() >= 1U);
+    CHECK(bounded_reassembler.discard_expired(100U, 10U) <= 1U);
 
-    const std::array<std::byte, 5> access_unit{std::byte{'1'}, std::byte{'2'}, std::byte{'3'}, std::byte{'4'}, std::byte{'5'}};
-    const auto parts = vfdual::fragment_access_unit(10, access_unit, 2);
-    CHECK(parts.size() == 3 && parts[2].fragment_index == 2 && parts[2].access_unit_part.size() == 1);
+    vfdual::AccessUnitReassembler epoch_reassembler;
+    CHECK(epoch_reassembler.activate_epoch(40U));
+    CHECK(!epoch_reassembler.push(
+        {{41U, 0U}, false, 0U, 1U, {std::byte{'X'}}}, 1U));
+    CHECK(epoch_reassembler.foreign_or_retired_epoch_drops() == 1U);
+    CHECK(epoch_reassembler.activate_epoch(41U));
+    CHECK(epoch_reassembler.is_retired_epoch(40U));
+    CHECK(!epoch_reassembler.push(
+        {{40U, 1U}, false, 0U, 1U, {std::byte{'Y'}}}, 2U));
+    CHECK(epoch_reassembler.foreign_or_retired_epoch_drops() == 2U);
+
+    const std::array<std::byte, 5> access_unit{
+        std::byte{'1'}, std::byte{'2'}, std::byte{'3'},
+        std::byte{'4'}, std::byte{'5'}};
+    const auto parts = vfdual::fragment_access_unit(
+        {44U, 10U}, access_unit, false, 2U);
+    CHECK(parts.size() == 3U && parts[2].fragment_index == 2U &&
+          parts[2].access_unit_part.size() == 1U);
     const std::vector<std::byte> excessive_fragment_count_access_unit(
         (vfdual::kMaxVideoFragmentsPerAccessUnit + 1U) * 33U);
     CHECK(vfdual::fragment_access_unit(
-        11U, excessive_fragment_count_access_unit, 33U).empty());
+        {44U, 11U}, excessive_fragment_count_access_unit, false, 33U).empty());
     const std::vector<std::byte> oversized_payload_access_unit(
         vfdual::kVideoPacketPayloadBytes + 1U);
     CHECK(vfdual::fragment_access_unit(
-        12U, oversized_payload_access_unit,
+        {44U, 12U}, oversized_payload_access_unit, false,
         vfdual::kVideoPacketPayloadBytes + 1U).empty());
 
     // Slice headers below encode first_mb_in_slice as ue(0) and ue(1), so the

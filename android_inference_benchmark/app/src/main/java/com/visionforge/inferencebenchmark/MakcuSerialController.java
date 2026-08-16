@@ -65,6 +65,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
     private final AtomicLong offeredMoves = new AtomicLong();
     private final AtomicLong droppedDisconnected = new AtomicLong();
     private final AtomicLong droppedOutputDisabled = new AtomicLong();
+    private final AtomicLong droppedMoveDeadlineExpired = new AtomicLong();
     private final AtomicLong deviceCommandAcknowledgements = new AtomicLong();
     private final AtomicLong moveCommandAcknowledgements = new AtomicLong();
     private final AtomicLong deviceAcknowledgementFailures = new AtomicLong();
@@ -118,6 +119,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
     private volatile long expectedResponseConnectionGeneration;
     private volatile long expectedResponseReaderLease;
     private volatile boolean expectedResponseAcknowledged;
+    private volatile long expectedResponseAcknowledgedAtNanos;
 
     MakcuSerialController(Context ownerContext, MobileRuntimeEventSink events) {
         this.context = ownerContext.getApplicationContext();
@@ -427,19 +429,41 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
     }
 
     static boolean offerNativeMove(int deltaX, int deltaY, long ticket) {
+        return offerNativeMove(
+                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
+    }
+
+    static boolean offerNativeMove(
+            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
         MakcuSerialController controller = instance;
-        return controller != null && controller.offerMove(deltaX, deltaY, ticket);
+        return controller != null && controller.offerMove(
+                deltaX, deltaY, ticket, remainingBudgetUs);
     }
 
     @Override
-    public boolean offerMoveFromNative(int deltaX, int deltaY, long ticket) {
-        return offerMove(deltaX, deltaY, ticket);
+    public boolean offerMoveFromNative(
+            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
+        return offerMove(deltaX, deltaY, ticket, remainingBudgetUs);
     }
 
-    private boolean offerMove(int deltaX, int deltaY, long ticket) {
+    private boolean offerMove(
+            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
         int boundedX = Math.max(-127, Math.min(127, deltaX));
         int boundedY = Math.max(-127, Math.min(127, deltaY));
-        if ((boundedX == 0 && boundedY == 0) || ticket <= 0L) return false;
+        if ((boundedX == 0 && boundedY == 0) || ticket <= 0L
+                || remainingBudgetUs <= 0L) {
+            if (ticket > 0L && remainingBudgetUs <= 0L) {
+                droppedMoveDeadlineExpired.incrementAndGet();
+            }
+            return false;
+        }
+        long deadlineNanos = ControlMoveDeadline.deadlineNanos(
+                SystemClock.elapsedRealtimeNanos(), remainingBudgetUs);
+        if (ControlMoveDeadline.isExpired(
+                SystemClock.elapsedRealtimeNanos(), deadlineNanos)) {
+            droppedMoveDeadlineExpired.incrementAndGet();
+            return false;
+        }
         if (!deliveryGate.isDeliveryAllowed()
                 || !deliveryGate.isPhysicalTriggerSatisfied()) {
             droppedOutputDisabled.incrementAndGet();
@@ -447,7 +471,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
         }
         offeredMoves.incrementAndGet();
         long packed = packMove(boundedX, boundedY);
-        pendingMoveSlot.offer(packed, ticket);
+        pendingMoveSlot.offer(packed, ticket, deadlineNanos);
         if (!deliveryGate.isDeliveryAllowed()
                 || !deliveryGate.isPhysicalTriggerSatisfied()) {
             if (pendingMoveSlot.clearIfMatches(packed, ticket)) {
@@ -473,13 +497,20 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
             if (!pendingMoveSlot.takeInto(reusablePendingMove)) return;
             long packed = reusablePendingMove.packed;
             ticket = reusablePendingMove.ticket;
+            long deadlineNanos = reusablePendingMove.deadlineNanos;
+            if (ControlMoveDeadline.isExpired(
+                    SystemClock.elapsedRealtimeNanos(), deadlineNanos)) {
+                droppedMoveDeadlineExpired.incrementAndGet();
+                QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
+                return;
+            }
             if (!deliveryGate.isDeliveryAllowed()
                     || !deliveryGate.isPhysicalTriggerSatisfied()) {
                 droppedOutputDisabled.incrementAndGet();
                 reportUndeliveredMoveUnlessRecoveryCancelled(ticket);
                 return;
             }
-            writeMoveIfStillAllowed(packed, ticket);
+            writeMoveIfStillAllowed(packed, ticket, deadlineNanos);
         } catch (Throwable exception) {
             if (ticket > 0L) {
                 QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
@@ -507,8 +538,16 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
         }
     }
 
-    private void writeMoveIfStillAllowed(long packed, long ticket) {
+    private void writeMoveIfStillAllowed(
+            long packed, long ticket, long deadlineNanos) {
         synchronized (serialIoLock) {
+            long beforeAuthorizationNanos = SystemClock.elapsedRealtimeNanos();
+            if (ControlMoveDeadline.isExpired(
+                    beforeAuthorizationNanos, deadlineNanos)) {
+                droppedMoveDeadlineExpired.incrementAndGet();
+                QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
+                return;
+            }
             if (!deliveryGate.isDeliveryAllowed()
                     || !deliveryGate.isPhysicalTriggerSatisfied()) {
                 droppedOutputDisabled.incrementAndGet();
@@ -527,11 +566,18 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
                     "km.move(" + unpackX(packed) + "," + unpackY(packed) + ")\r\n";
             byte[] command = commandText.getBytes(StandardCharsets.US_ASCII);
             long started = SystemClock.elapsedRealtimeNanos();
+            int writeTimeoutMillis = ControlMoveDeadline.boundedTimeoutMillis(
+                    started, deadlineNanos, 25);
+            if (writeTimeoutMillis <= 0) {
+                droppedMoveDeadlineExpired.incrementAndGet();
+                QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
+                return;
+            }
             long commandConnectionGeneration = activeConnectionGeneration;
             long commandReaderLease = responseReaderLeaseGeneration.get();
             beginExpectedResponse(
                     commandText, commandConnectionGeneration, commandReaderLease);
-            int wrote = target.write(command, 25);
+            int wrote = target.write(command, writeTimeoutMillis);
             long writeMicros = (SystemClock.elapsedRealtimeNanos() - started) / 1_000L;
             if (wrote == command.length) {
                 deliveryCircuit.recordUsbWriteCompletion(writeMicros);
@@ -541,7 +587,8 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
                                 commandText,
                                 started,
                                 commandConnectionGeneration,
-                                commandReaderLease);
+                                commandReaderLease,
+                                deadlineNanos);
                 if (acknowledgementMicros >= 0L) {
                     deviceCommandAcknowledgements.incrementAndGet();
                     moveCommandAcknowledgements.incrementAndGet();
@@ -551,9 +598,16 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
                             ticket, true, acknowledgementMicros);
                 } else {
                     deviceAcknowledgementFailures.incrementAndGet();
+                    boolean moveDeadlineExpired = ControlMoveDeadline.isExpired(
+                            SystemClock.elapsedRealtimeNanos(), deadlineNanos);
+                    if (moveDeadlineExpired) {
+                        droppedMoveDeadlineExpired.incrementAndGet();
+                    }
                     QnnHtpBridge.reportNativeMakcuMoveResult(ticket, false, 0L);
                     invalidateProtocolAfterDeliveryFailureLocked(
-                            "device_ack_timeout_or_mismatch");
+                            moveDeadlineExpired
+                                    ? "move_deadline_expired_after_write"
+                                    : "device_ack_timeout_or_mismatch");
                     lastStatus =
                             "MAKCU command acknowledgement failed; reconnect required";
                     events.write("makcu_device_ack_failed",
@@ -579,12 +633,31 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
             long startedNanos,
             long connectionGeneration,
             long readerLease) {
+        return awaitExecutedAcknowledgement(
+                target,
+                expectedCommand,
+                startedNanos,
+                connectionGeneration,
+                readerLease,
+                Long.MAX_VALUE);
+    }
+
+    private long awaitExecutedAcknowledgement(
+            RawUsbTransport target,
+            String expectedCommand,
+            long startedNanos,
+            long connectionGeneration,
+            long readerLease,
+            long moveDeadlineNanos) {
         if (target == null) {
             cancelExpectedResponse(
                     expectedCommand, connectionGeneration, readerLease);
             return -1L;
         }
-        long deadline = startedNanos + COMMAND_RESPONSE_TIMEOUT_NANOS;
+        long responseDeadline = ControlMoveDeadline.boundedDeadlineNanos(
+                startedNanos, COMMAND_RESPONSE_TIMEOUT_NANOS);
+        long deadline = ControlMoveDeadline.earlierDeadline(
+                responseDeadline, moveDeadlineNanos);
         synchronized (responseLock) {
             while (isExpectedResponseLocked(
                     expectedCommand, connectionGeneration, readerLease)
@@ -602,7 +675,9 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
             }
             boolean acknowledged = isExpectedResponseLocked(
                     expectedCommand, connectionGeneration, readerLease)
-                    && expectedResponseAcknowledged;
+                    && expectedResponseAcknowledged
+                    && expectedResponseAcknowledgedAtNanos > 0L
+                    && expectedResponseAcknowledgedAtNanos <= deadline;
             clearExpectedResponseLocked();
             if (!acknowledged) return -1L;
         }
@@ -644,6 +719,8 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
                             && MakcuResponseStreamParser.isExecutedAcknowledgement(
                             response, expected)) {
                         expectedResponseAcknowledged = true;
+                        expectedResponseAcknowledgedAtNanos =
+                                SystemClock.elapsedRealtimeNanos();
                         responseLock.notifyAll();
                     } else {
                         unexpectedDeviceResponses.incrementAndGet();
@@ -791,6 +868,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
             expectedResponseConnectionGeneration = connectionGeneration;
             expectedResponseReaderLease = readerLease;
             expectedResponseAcknowledged = false;
+            expectedResponseAcknowledgedAtNanos = 0L;
         }
     }
 
@@ -817,6 +895,7 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
         expectedResponseConnectionGeneration = 0L;
         expectedResponseReaderLease = 0L;
         expectedResponseAcknowledged = false;
+        expectedResponseAcknowledgedAtNanos = 0L;
     }
 
     private void scheduleButtonStreamConfiguration() {
@@ -976,6 +1055,8 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
                 + " physical_execution_verified=0"
                 + " dropped_disconnected=" + droppedDisconnected.get()
                 + " dropped_output_disabled=" + droppedOutputDisabled.get()
+                + " dropped_move_deadline_expired="
+                + droppedMoveDeadlineExpired.get()
                 + " delivery_failures=" + delivery.failureCount
                 + " consecutive_delivery_failures=" + delivery.consecutiveFailures
                 + " delivery_circuit_open=" + (delivery.circuitOpen ? 1 : 0)

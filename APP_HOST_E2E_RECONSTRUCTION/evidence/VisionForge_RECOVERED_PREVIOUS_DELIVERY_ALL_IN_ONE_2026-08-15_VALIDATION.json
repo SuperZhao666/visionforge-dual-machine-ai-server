@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "generated_at_utc": "2026-08-15T13:36:21.879407+00:00",
+  "status": "PASS",
+  "operation": "recover_existing_bytes_and_documents_only",
+  "final_archive": {
+    "name": "VisionForge_RECOVERED_PREVIOUS_DELIVERY_ALL_IN_ONE_2026-08-15.zip",
+    "size_bytes": 178551005,
+    "sha256": "81142ce68b5c96a6bacc4bac6853b43e9505c3670c9f2c390183b32d41d0c7b7",
+    "zip_crc": "PASS",
+    "entry_count": 2878,
+    "root_directories": [
+      "VisionForge_DualMachineAI_Server_complete_repair"
+    ]
+  },
+  "source_archive": {
+    "name": "VisionForge_DualMachineAI_Server_complete_repair.zip",
+    "size_bytes": 178447414,
+    "sha256": "015ec5fcc8a019f8afc33dbc6f00e6ffb6d6c4e05c6e4d518246c5aa8e50f052",
+    "entry_count": 2865
+  },
+  "source_entries_preserved": {
+    "lost_count": 0,
+    "altered_crc_or_size_count": 0,
+    "lost": [],
+    "altered": [],
+    "status": "PASS"
+  },
+  "recovery_documents": {
+    "required_count": 7,
+    "missing_required": [],
+    "status": "PASS"
+  },
+  "truth_boundary": {
+    "latest_claimed_app_host_e2e_zip_byte_entity_recovered": false,
+    "latest_app_host_e2e_delivery_description_recovered": true,
+    "source_code_regenerated_or_modified_during_recovery": false,
+    "maximum_verified_source_baseline": "VisionForge_DualMachineAI_Server_complete_repair.zip"
+  }
+}

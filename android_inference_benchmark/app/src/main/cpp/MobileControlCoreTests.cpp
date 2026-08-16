@@ -1912,7 +1912,9 @@ void test_overwatch_non_enemy_body_class_is_ignored() {
       box(180.0F, 180.0F, 40.0F, 100.0F, 0.99F, 1U)};
   const auto rejected = core.process(non_enemy_body, frame(1, 1'000));
   assert(!rejected.has_target);
-  assert(rejected.suppression_reason == ControlSuppressionReason::no_valid_target);
+  assert(rejected.suppression_reason ==
+         ControlSuppressionReason::detected_not_control_eligible);
+  assert(core.metrics().detected_not_control_eligible_frames == 1U);
   assert(core.metrics().rejected_unsupported_class == 1U);
 
   const std::array mixed{

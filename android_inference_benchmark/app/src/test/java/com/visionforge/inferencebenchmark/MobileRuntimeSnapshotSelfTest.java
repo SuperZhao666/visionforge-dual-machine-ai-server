@@ -18,6 +18,10 @@ public final class MobileRuntimeSnapshotSelfTest {
         MobileProfileStorageKeysSelfTest.run();
         MobilePipelineCoordinatorSelfTest.run();
         HostVideoPresenceProbeSelfTest.run();
+        com.visionforge.inferencebenchmark.video.VideoWireProtocolSelfTest.main(args);
+        com.visionforge.inferencebenchmark.video.VideoPreflightReassemblyWindowSelfTest.main(args);
+        com.visionforge.inferencebenchmark.video.DecoderRestartCoordinatorSelfTest.main(args);
+        com.visionforge.inferencebenchmark.runtime.MobileRuntimeArchitectureSelfTest.main(args);
         AutomaticFormalUsageSessionGuardSelfTest.run();
         AutomaticUsageGuardCheckpointPolicySelfTest.run();
         AutomaticFormalStartRetryPolicySelfTest.run();
@@ -44,6 +48,7 @@ public final class MobileRuntimeSnapshotSelfTest {
         MakcuConnectionAttemptTrackerSelfTest.run();
         MakcuDeliveryCircuitSelfTest.run();
         MakcuDeliveryGateSelfTest.run();
+        ControlMoveDeadlineSelfTest.run();
         MakcuResponseStreamParserSelfTest.run();
         ControlTriggerSelfTest.run();
         MakcuJniContractSelfTest.run();

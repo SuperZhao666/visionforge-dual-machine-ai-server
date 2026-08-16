@@ -15,6 +15,11 @@ if (!(formalSecurityCapabilityValue in ['true', 'false'])) {
 }
 ext.formalSecureDataPlaneImplemented = Boolean.parseBoolean(
         formalSecurityCapabilityValue)
+def releaseTaskRequested = {
+    gradle.startParameter.taskNames.any { String taskName ->
+        taskName.toLowerCase(java.util.Locale.ROOT).contains('release')
+    }
+}
 def formalSecureDataPlaneOnly = providers
         .gradleProperty('visionforgeFormalSecureDataPlaneOnly')
         .getOrElse('false')
@@ -23,6 +28,11 @@ tasks.register('verifyFormalSecureDataPlaneImplemented') {
     group = 'verification'
     description = 'Blocks formal APK output until Secure v2 is fully implemented.'
     doLast {
+        if (!releaseTaskRequested()) {
+            logger.lifecycle(
+                    'VFDUAL_FORMAL_SECURITY_LOADER=SKIPPED_NON_RELEASE_TASK_GRAPH')
+            return
+        }
         if (!formalSecureDataPlaneOnly) {
             throw new GradleException(
                     'Formal release must set -PvisionforgeFormalSecureDataPlaneOnly=true')
