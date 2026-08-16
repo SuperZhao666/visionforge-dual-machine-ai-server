@@ -6,7 +6,7 @@
     "SHA256SUMS.txt"
   ],
   "file_count": 3094,
-  "logical_bytes": 208036997,
+  "logical_bytes": 208037339,
   "files": [
     {
       "path": ".github/workflows/app-host-e2e-architecture.yml",
@@ -3934,8 +3934,8 @@
     },
     {
       "path": "dual_machine_runtime/host/windows/archive_host_symbols.ps1",
-      "size_bytes": 1649,
-      "sha256": "9107eddcf9d0aa206756dadb1f4a2a39a6d0c9e191626e4b81b4fb7b98c9adc5",
+      "size_bytes": 1991,
+      "sha256": "9858d919866da9f86529cb68847f050fac6f818e65434f0623388e60aa4fe869",
       "executable": false
     },
     {
