@@ -486,6 +486,11 @@ def generatedQaPrivateArtifacts = layout.buildDirectory.dir(
         'generated/private-artifacts/qa').get().asFile
 def qnnRuntimeDir = new File(generatedDebugPrivateArtifacts, 'jniLibs/arm64-v8a')
 def qnnAssetDir = new File(generatedDebugPrivateArtifacts, 'assets/qnn')
+// Public `check` must remain runnable without the protected private-artifact
+// runner. Only an explicit debug/QA package or lint task opts into staging.
+def privateArtifactBuildRequested = gradle.startParameter.taskNames.any { taskPath ->
+    taskPath.toLowerCase(Locale.ROOT) ==~ /.*(assemble|bundle|lint)(debug|qa)$/
+}
 android.sourceSets.debug.assets.srcDir(new File(generatedDebugPrivateArtifacts, 'assets'))
 android.sourceSets.debug.jniLibs.srcDir(new File(generatedDebugPrivateArtifacts, 'jniLibs'))
 android.sourceSets.qa.assets.srcDir(new File(generatedQaPrivateArtifacts, 'assets'))
@@ -530,9 +535,9 @@ def prepareDebugPrivateArtifactsTask = registerPrivateArtifactStaging(
 def prepareQaPrivateArtifactsTask = registerPrivateArtifactStaging(
         'qa', generatedQaPrivateArtifacts)
 tasks.configureEach { task ->
-    if (task.name == 'preDebugBuild') {
+    if (privateArtifactBuildRequested && task.name == 'preDebugBuild') {
         task.dependsOn(prepareDebugPrivateArtifactsTask)
-    } else if (task.name == 'preQaBuild') {
+    } else if (privateArtifactBuildRequested && task.name == 'preQaBuild') {
         task.dependsOn(prepareQaPrivateArtifactsTask)
     }
 }
@@ -1231,15 +1236,19 @@ tasks.configureEach { task ->
             && (task.name.endsWith('NativeLibs')
             || task.name.endsWith('JniLibFolders')
             || task.name.endsWith('Assets'))
-    if (packagesNativeOrAssets && lowerTaskName.contains('debug')) {
+    if (privateArtifactBuildRequested && packagesNativeOrAssets
+            && lowerTaskName.contains('debug')) {
         task.dependsOn(prepareDebugPrivateArtifactsTask)
-    } else if (packagesNativeOrAssets && lowerTaskName.contains('qa')) {
+    } else if (privateArtifactBuildRequested && packagesNativeOrAssets
+            && lowerTaskName.contains('qa')) {
         task.dependsOn(prepareQaPrivateArtifactsTask)
     }
     // Lint may inspect debug/QA staged assets; release lint remains source-only.
-    if (lowerTaskName.contains('lint') && lowerTaskName.contains('debug')) {
+    if (privateArtifactBuildRequested && lowerTaskName.contains('lint')
+            && lowerTaskName.contains('debug')) {
         task.dependsOn(prepareDebugPrivateArtifactsTask)
-    } else if (lowerTaskName.contains('lint') && lowerTaskName.contains('qa')) {
+    } else if (privateArtifactBuildRequested && lowerTaskName.contains('lint')
+            && lowerTaskName.contains('qa')) {
         task.dependsOn(prepareQaPrivateArtifactsTask)
     }
 }

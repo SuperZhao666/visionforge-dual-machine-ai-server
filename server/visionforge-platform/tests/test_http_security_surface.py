@@ -98,6 +98,8 @@ def test_nginx_port_80_has_explicit_https_redirect() -> None:
 
 
 def test_xianyu_management_api_has_no_anonymous_docs_surface() -> None:
+    if not _XIANYU_REPLY_SERVER.is_file():
+        pytest.skip("optional Xianyu upstream source is not part of this checkout")
     source = _XIANYU_REPLY_SERVER.read_text(encoding="utf-8")
     fastapi_block = re.search(
         r"app\s*=\s*FastAPI\((?P<body>.*?)\n\)",
