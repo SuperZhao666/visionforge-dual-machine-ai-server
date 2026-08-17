@@ -65,7 +65,7 @@
             </details>
             <form method="post" action="/admin/help-faqs/delete">
                 <input type="hidden" name="faq_id" value="{{ item.id }}">
-                <button class="btn btn-sm btn-danger" onclick="return confirm('确认删除这条帮助内容？')">删除</button>
+                <button class="btn btn-sm btn-danger" data-confirm="确认删除这条帮助内容？">删除</button>
             </form>
             </div>
         </td>

@@ -912,24 +912,24 @@ def _create_pair_generation_credentials_table(
     connection.execute(_PAIR_GENERATION_CREDENTIAL_TABLE_SQL)
 
 
-def _normalized_schema_sql(value: str) -> str:
-    """Return a token-exact SQLite schema representation.
+def _normalized_schema_sql(value: str) -> tuple[str, ...]:
+    """Return a quote-aware SQLite token fingerprint.
 
-    ``sqlite_master.sql`` preserves harmless source formatting.  Comparing a
-    whitespace-collapsed string therefore rejected tables created by this
-    module's own multiline bootstrap script.  Removing all whitespace would be
-    unsafe because it can merge distinct SQL tokens.  This lexer ignores only
-    whitespace/comments, lower-cases unquoted SQL tokens, and preserves quoted
-    literals/identifiers and every operator as separate tokens.  Formatting
-    variants compare equal while a missing CHECK/UNIQUE/FOREIGN KEY remains a
-    different token sequence and still fails closed.
+    Layout and comments are ignored, unquoted SQL words are folded to their
+    case-insensitive form, and quoted literals/identifiers remain byte-exact.
+    This makes harmless formatting changes equivalent without allowing a
+    literal-sensitive CHECK constraint to be weakened by case folding.
     """
     tokens: list[str] = []
     index = 0
     length = len(value)
+    two_character_operators = {
+        "!=", "%=", "&&", "&=", "*=", "+=", "-=", "->", "/=", "<<",
+        "<=", "<>", "==", ">=", ">>", "|=", "||",
+    }
     while index < length:
-        char = value[index]
-        if char.isspace():
+        character = value[index]
+        if character.isspace():
             index += 1
             continue
         if value.startswith("--", index):
@@ -937,55 +937,80 @@ def _normalized_schema_sql(value: str) -> str:
             index = length if newline < 0 else newline + 1
             continue
         if value.startswith("/*", index):
-            end = value.find("*/", index + 2)
-            if end < 0:
-                raise ValueError("unterminated SQL block comment")
-            index = end + 2
-            continue
-        if char in ("'", '"', "`"):
-            quote = char
-            start = index
-            index += 1
-            while index < length:
-                if value[index] == quote:
-                    if index + 1 < length and value[index + 1] == quote:
-                        index += 2
-                        continue
-                    index += 1
-                    break
-                index += 1
-            else:
-                raise ValueError("unterminated quoted SQL token")
-            tokens.append(value[start:index])
-            continue
-        if char == "[":
-            end = value.find("]", index + 1)
-            if end < 0:
-                raise ValueError("unterminated bracketed SQL identifier")
-            tokens.append(value[index : end + 1])
-            index = end + 1
-            continue
-        if char.isalnum() or char in ("_", "$", "."):
-            start = index
-            index += 1
-            while index < length and (
-                value[index].isalnum() or value[index] in ("_", "$", ".")
-            ):
-                index += 1
-            tokens.append(value[start:index].lower())
-            continue
-        matched = False
-        for operator in ("->>", "<=", ">=", "<>", "!=", "==", "||", "->"):
-            if value.startswith(operator, index):
-                tokens.append(operator)
-                index += len(operator)
-                matched = True
+            closing = value.find("*/", index + 2)
+            if closing < 0:
+                tokens.append(value[index:])
                 break
-        if matched:
+            index = closing + 2
             continue
-        tokens.append(char)
+        if character == "'":
+            end = index + 1
+            while end < length:
+                if value[end] != "'":
+                    end += 1
+                    continue
+                if end + 1 < length and value[end + 1] == "'":
+                    end += 2
+                    continue
+                end += 1
+                break
+            tokens.append(value[index:end])
+            index = end
+            continue
+        if character in {'"', "`", "["}:
+            closing_character = "]" if character == "[" else character
+            end = index + 1
+            while end < length:
+                if value[end] != closing_character:
+                    end += 1
+                    continue
+                if (
+                    character != "["
+                    and end + 1 < length
+                    and value[end + 1] == closing_character
+                ):
+                    end += 2
+                    continue
+                end += 1
+                break
+            tokens.append(value[index:end])
+            index = end
+            continue
+        if character.isalpha() or character == "_":
+            end = index + 1
+            while end < length and (
+                value[end].isalnum() or value[end] in {"_", "$"}
+            ):
+                end += 1
+            tokens.append(value[index:end].lower())
+            index = end
+            continue
+        if character.isdigit():
+            end = index + 1
+            while end < length and (
+                value[end].isalnum() or value[end] in {"_", "."}
+            ):
+                end += 1
+            tokens.append(value[index:end].lower())
+            index = end
+            continue
+        if index + 2 <= length:
+            candidate = value[index : index + 2]
+            if candidate in two_character_operators:
+                if (
+                    candidate == "->"
+                    and index + 3 <= length
+                    and value[index + 2] == ">"
+                ):
+                    tokens.append("->>")
+                    index += 3
+                else:
+                    tokens.append(candidate)
+                    index += 2
+                continue
+        tokens.append(character)
         index += 1
-    return "\x1f".join(tokens)
+    return tuple(tokens)
 
 
 def _drop_pair_security_triggers(connection: sqlite3.Connection) -> None:

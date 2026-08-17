@@ -20,7 +20,7 @@ set "BUILD_DIR=%RUNTIME_ROOT%\out_ninja_host_release"
 rem Keep the disposable test tree short. CMake's Ninja generator embeds the
 rem absolute path of Android benchmark sources in object paths, and the full
 rem repository path can exceed MSVC's legacy path limit.
-set "TEST_BUILD_DIR=C:\vfdual-host-tests-clean"
+set "TEST_BUILD_DIR=%RUNTIME_ROOT%\out\cmake-host-tests-clean"
 set "CMAKE_EXE=%REPOSITORY_ROOT%\.android-sdk\cmake\3.22.1\bin\cmake.exe"
 set "CTEST_EXE=%REPOSITORY_ROOT%\.android-sdk\cmake\3.22.1\bin\ctest.exe"
 set "NINJA_EXE=%REPOSITORY_ROOT%\.android-sdk\cmake\3.22.1\bin\ninja.exe"
@@ -49,6 +49,47 @@ if not exist "%HOST_VERIFY_SCRIPT%" (
   exit /b 1
 )
 if not defined VFDUAL_HOST_OUTPUT set "VFDUAL_HOST_OUTPUT=%RUNTIME_ROOT%\out\VFHost.exe"
+for %%I in ("%VFDUAL_HOST_OUTPUT%") do set "HOST_OUTPUT_PDB=%%~dpnI.pdb"
+set "HOST_EVIDENCE_DIR=%BUILD_DIR%\private_release_evidence"
+rem Remove only obsolete public verification sidecars from earlier builds. The
+rem new verifier writes evidence out-of-band under HOST_EVIDENCE_DIR.
+if exist "%VFDUAL_HOST_OUTPUT%.verify.json" del /F /Q "%VFDUAL_HOST_OUTPUT%.verify.json"
+if exist "%VFDUAL_HOST_OUTPUT%.sha256" del /F /Q "%VFDUAL_HOST_OUTPUT%.sha256"
+if exist "%HOST_OUTPUT_PDB%" del /F /Q "%HOST_OUTPUT_PDB%"
+if exist "%VFDUAL_HOST_OUTPUT%.verify.json" exit /b 1
+if exist "%VFDUAL_HOST_OUTPUT%.sha256" exit /b 1
+if exist "%HOST_OUTPUT_PDB%" exit /b 1
+if /I not "%VFDUAL_REQUIRE_AUTHENTICODE%"=="1" (
+  echo ERROR: Production Host builds require VFDUAL_REQUIRE_AUTHENTICODE=1.
+  exit /b 1
+)
+if not defined VFDUAL_HOST_SIGN_SCRIPT (
+  echo ERROR: Set VFDUAL_HOST_SIGN_SCRIPT to a reviewed PowerShell signer outside the repository.
+  exit /b 1
+)
+if not exist "%VFDUAL_HOST_SIGN_SCRIPT%" (
+  echo ERROR: Host signing script was not found at "%VFDUAL_HOST_SIGN_SCRIPT%".
+  exit /b 1
+)
+for %%I in ("%VFDUAL_HOST_SIGN_SCRIPT%") do set "HOST_SIGN_SCRIPT_ABS=%%~fI"
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command ^
+  "$repo = [IO.Path]::GetFullPath($env:REPOSITORY_ROOT).TrimEnd('\') + '';" ^
+  "$signer = [IO.Path]::GetFullPath($env:HOST_SIGN_SCRIPT_ABS);" ^
+  "if ($signer.StartsWith($repo, [StringComparison]::OrdinalIgnoreCase)) { exit 1 }"
+if errorlevel 1 (
+  echo ERROR: VFDUAL_HOST_SIGN_SCRIPT must be stored outside the repository workspace.
+  exit /b 1
+)
+if not defined VFDUAL_HOST_SIGNER_CERT_SHA256 (
+  echo ERROR: Set VFDUAL_HOST_SIGNER_CERT_SHA256 to the reviewed signer certificate SHA-256.
+  exit /b 1
+)
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command ^
+  "$value = $env:VFDUAL_HOST_SIGNER_CERT_SHA256; if ($value -notmatch '^[0-9A-Fa-f]{64}$') { exit 1 }"
+if errorlevel 1 (
+  echo ERROR: VFDUAL_HOST_SIGNER_CERT_SHA256 must be exactly 64 hexadecimal characters.
+  exit /b 1
+)
 
 rem OUTPUT_NAME does not remove binaries emitted by the former product name.
 rem Delete only the two formal-build legacy artifacts so a successful build
@@ -64,7 +105,7 @@ if exist "%RUNTIME_ROOT%\out\VisionForgeHost.exe" (
   exit /b 1
 )
 
-"%CMAKE_EXE%" -S "%RUNTIME_ROOT%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" -DVFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS=ON
+"%CMAKE_EXE%" -S "%RUNTIME_ROOT%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" -DVFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS=OFF -DVFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY=ON
 if errorlevel 1 exit /b 1
 rem A formal one-EXE build must not reuse objects compiled against an older
 rem class layout. Ninja dependency output can be localized on Windows, so a
@@ -101,25 +142,27 @@ if errorlevel 1 (
 )
 
 powershell.exe -NoLogo -NoProfile -NonInteractive -Command ^
-  "Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop;" ^
-  "$sourceHash = (Get-FileHash -LiteralPath '%BUILD_DIR%\VFHost.exe' -Algorithm SHA256).Hash;" ^
-  "$productHash = (Get-FileHash -LiteralPath '%VFDUAL_HOST_OUTPUT%' -Algorithm SHA256).Hash;" ^
-  "if ($sourceHash -ne $productHash) { Write-Error ('Product copy verification failed: source=' + $sourceHash + ' product=' + $productHash); exit 1 };" ^
-  "Write-Host ('Verified product SHA256: ' + $productHash)"
+  "$product = Get-Item -LiteralPath '%VFDUAL_HOST_OUTPUT%';" ^
+  "if ($product.Length -le 0) { Write-Error 'Signed Host artifact is empty'; exit 1 };" ^
+  "$productHash = (Get-FileHash -LiteralPath $product.FullName -Algorithm SHA256).Hash;" ^
+  "Write-Host ('Signed product SHA256: ' + $productHash)"
 if errorlevel 1 exit /b 1
 
-set "HOST_AUTHENTICODE_ARGUMENT="
-if /I "%VFDUAL_REQUIRE_AUTHENTICODE%"=="1" set "HOST_AUTHENTICODE_ARGUMENT=-RequireAuthenticode"
+if exist "%HOST_EVIDENCE_DIR%" "%CMAKE_EXE%" -E remove_directory "%HOST_EVIDENCE_DIR%"
+if errorlevel 1 exit /b 1
+mkdir "%HOST_EVIDENCE_DIR%"
+if errorlevel 1 exit /b 1
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass ^
   -File "%HOST_VERIFY_SCRIPT%" ^
   -ExePath "%VFDUAL_HOST_OUTPUT%" ^
   -VersionFile "%HOST_VERSION_FILE%" ^
-  -PrivateSymbolsDirectory "%BUILD_DIR%\private_symbols" ^
-  %HOST_AUTHENTICODE_ARGUMENT%
+  -ReportDirectory "%HOST_EVIDENCE_DIR%" ^
+  -ExpectedSignerCertificateSha256 "%VFDUAL_HOST_SIGNER_CERT_SHA256%" ^
+  -RequireAuthenticode ^
+  -RequireTimestamp
 if errorlevel 1 exit /b 1
 
-echo Built product EXE: %VFDUAL_HOST_OUTPUT%
-echo Host verification: %VFDUAL_HOST_OUTPUT%.verify.json
-echo Private symbols: %BUILD_DIR%\private_symbols
+echo Built signed product EXE: %VFDUAL_HOST_OUTPUT%
+echo Private verification evidence: %HOST_EVIDENCE_DIR%
 echo Clean Host test build: %TEST_BUILD_DIR%
 exit /b 0

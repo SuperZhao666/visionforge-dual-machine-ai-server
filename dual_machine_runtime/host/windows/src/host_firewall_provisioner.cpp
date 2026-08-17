@@ -1,4 +1,5 @@
 #include "vfdual/host_firewall_provisioner.hpp"
+#include "vfdual/host_release_identity_policy.hpp"
 
 #include "vfdual/wired_link_contract.hpp"
 
@@ -941,39 +942,6 @@ bool is_legacy_browser_download_name(std::wstring_view filename) noexcept {
         });
 }
 
-bool is_versioned_host_release_name(std::wstring_view filename) noexcept {
-    constexpr std::array<std::wstring_view, 2U> kPrefixes{
-        L"VisionForgeHost_", L"VFHost_"};
-    constexpr std::wstring_view kSuffix = L".exe";
-    for (const std::wstring_view prefix : kPrefixes) {
-        if (filename.size() <= prefix.size() + kSuffix.size() ||
-            !equals_insensitive(filename.substr(0, prefix.size()), prefix) ||
-            !equals_insensitive(
-                filename.substr(filename.size() - kSuffix.size()), kSuffix)) {
-            continue;
-        }
-        const std::wstring_view version = filename.substr(
-            prefix.size(), filename.size() - prefix.size() - kSuffix.size());
-        std::size_t segment_start{};
-        std::size_t segment_count{};
-        for (std::size_t index = 0; index <= version.size(); ++index) {
-            if (index != version.size() && version[index] != L'.') continue;
-            const std::wstring_view segment = version.substr(
-                segment_start, index - segment_start);
-            if (segment.empty() || segment.size() > 10U ||
-                !std::all_of(segment.begin(), segment.end(), [](wchar_t character) {
-                    return character >= L'0' && character <= L'9';
-                })) {
-                return false;
-            }
-            ++segment_count;
-            segment_start = index + 1U;
-        }
-        return segment_count == 3U;
-    }
-    return false;
-}
-
 bool has_host_executable_identity(
     std::wstring_view desired_application_path,
     std::wstring_view existing_application_path) noexcept {
@@ -991,7 +959,7 @@ bool has_host_executable_identity(
             equals_insensitive(filename, kLegacyHostExecutableName) ||
             equals_insensitive(filename, kLegacyPortableHostExecutableName) ||
             is_legacy_browser_download_name(filename) ||
-            is_versioned_host_release_name(filename)) {
+            host_release_executable_name_is_recognized(filename)) {
             return true;
         }
 

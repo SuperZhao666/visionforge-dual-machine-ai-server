@@ -7,7 +7,7 @@
 <title>购买时长 - VisionForge</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/css/style.css?v=5">
-<style>
+<style nonce="{{ csp_nonce }}">
 /* 购买页专属组件（通用设计令牌与 shop 组件见 style.css §21.7） */
 #shop-cosmos { position: fixed; inset: 0; z-index: -1; width: 100%; height: 100%; }
 .purchase-wrap { position: relative; z-index: 1; max-width: 1120px; margin: 0 auto; padding: 2.2rem 1.25rem 4rem; }
@@ -136,8 +136,8 @@
             <div class="pay-qr-row">
                 <div class="qr-frame">
                     <span class="qr-corner tl"></span><span class="qr-corner tr"></span><span class="qr-corner bl"></span><span class="qr-corner br"></span>
-                    <img src="{{ order.qr }}" alt="payment qr" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
-                    <div class="qr-fallback">二维码图片未配置<br>请联系管理员补齐支付码</div>
+                    <img src="{{ order.qr }}" alt="payment qr" data-hide-on-error data-error-target="payment-qr-fallback">
+                    <div class="qr-fallback" id="payment-qr-fallback">二维码图片未配置<br>请联系管理员补齐支付码</div>
                     <span class="qr-scanline" aria-hidden="true"></span>
                 </div>
                 <p class="countdown-text">请在 <strong id="vfRemainingSeconds" data-seconds="{{ order.remaining_seconds }}">{{ order.remaining_seconds }}秒</strong> 内严格按页面固定金额支付。二维码金额已预设，请勿自行修改。</p>
@@ -201,9 +201,10 @@
 {% if view == 'order' and order %}
 <canvas id="pay-confetti" aria-hidden="true"></canvas>
 {% endif %}
+<script defer src="/static/js/security_ui.js?v=1"></script>
 <script defer src="/static/js/shop_fx.js?v=2"></script>
 {% if poll_mode == 'order' %}
-<script>
+<script nonce="{{ csp_nonce }}">
 let vfStatusTimer = null;
 async function vfPollPurchaseStatus() {
   try {
@@ -237,7 +238,7 @@ function vfUpdateDeadline() {
 if (vfDeadlineNode) { vfDeadlineNode.dataset.started = String(Date.now()); vfUpdateDeadline(); window.setInterval(vfUpdateDeadline, 1000); }
 </script>
 {% elif poll_mode == 'plans' %}
-<script>
+<script nonce="{{ csp_nonce }}">
 let vfStatusTimer = null;
 async function vfPollPurchaseStatus() {
   try {
@@ -255,7 +256,7 @@ window.setTimeout(vfPollPurchaseStatus, 300);
 </script>
 {% endif %}
 {% if view == 'plans' %}
-<script>
+<script nonce="{{ csp_nonce }}">
 /* 防重复提交：提交后锁定该卡片其余按钮并给出反馈（不禁用按钮，保证表单字段完整） */
 document.querySelectorAll('.plan-form-card').forEach(function (form) {
   form.addEventListener('submit', function (e) {
@@ -271,7 +272,7 @@ document.querySelectorAll('.plan-form-card').forEach(function (form) {
 </script>
 {% endif %}
 {% if celebrate %}
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   var canvas = document.getElementById('pay-confetti');

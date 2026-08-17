@@ -92,7 +92,7 @@
             <td>{% if batch.status == 'active' %}<span class="badge badge-active">生效中</span>{% else %}<span class="badge badge-neutral">{{ batch.status }}</span>{% endif %}</td>
             <td style="font-size:0.8rem;">{{ batch.created_at }}</td>
             <td>{% if batch.status == 'active' and batch.issued_count %}
-                <form method="post" action="/admin/growth/codes/revoke" onsubmit="return confirm('确定废止该批次所有尚未兑换的码？已兑换记录不会改变。');">
+                <form method="post" action="/admin/growth/codes/revoke" data-confirm="确定废止该批次所有尚未兑换的码？已兑换记录不会改变。">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="batch_id" value="{{ batch.id }}">
                     <button class="btn btn-danger btn-sm">废止未兑换码</button>
                 </form>{% endif %}</td>

@@ -9,7 +9,7 @@
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/css/style.css?v=5">
     {% block extra_head %}{% endblock %}
-    <script>
+    <script nonce="{{ csp_nonce }}">
         /* FX 武装标记：仅 JS 可用时启用转场/reveal 初始态；fx.js 未就绪则 1.6s 后回退 */
         document.documentElement.classList.add('fx');
         setTimeout(function () {
@@ -68,8 +68,9 @@
         <p>&copy; 2026 VisionForge. All rights reserved.</p>
     </footer>
     {% endblock %}
+    <script defer src="/static/js/security_ui.js?v=1"></script>
     {% if csrf_token %}
-    <script>
+    <script nonce="{{ csp_nonce }}">
     (() => {
         const token = {{ csrf_token | tojson }};
         document.querySelectorAll('form[method="post"], form[method="POST"]').forEach((form) => {

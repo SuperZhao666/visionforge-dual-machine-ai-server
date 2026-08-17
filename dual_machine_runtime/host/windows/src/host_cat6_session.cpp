@@ -1,5 +1,6 @@
 #include "vfdual/host_cat6_session.hpp"
 #include "vfdual/host_cat6_protocol.hpp"
+#include "vfdual/host_probe_fallback_policy.hpp"
 #include "vfdual/wired_link_contract.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -63,6 +64,7 @@ struct Observation final {
     std::uint32_t probe_receive_failures{};
     std::uint32_t route_resolution_attempts{};
     std::uint32_t route_resolution_failures{};
+    std::uint32_t route_scoped_broadcast_probe_attempts{};
     std::uint32_t response_bytes{};
     int last_probe_send_error{};
     int last_probe_interface_error{};
@@ -422,6 +424,38 @@ bool send_probe(
     return true;
 }
 
+std::optional<HostProbeRouteIdentity> selected_probe_route(
+    const WirelessHostRoute& route) noexcept {
+    if (route.host_ipv4.empty() || route.interface_index == 0U ||
+        route.local_ipv4_host_order == 0U) {
+        return std::nullopt;
+    }
+    return HostProbeRouteIdentity{
+        .interface_index = route.interface_index,
+        .local_ipv4_host_order = route.local_ipv4_host_order,
+    };
+}
+
+void send_directed_broadcast_probes(
+    SOCKET socket_handle,
+    std::span<const HostIpv4DirectedBroadcastTarget> targets,
+    std::optional<HostProbeRouteIdentity> route,
+    std::uint32_t& next_token,
+    Observation& observation,
+    std::unordered_map<std::uint32_t, PendingProbe>& pending) {
+    for (const auto& target :
+         select_wireless_lan_probe_broadcast_targets(targets, route)) {
+        if (route.has_value()) {
+            ++observation.route_scoped_broadcast_probe_attempts;
+        }
+        in_addr destination{};
+        destination.s_addr = htonl(target.broadcast_ipv4_host_order);
+        send_probe(
+            socket_handle, destination, next_token++, observation, pending,
+            target.interface_index, target.local_ipv4_host_order);
+    }
+}
+
 void reset_probe_quality_observation(Observation& observation) noexcept {
     observation.probes_sent = 0U;
     observation.probes_received = 0U;
@@ -537,6 +571,8 @@ WirelessLanDiscoveryOutcome make_wireless_discovery_outcome(
                << observation.route_resolution_attempts
                << " route_resolution_failures="
                << observation.route_resolution_failures
+               << " route_scoped_broadcast_probe_attempts="
+               << observation.route_scoped_broadcast_probe_attempts
                << " first_ready_source="
                << (observation.first_ready_source.empty()
                        ? "none" : observation.first_ready_source)
@@ -746,23 +782,20 @@ WirelessLanDiscoveryOutcome discover_wireless_lan_mobile_session(
            std::chrono::steady_clock::now() < deadline) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= next_probe) {
-            if (mobile.has_value() && !host_route.host_ipv4.empty() &&
-                host_route.interface_index != 0U) {
+            const auto route = selected_probe_route(host_route);
+            if (mobile.has_value() && route.has_value()) {
                 send_probe(
                     sockets.probe, *mobile, next_token++, observation, pending,
-                    host_route.interface_index,
-                    host_route.local_ipv4_host_order);
-            } else if (multicast.broadcast_probe_enabled) {
-                for (const auto& target :
-                     multicast.directed_broadcast_targets) {
-                    in_addr destination{};
-                    destination.s_addr = htonl(
-                        target.broadcast_ipv4_host_order);
-                    send_probe(
-                        sockets.probe, destination, next_token++, observation,
-                        pending, target.interface_index,
-                        target.local_ipv4_host_order);
-                }
+                    route->interface_index, route->local_ipv4_host_order);
+            }
+            if (multicast.broadcast_probe_enabled) {
+                // Keep a route-scoped directed-broadcast probe alongside the
+                // unicast probe after Ready. Some Android vendor kernels send
+                // Ready successfully but do not deliver the first unicast
+                // datagrams to a newly network-bound UDP listener.
+                send_directed_broadcast_probes(
+                    sockets.probe, multicast.directed_broadcast_targets,
+                    route, next_token, observation, pending);
             }
             next_probe = now + kProbeInterval;
         }
@@ -835,12 +868,18 @@ WirelessLanDiscoveryOutcome discover_wireless_lan_mobile_session(
                 refresh_wireless_host_route_if_missing(
                     source.sin_addr, host_route, observation);
                 ++observation.ready_messages;
-                if (!host_route.host_ipv4.empty() &&
-                    host_route.interface_index != 0U) {
+                const auto route = selected_probe_route(host_route);
+                if (route.has_value()) {
                     send_probe(
                         sockets.probe, *mobile, next_token++, observation,
-                        pending, host_route.interface_index,
-                        host_route.local_ipv4_host_order);
+                        pending, route->interface_index,
+                        route->local_ipv4_host_order);
+                    if (multicast.broadcast_probe_enabled) {
+                        send_directed_broadcast_probes(
+                            sockets.probe,
+                            multicast.directed_broadcast_targets, route,
+                            next_token, observation, pending);
+                    }
                     next_probe = now + kProbeInterval;
                 }
                 continue;

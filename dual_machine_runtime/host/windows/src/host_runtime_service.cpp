@@ -1037,8 +1037,13 @@ void log_host_runtime_event(std::string_view event, std::string_view detail) {
     write_host_event(event, detail);
 }
 
-HostRuntimeService::HostRuntimeService(IsolatedDhcpServer* isolated_dhcp_server)
-    : isolated_dhcp_server_(isolated_dhcp_server) {
+HostRuntimeService::HostRuntimeService(
+    IsolatedDhcpServer* isolated_dhcp_server,
+    std::shared_ptr<HostDataPlaneAuthorizationGate> authorization_gate)
+    : isolated_dhcp_server_(isolated_dhcp_server),
+      authorization_gate_(authorization_gate != nullptr
+          ? std::move(authorization_gate)
+          : std::make_shared<HostDataPlaneAuthorizationGate>()) {
     write_host_event("host_process_start", describe_process_context());
 }
 HostRuntimeService::~HostRuntimeService() { stop(); }
@@ -1072,6 +1077,16 @@ bool HostRuntimeService::start(const HostStreamSettings& settings, std::string& 
                << capture_stack_addresses();
         error = detail.str();
         write_host_event("host_start_rejected", error);
+        return false;
+    }
+    if (authorization_gate_ == nullptr ||
+        !authorization_gate_->permits_data_plane()) {
+        error =
+            "Authenticated Host/Android peer session and a current verified "
+            "server usage lease are required before Host streaming can start.";
+        write_host_event(
+            "host_start_rejected",
+            "reason=host_authorization_closed secure_data_plane_required=true");
         return false;
     }
     {
@@ -1145,6 +1160,7 @@ bool HostRuntimeService::start(const HostStreamSettings& settings, std::string& 
 }
 
 void HostRuntimeService::request_stop() noexcept {
+    if (authorization_gate_ != nullptr) authorization_gate_->stop();
     {
         std::lock_guard lock(mutex_);
         stop_requested_ = true;
@@ -1153,6 +1169,7 @@ void HostRuntimeService::request_stop() noexcept {
 }
 
 void HostRuntimeService::stop() noexcept {
+    if (authorization_gate_ != nullptr) authorization_gate_->stop();
     const bool worker_joinable = worker_.joinable();
     bool should_log_stop_request = false;
     {
@@ -1441,8 +1458,9 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
     HostApplication application;
     if (!application.start(create_runtime_config(
             settings, metrics_path, stream_epoch,
-            []() noexcept {
-                return true;
+            [authorization_gate = authorization_gate_]() noexcept {
+                return authorization_gate != nullptr &&
+                    authorization_gate->permits_data_plane();
             }))) {
         std::lock_guard lock(mutex_);
         last_error_ =
@@ -2093,8 +2111,9 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
             }
             if (!application.start(create_runtime_config(
                     settings, metrics_path, next_stream_epoch,
-                    []() noexcept {
-                        return true;
+                    [authorization_gate = authorization_gate_]() noexcept {
+                        return authorization_gate != nullptr &&
+                            authorization_gate->permits_data_plane();
                     }))) {
                 recovery_stage = "runtime_initialize";
                 recovery_detail =

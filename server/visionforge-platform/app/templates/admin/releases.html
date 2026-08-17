@@ -91,7 +91,7 @@
     </form>
     <form method="post" action="/admin/releases/delete" class="form-actions">
         <input type="hidden" name="release_id" value="{{ r.id }}">
-        <button class="btn btn-danger btn-sm" onclick="return confirm('确认删除版本？')">删除</button>
+        <button class="btn btn-danger btn-sm" data-confirm="确认删除版本？">删除</button>
     </form>
     {% endif %}
     <p style="font-size:0.75rem;color:var(--text-muted);margin-top:0.75rem;">签名：{{ r.algorithm or '旧兼容发布' }} | 创建：{{ r.created_at[:19] }} | 更新：{{ r.updated_at[:19] }}</p>

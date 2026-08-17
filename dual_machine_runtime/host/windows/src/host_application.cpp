@@ -29,7 +29,8 @@ bool HostApplication::start(const HostRuntimeConfig& config) {
   if (!idr_requests_.start(
           kWiredIdrPort,
           config.video.local_host,
-          config.video.phone_host)) {
+          config.video.phone_host,
+          config.video.data_plane_permit)) {
     last_error_ = static_cast<std::int32_t>(idr_requests_.last_socket_error());
     video->reset();
     return false;
@@ -38,7 +39,8 @@ bool HostApplication::start(const HostRuntimeConfig& config) {
   last_start_stage_ = HostApplicationStartStage::mouse_button_publisher_start;
   if (!mouse_button_publisher_.start(
           config.video.local_host,
-          config.video.phone_host)) {
+          config.video.phone_host,
+          config.video.data_plane_permit)) {
     last_error_ = static_cast<std::int32_t>(
         mouse_button_publisher_.stats().last_socket_error);
     idr_requests_.stop();

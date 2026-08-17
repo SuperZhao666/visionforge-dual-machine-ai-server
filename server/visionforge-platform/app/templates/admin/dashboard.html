@@ -130,6 +130,6 @@
     </div>
 </div>
 
-<script>window.__VF_ADMIN_CHARTS__ = {{ charts | tojson }};</script>
+<script nonce="{{ csp_nonce }}">window.__VF_ADMIN_CHARTS__ = {{ charts | tojson }};</script>
 <script defer src="/static/js/admin_charts.js?v=2"></script>
 {% endblock %}

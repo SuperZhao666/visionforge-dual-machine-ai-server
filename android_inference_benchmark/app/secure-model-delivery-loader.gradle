@@ -1,0 +1,52 @@
+def secureModelDeliveryCapabilityFile = file('secure-model-delivery-capability.properties')
+if (!secureModelDeliveryCapabilityFile.isFile()) {
+    throw new GradleException(
+            "Secure model-delivery capability file is missing: ${secureModelDeliveryCapabilityFile}")
+}
+def secureModelDeliveryCapabilityProperties = new Properties()
+secureModelDeliveryCapabilityFile.withInputStream {
+    secureModelDeliveryCapabilityProperties.load(it)
+}
+def secureModelDeliveryCapabilityValue = secureModelDeliveryCapabilityProperties
+        .getProperty('secureEncryptedModelDeliveryImplemented')
+if (!(secureModelDeliveryCapabilityValue in ['true', 'false'])) {
+    throw new GradleException(
+            'secureEncryptedModelDeliveryImplemented must be exactly true or false')
+}
+ext.secureEncryptedModelDeliveryImplemented = Boolean.parseBoolean(
+        secureModelDeliveryCapabilityValue)
+
+tasks.register('verifySecureEncryptedModelDeliveryImplemented') {
+    group = 'verification'
+    description = 'Blocks production APK output while model weights would be plaintext/extractable.'
+    doLast {
+        if (!secureEncryptedModelDeliveryImplemented) {
+            throw new GradleException(
+                    'Secure encrypted model delivery is not implemented; refusing release APK')
+        }
+        println(
+                'VISIONFORGE_SECURE_MODEL_DELIVERY_LOADER=v1:'
+                        + secureEncryptedModelDeliveryImplemented)
+    }
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifySecureEncryptedModelDeliveryImplemented'))
+    }
+}
+
+tasks.register('probeSecureModelDeliveryReleaseGraphContract') {
+    group = 'verification'
+    description = 'Proves the secure model-delivery gate is in the Android release graph.'
+    doLast {
+        def releaseTask = tasks.named('preReleaseBuild').get()
+        def gateTask = tasks.named('verifySecureEncryptedModelDeliveryImplemented').get()
+        if (!releaseTask.taskDependencies.getDependencies(releaseTask).contains(gateTask)) {
+            throw new GradleException(
+                    'Secure model-delivery verification is absent from preReleaseBuild')
+        }
+        println(
+                'VISIONFORGE_SECURE_MODEL_DELIVERY_RELEASE_GRAPH=v1:'
+                        + 'preReleaseBuild->verifySecureEncryptedModelDeliveryImplemented')
+    }
+}

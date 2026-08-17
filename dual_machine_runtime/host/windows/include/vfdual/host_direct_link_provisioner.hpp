@@ -39,6 +39,13 @@ struct HostNetworkAdapterProfile {
     bool dhcp_enabled{};
     std::vector<std::string> ipv4_gateways;
     std::vector<HostNetworkIpv4AddressProfile> ipv4_addresses;
+    // HardwareInterface alone is not sufficient: packet-capture and filter
+    // adapters can expose hardware-like flags on some Windows builds.
+    bool connector_present{true};
+    bool filter_interface{};
+    bool endpoint_interface{};
+    bool virtual_or_loopback{};
+    std::wstring description;
 };
 
 struct HostDirectLinkPlan {

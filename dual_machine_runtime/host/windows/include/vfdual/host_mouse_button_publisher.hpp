@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vfdual/udp_socket.hpp"
+#include "vfdual/udp_video_publisher.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -36,7 +37,8 @@ public:
 
   [[nodiscard]] bool start(
       std::string_view local_ipv4,
-      std::string_view mobile_ipv4) noexcept;
+      std::string_view mobile_ipv4,
+      VideoDataPlanePermitSource permit_source) noexcept;
   void stop() noexcept;
   [[nodiscard]] HostMouseButtonPublisherStats stats() const noexcept;
 
@@ -45,6 +47,7 @@ private:
   [[nodiscard]] bool open_transport(UdpSocket& socket) noexcept;
   [[nodiscard]] bool publish(
       UdpSocket& socket, std::uint8_t button_mask) noexcept;
+  [[nodiscard]] bool authorization_permits_send() const noexcept;
 
   std::thread worker_;
   mutable std::mutex wait_mutex_;
@@ -60,6 +63,7 @@ private:
   std::uint32_t sequence_{};
   std::string local_ipv4_;
   std::string mobile_ipv4_;
+  VideoDataPlanePermitSource permit_source_;
 };
 
 }  // namespace vfdual

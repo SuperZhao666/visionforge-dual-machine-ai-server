@@ -31,6 +31,11 @@ android_inference_benchmark/toolchains/
 android_inference_benchmark/local.properties
 android_inference_benchmark/app/src/main/jniLibs/
 android_inference_benchmark/app/src/main/assets/qnn/
+android_inference_benchmark/app/src/main/assets/qnn/*.so
+android_inference_benchmark/app/src/main/assets/portable_models/
+android_inference_benchmark/app/src/main/jniLibs/arm64-v8a/*.so
+android_inference_benchmark/app/build/generated/private-artifacts/
+**/*.onnx
 *.apk
 *.aab
 *.idsig
@@ -59,3 +64,5 @@ build-artifacts/
 releases/
 _release_staging/
 _release_validation/
+!server/visionforge-platform/app/static/releases/
+!server/visionforge-platform/app/static/releases/.gitignore

@@ -1,5 +1,7 @@
 import logging
+from logging.handlers import RotatingFileHandler
 import re
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -21,7 +23,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler(LOG_DIR / "server.log", encoding="utf-8"),
+        RotatingFileHandler(
+            LOG_DIR / "server.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        ),
         logging.StreamHandler(),
     ],
 )
@@ -51,7 +58,21 @@ async def lifespan(_app: FastAPI):
         logger.info("VisionForge Platform stopped")
 
 
-app = FastAPI(title="VisionForge Platform", version="1.0.0", lifespan=lifespan)
+def _public_api_docs_configuration() -> dict[str, str | None]:
+    enabled = bool(config.PUBLIC_API_DOCS_ENABLED)
+    return {
+        "docs_url": "/docs" if enabled else None,
+        "redoc_url": "/redoc" if enabled else None,
+        "openapi_url": "/openapi.json" if enabled else None,
+    }
+
+
+app = FastAPI(
+    title="VisionForge Platform",
+    version="1.0.0",
+    lifespan=lifespan,
+    **_public_api_docs_configuration(),
+)
 
 
 app.state.limiter = limiter
@@ -62,8 +83,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     trace_id = uuid.uuid4().hex
+    csp_nonce = secrets.token_urlsafe(24)
     started_at = time.perf_counter()
     request.state.trace_id = trace_id
+    request.state.csp_nonce = csp_nonce
     csrf_path = request.url.path.startswith("/admin") or request.url.path in {"/login", "/auth/login"}
     csrf_token = str(request.cookies.get(CSRF_COOKIE_NAME) or "") if csrf_path else ""
     set_csrf_cookie = bool(csrf_path and not verify_csrf_token(csrf_token))
@@ -79,6 +102,19 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data:; "
+        "style-src 'self'; "
+        f"style-src-elem 'self' 'nonce-{csp_nonce}'; "
+        "style-src-attr 'unsafe-inline'; "
+        f"script-src 'self' 'nonce-{csp_nonce}'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "object-src 'none'"
+    )
     response.headers["X-Trace-Id"] = trace_id
     if _is_immutable_release_response(request.url.path, response.status_code):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"

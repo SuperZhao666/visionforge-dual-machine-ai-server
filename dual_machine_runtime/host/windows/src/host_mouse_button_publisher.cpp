@@ -10,6 +10,7 @@
 #include <array>
 #include <chrono>
 #include <system_error>
+#include <utility>
 
 namespace vfdual {
 namespace {
@@ -46,15 +47,18 @@ HostMouseButtonPublisher::~HostMouseButtonPublisher() { stop(); }
 
 bool HostMouseButtonPublisher::start(
     std::string_view local_ipv4,
-    std::string_view mobile_ipv4) noexcept {
+    std::string_view mobile_ipv4,
+    VideoDataPlanePermitSource permit_source) noexcept {
   stop();
-  if (local_ipv4.empty() || mobile_ipv4.empty()) return false;
+  if (local_ipv4.empty() || mobile_ipv4.empty() || !permit_source) return false;
   try {
     local_ipv4_ = local_ipv4;
     mobile_ipv4_ = mobile_ipv4;
+    permit_source_ = std::move(permit_source);
   } catch (...) {
     local_ipv4_.clear();
     mobile_ipv4_.clear();
+    permit_source_ = {};
     return false;
   }
   stop_requested_.store(false, std::memory_order_release);
@@ -91,6 +95,7 @@ void HostMouseButtonPublisher::stop() noexcept {
   current_button_mask_.store(0U, std::memory_order_release);
   local_ipv4_.clear();
   mobile_ipv4_.clear();
+  permit_source_ = {};
 }
 
 HostMouseButtonPublisherStats HostMouseButtonPublisher::stats() const noexcept {
@@ -109,6 +114,16 @@ void HostMouseButtonPublisher::run() noexcept {
   std::uint8_t last_published_mask = 0xffU;
   auto last_publish = std::chrono::steady_clock::time_point::min();
   while (!stop_requested_.load(std::memory_order_acquire)) {
+    if (!authorization_permits_send()) {
+      current_button_mask_.store(0U, std::memory_order_release);
+      transport_ready_.store(false, std::memory_order_release);
+      socket.close();
+      std::unique_lock lock(wait_mutex_);
+      wait_condition_.wait_for(lock, kButtonPollInterval, [this] {
+        return stop_requested_.load(std::memory_order_acquire);
+      });
+      continue;
+    }
     if (!transport_ready_.load(std::memory_order_acquire)) {
       if (!open_transport(socket)) {
         std::unique_lock lock(wait_mutex_);
@@ -141,7 +156,8 @@ void HostMouseButtonPublisher::run() noexcept {
     });
   }
 
-  if (transport_ready_.load(std::memory_order_acquire)) {
+  if (transport_ready_.load(std::memory_order_acquire) &&
+      authorization_permits_send()) {
     (void)publish(socket, 0U);
     (void)publish(socket, 0U);
   }
@@ -166,6 +182,7 @@ bool HostMouseButtonPublisher::open_transport(UdpSocket& socket) noexcept {
 bool HostMouseButtonPublisher::publish(
     UdpSocket& socket,
     std::uint8_t button_mask) noexcept {
+  if (!authorization_permits_send()) return false;
   std::array<std::byte, kMouseButtonPacketBytes> datagram{};
   const MouseButtonStatePacket packet{
       button_mask,
@@ -180,6 +197,15 @@ bool HostMouseButtonPublisher::publish(
   }
   packets_sent_.fetch_add(1U, std::memory_order_relaxed);
   return true;
+}
+
+bool HostMouseButtonPublisher::authorization_permits_send() const noexcept {
+  if (!permit_source_) return false;
+  try {
+    return permit_source_();
+  } catch (...) {
+    return false;
+  }
 }
 
 }  // namespace vfdual
