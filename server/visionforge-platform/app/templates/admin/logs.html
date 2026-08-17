@@ -54,7 +54,7 @@
             <form method="post" action="/admin/logs/delete-session" style="margin:0;">
                 <input type="hidden" name="session_db_id" value="{{ current_session.id }}">
                 <input type="hidden" name="reason" value="admin delete log session">
-                <button class="btn btn-danger btn-sm" onclick="return confirm('确认删除整个日志会话？')">删除整个会话</button>
+                <button class="btn btn-danger btn-sm" data-confirm="确认删除整个日志会话？">删除整个会话</button>
             </form>
         </div>
     </div>
@@ -70,7 +70,7 @@
     <div class="btn-group">
         <a class="btn btn-primary btn-sm" href="/admin/logs/{{ current_session.id }}/download-zip">一键下载本会话 ZIP</a>
         <button class="btn btn-secondary btn-sm" form="bulk-file-download-form">下载选中文件 ZIP</button>
-        <button class="btn btn-danger btn-sm" form="bulk-file-delete-form" onclick="return confirm('确认批量删除选中的日志文件？')">批量删除选中文件</button>
+        <button class="btn btn-danger btn-sm" form="bulk-file-delete-form" data-confirm="确认批量删除选中的日志文件？">批量删除选中文件</button>
     </div>
     <span class="toolbar-note">勾选文件后执行批量删除，磁盘文件和数据库记录会一起删除。</span>
 </div>
@@ -92,7 +92,7 @@
                 <input type="hidden" name="file_id" value="{{ f.id }}">
                 <input type="hidden" name="session_db_id" value="{{ current_session.id }}">
                 <input type="hidden" name="reason" value="admin delete log file">
-                <button class="btn btn-sm btn-danger" onclick="return confirm('确认删除日志文件？')">删除</button>
+                <button class="btn btn-sm btn-danger" data-confirm="确认删除日志文件？">删除</button>
             </form>
             </div>
         </td>
@@ -110,7 +110,7 @@
 <div class="table-toolbar">
     <div class="btn-group">
         <button class="btn btn-primary btn-sm" form="bulk-session-download-form">下载选中会话 ZIP</button>
-        <button class="btn btn-danger btn-sm" form="bulk-session-delete-form" onclick="return confirm('确认批量删除选中的日志会话？该操作会删除会话下全部日志文件。')">批量删除选中会话</button>
+        <button class="btn btn-danger btn-sm" form="bulk-session-delete-form" data-confirm="确认批量删除选中的日志会话？该操作会删除会话下全部日志文件。">批量删除选中会话</button>
     </div>
     <span class="toolbar-note">批量操作用于清理服务器磁盘，删除后不可恢复。</span>
 </div>
@@ -136,7 +136,7 @@
 {% else %}
 <div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 6h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/></svg></div><p>暂无日志会话</p></div>
 {% endif %}
-<script>
+<script nonce="{{ csp_nonce }}">
 document.querySelectorAll('[data-check-all]').forEach(function(master) {
   master.addEventListener('change', function() {
     var group = master.getAttribute('data-check-all');

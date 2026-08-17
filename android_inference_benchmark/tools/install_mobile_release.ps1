@@ -191,25 +191,63 @@ $installText
     throw "APK installation failed with exit code $installExitCode.`n$installText"
 }
 
-function Assert-MobileApkContainsMigrationModels {
-    param([string]$Apk)
-    $requiredEntries = @(
-        "lib/arm64-v8a/libvalorant_416_v11s_no_flash_w8a16.so",
-        "lib/arm64-v8a/libow2_416_w8a16.so",
-        "lib/arm64-v8a/libdelta_416_v8s_w8a16.so",
-        "lib/arm64-v8a/libcs2_vombit_416_v8s_w8a16.so"
-    )
+function Get-StrictCapabilityFlag {
+    param([string]$Path, [string]$Name)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Required release capability file is missing: $Path"
+    }
+    $matches = @(Get-Content -LiteralPath $Path | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -match ("^" + [regex]::Escape($Name) + "=(true|false)$")) {
+            $Matches[1]
+        }
+    })
+    if ($matches.Count -ne 1) {
+        throw "Capability $Name must be defined exactly once as true or false in $Path"
+    }
+    return $matches[0] -eq 'true'
+}
+
+function Assert-FormalMobileReleaseCapabilities {
+    param([string]$Root)
+    $formalPath = Join-Path $Root 'app/formal-security-capability.properties'
+    $modelPath = Join-Path $Root 'app/secure-model-delivery-capability.properties'
+    $formal = Get-StrictCapabilityFlag $formalPath 'formalSecureDataPlaneImplemented'
+    $modelDelivery = Get-StrictCapabilityFlag $modelPath 'secureEncryptedModelDeliveryImplemented'
+    if (-not $formal -or -not $modelDelivery) {
+        throw (
+            'Formal Android release is intentionally blocked: authenticated AEAD data plane ' +
+            "implemented=$formal; encrypted authorization-bound model delivery implemented=$modelDelivery. " +
+            'Do not flip capability flags to bypass this gate; complete and review the implementation first.')
+    }
+}
+
+function Assert-MobileApkContainsNoPlaintextPrivateArtifacts {
+    param([string]$Apk, [string]$Root)
+    $lockPath = Join-Path $Root 'private-artifacts.lock.json'
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw "Private-artifact lock is missing: $lockPath"
+    }
+    $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+    if ($lock.schema -ne 'visionforge-android-private-artifacts-lock-v1') {
+        throw "Private-artifact lock schema is invalid: $lockPath"
+    }
+    $forbiddenEntries = @($lock.artifacts | ForEach-Object {
+        $target = [string]$_.target_path
+        if ($target.StartsWith('jniLibs/')) {
+            'lib/' + $target.Substring('jniLibs/'.Length)
+        } else {
+            $target
+        }
+    })
     $archive = [System.IO.Compression.ZipFile]::OpenRead($Apk)
     try {
         $entryNames = @($archive.Entries | ForEach-Object { $_.FullName })
-        $missingEntries = @($requiredEntries | Where-Object {
-                $entryNames -notcontains $_
-            })
-        if ($missingEntries.Count -gt 0) {
+        $present = @($forbiddenEntries | Where-Object { $entryNames -contains $_ })
+        if ($present.Count -gt 0) {
             throw (
-                "APK does not contain the required four-model 416 QNN payload. " +
-                "Missing entries: $($missingEntries -join ', '). " +
-                "Rebuild the current release APK before installing.")
+                'APK contains plaintext private model/vendor artifacts forbidden by the ' +
+                "secure-delivery policy: $($present -join ', ')")
         }
     } finally {
         $archive.Dispose()
@@ -223,11 +261,10 @@ function Assert-MobileApkFreshForMigration {
     )
     $criticalInputs = @(
         "app/build.gradle",
-        "app/src/main/java/com/visionforge/inferencebenchmark/MobileModelCatalog.java",
-        "app/src/main/jniLibs/arm64-v8a/libvalorant_416_v11s_no_flash_w8a16.so",
-        "app/src/main/jniLibs/arm64-v8a/libow2_416_w8a16.so",
-        "app/src/main/jniLibs/arm64-v8a/libdelta_416_v8s_w8a16.so",
-        "app/src/main/jniLibs/arm64-v8a/libcs2_vombit_416_v8s_w8a16.so"
+        "app/formal-security-capability.properties",
+        "app/secure-model-delivery-capability.properties",
+        "private-artifacts.lock.json",
+        "app/src/main/java/com/visionforge/inferencebenchmark/MobileModelCatalog.java"
     )
     $apkItem = Get-Item -LiteralPath $Apk
     $newerInputs = @()
@@ -813,6 +850,7 @@ function Write-FormalDeviceEvidence {
     return Join-Path $OutputDirectory "formal_device_evidence.json"
 }
 
+Assert-FormalMobileReleaseCapabilities $projectRoot
 $adb = Resolve-AdbPath $AdbPath $workspaceRoot
 
 if ($Build) {
@@ -846,7 +884,7 @@ if (-not (Test-Path -LiteralPath $apk)) {
 }
 $apk = (Resolve-Path -LiteralPath $apk).Path
 Assert-MobileApkPathLooksReleaseCandidate $apk
-Assert-MobileApkContainsMigrationModels $apk
+Assert-MobileApkContainsNoPlaintextPrivateArtifacts $apk $projectRoot
 Assert-MobileApkFreshForMigration $apk $projectRoot
 Assert-MobileApkSigningIdentity $apk $workspaceRoot ([bool]$AllowDevelopmentSigning)
 

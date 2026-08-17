@@ -15,23 +15,23 @@
         <label for="monitor-host">通知地址（不带协议）</label>
         <div class="copy-field">
             <input id="monitor-host" value="{{ monitor_host }}" readonly>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="copyField('monitor-host')">复制</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-copy-field="monitor-host">复制</button>
         </div>
     </div>
     <div class="form-group">
         <label for="monitor-secret">通讯密钥</label>
         <div class="copy-field">
             <input id="monitor-secret" type="password" value="{{ monitor_secret }}" readonly autocomplete="off">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleSecret()">显示/隐藏</button>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="copyField('monitor-secret')">复制</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-toggle-field="monitor-secret">显示/隐藏</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-copy-field="monitor-secret">复制</button>
         </div>
     </div>
     <div class="form-group">
         <label for="monitor-config">Android 手动配置数据</label>
         <div class="copy-field">
             <input id="monitor-config" type="password" value="{{ monitor_host }}/{{ monitor_secret }}" readonly autocomplete="off">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleConfig()">显示/隐藏</button>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="copyField('monitor-config')">复制</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-toggle-field="monitor-config">显示/隐藏</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-copy-field="monitor-config">复制</button>
         </div>
     </div>
     <p style="color:var(--text-secondary);line-height:1.7;">
@@ -40,18 +40,24 @@
     </p>
 </div>
 
-<script>
-function toggleSecret() {
-    const field = document.getElementById('monitor-secret');
-    field.type = field.type === 'password' ? 'text' : 'password';
-}
-function toggleConfig() {
-    const field = document.getElementById('monitor-config');
-    field.type = field.type === 'password' ? 'text' : 'password';
-}
-async function copyField(id) {
-    const field = document.getElementById(id);
-    await navigator.clipboard.writeText(field.value);
-}
+<script nonce="{{ csp_nonce }}">
+(() => {
+    document.querySelectorAll('[data-toggle-field]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const field = document.getElementById(button.dataset.toggleField || '');
+            if (field instanceof HTMLInputElement) {
+                field.type = field.type === 'password' ? 'text' : 'password';
+            }
+        });
+    });
+    document.querySelectorAll('[data-copy-field]').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const field = document.getElementById(button.dataset.copyField || '');
+            if (field instanceof HTMLInputElement) {
+                await navigator.clipboard.writeText(field.value);
+            }
+        });
+    });
+})();
 </script>
 {% endblock %}

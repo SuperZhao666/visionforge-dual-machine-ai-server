@@ -59,7 +59,7 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="user_id" value="{{ u.id }}">
                 <input type="hidden" name="reason" value="delete from user list">
-                <button class="btn btn-sm btn-danger" onclick="return confirm('确认删除用户 {{ u.username }}？')">删除</button>
+                <button class="btn btn-sm btn-danger" data-confirm="确认删除用户 {{ u.username }}？">删除</button>
             </form>
             {% endif %}
             {% endif %}

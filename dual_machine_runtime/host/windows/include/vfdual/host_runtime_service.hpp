@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vfdual/dxgi_desktop_capture.hpp"
+#include "vfdual/host_data_plane_authorization_gate.hpp"
 #include "vfdual/isolated_dhcp_server.hpp"
 #include "vfdual/wired_link_contract.hpp"
 
@@ -139,7 +140,9 @@ inline constexpr char kHostStartupCancelledError[] = "Host startup cancelled.";
  */
 class HostRuntimeService final {
 public:
-    explicit HostRuntimeService(IsolatedDhcpServer* isolated_dhcp_server = nullptr);
+    explicit HostRuntimeService(
+        IsolatedDhcpServer* isolated_dhcp_server = nullptr,
+        std::shared_ptr<HostDataPlaneAuthorizationGate> authorization_gate = {});
     ~HostRuntimeService();
     HostRuntimeService(const HostRuntimeService&) = delete;
     HostRuntimeService& operator=(const HostRuntimeService&) = delete;
@@ -152,6 +155,15 @@ public:
     [[nodiscard]] bool is_running() const noexcept;
     [[nodiscard]] std::optional<HostStreamMetrics> last_metrics() const;
     [[nodiscard]] std::string last_error() const;
+
+    /** Security coordinator entry points. Raw tokens are never accepted here. */
+    [[nodiscard]] bool install_confirmed_peer_binding(UsageLeaseBinding binding);
+    [[nodiscard]] UsageLeaseAdmission submit_verified_usage_lease(
+        const VerifiedUsageLease& lease,
+        std::uint64_t trusted_now_epoch);
+    void revoke_data_plane_authorization() noexcept;
+    [[nodiscard]] HostDataPlaneAuthorizationGate::Snapshot
+        authorization_snapshot() noexcept;
 
 private:
     void run(HostStreamSettings settings, std::stop_token startup_stop_token);
@@ -166,6 +178,7 @@ private:
     bool stop_requested_{};
     std::stop_source startup_stop_source_;
     IsolatedDhcpServer* isolated_dhcp_server_{};
+    std::shared_ptr<HostDataPlaneAuthorizationGate> authorization_gate_;
 };
 
 }  // namespace vfdual

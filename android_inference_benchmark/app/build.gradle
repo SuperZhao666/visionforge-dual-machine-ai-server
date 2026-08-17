@@ -87,6 +87,10 @@ def previouslyReleasedVersionCode = (
 // Flip only after the authenticated Host identity/handshake/video/probe/IDR/
 // mouse data plane and mutation/replay evidence are all implemented.
 apply from: 'formal-security-loader.gradle'
+// Model weights and vendor runtime bytes stay outside the public source tree.
+// Debug/QA may stage verified private artifacts; production remains blocked
+// until reviewed encrypted, authorization-bound delivery is implemented.
+apply from: 'secure-model-delivery-loader.gradle'
 
 def buildConfigString = { String value ->
     '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -449,8 +453,164 @@ tasks.configureEach { task ->
 }
 
 def qnnSdkRoot = providers.gradleProperty('qnnSdkRoot').getOrElse(System.getenv('QNN_SDK_ROOT') ?: '')
-def qnnRuntimeDir = file('src/main/jniLibs/arm64-v8a')
-def qnnAssetDir = file('src/main/assets/qnn')
+def privateArtifactLockFile = rootProject.file('private-artifacts.lock.json')
+if (!privateArtifactLockFile.isFile()) {
+    throw new GradleException(
+            "Android private-artifact lock is missing: ${privateArtifactLockFile}")
+}
+def privateArtifactLock = new JsonSlurper().parse(privateArtifactLockFile)
+if (privateArtifactLock.schema != 'visionforge-android-private-artifacts-lock-v1'
+        || privateArtifactLock.policy?.public_source_tree_must_not_contain_locked_bytes != true
+        || privateArtifactLock.policy?.release_requires_encrypted_session_delivery != true
+        || privateArtifactLock.policy?.release_plaintext_allowed != false
+        || privateArtifactLock.policy?.plaintext_allowed_variants != ['debug', 'qa']
+        || privateArtifactLock.policy?.source_root_environment
+            != 'VISIONFORGE_ANDROID_PRIVATE_ARTIFACT_ROOT'
+        || !(privateArtifactLock.artifacts instanceof List)
+        || privateArtifactLock.artifacts.isEmpty()) {
+    throw new GradleException('Android private-artifact lock policy is invalid.')
+}
+def privateArtifactRoot = providers
+        .gradleProperty('visionforgeAndroidPrivateArtifactRoot')
+        .getOrElse(System.getenv('VISIONFORGE_ANDROID_PRIVATE_ARTIFACT_ROOT') ?: '')
+def privateArtifactPython = providers
+        .gradleProperty('visionforgePythonExecutable')
+        .getOrElse(System.getenv('VISIONFORGE_PYTHON_EXECUTABLE') ?: 'python')
+def privateArtifactStager = rootProject.file('../tools/prepare_android_private_artifacts.py')
+def plaintextModelScanner = rootProject.file('../tools/verify_no_plaintext_model_assets.py')
+def privateArtifactSourceBoundaryScanner = rootProject.file(
+        '../tools/check_private_artifact_source_boundary.py')
+def generatedDebugPrivateArtifacts = layout.buildDirectory.dir(
+        'generated/private-artifacts/debug').get().asFile
+def generatedQaPrivateArtifacts = layout.buildDirectory.dir(
+        'generated/private-artifacts/qa').get().asFile
+def qnnRuntimeDir = new File(generatedDebugPrivateArtifacts, 'jniLibs/arm64-v8a')
+def qnnAssetDir = new File(generatedDebugPrivateArtifacts, 'assets/qnn')
+android.sourceSets.debug.assets.srcDir(new File(generatedDebugPrivateArtifacts, 'assets'))
+android.sourceSets.debug.jniLibs.srcDir(new File(generatedDebugPrivateArtifacts, 'jniLibs'))
+android.sourceSets.qa.assets.srcDir(new File(generatedQaPrivateArtifacts, 'assets'))
+android.sourceSets.qa.jniLibs.srcDir(new File(generatedQaPrivateArtifacts, 'jniLibs'))
+
+def registerPrivateArtifactStaging = { String variant, File outputDirectory ->
+    String taskName = "prepare${variant.capitalize()}PrivateAndroidArtifacts"
+    tasks.register(taskName, Exec) {
+        group = 'build setup'
+        description = "Verifies and atomically stages private Android artifacts for ${variant}."
+        inputs.file(privateArtifactLockFile).withPathSensitivity(PathSensitivity.RELATIVE)
+        inputs.file(privateArtifactStager).withPathSensitivity(PathSensitivity.RELATIVE)
+        outputs.dir(outputDirectory)
+        if (!privateArtifactRoot.isBlank()) {
+            inputs.dir(file(privateArtifactRoot))
+                    .withPathSensitivity(PathSensitivity.RELATIVE)
+        }
+        doFirst {
+            if (privateArtifactRoot.isBlank()) {
+                throw new GradleException(
+                        'Private Android artifacts are required outside the repository. Set '
+                                + 'VISIONFORGE_ANDROID_PRIVATE_ARTIFACT_ROOT or '
+                                + '-PvisionforgeAndroidPrivateArtifactRoot=<path>.')
+            }
+            File root = file(privateArtifactRoot)
+            if (!root.isDirectory()) {
+                throw new GradleException(
+                        "Private Android artifact root is unavailable: ${root}")
+            }
+            commandLine(
+                    privateArtifactPython,
+                    privateArtifactStager.absolutePath,
+                    '--lock', privateArtifactLockFile.absolutePath,
+                    '--source-root', root.absolutePath,
+                    '--output-root', outputDirectory.absolutePath,
+                    '--variant', variant)
+        }
+    }
+}
+def prepareDebugPrivateArtifactsTask = registerPrivateArtifactStaging(
+        'debug', generatedDebugPrivateArtifacts)
+def prepareQaPrivateArtifactsTask = registerPrivateArtifactStaging(
+        'qa', generatedQaPrivateArtifacts)
+tasks.configureEach { task ->
+    if (task.name == 'preDebugBuild') {
+        task.dependsOn(prepareDebugPrivateArtifactsTask)
+    } else if (task.name == 'preQaBuild') {
+        task.dependsOn(prepareQaPrivateArtifactsTask)
+    }
+}
+
+def verifyPublicSourceHasNoPrivateArtifactsTask = tasks.register(
+        'verifyPublicSourceHasNoPrivateAndroidArtifacts', Exec) {
+    group = 'verification'
+    description = 'Rejects plaintext ONNX/QNN private bytes in the public repository tree.'
+    inputs.file(privateArtifactLockFile).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(plaintextModelScanner).withPathSensitivity(PathSensitivity.RELATIVE)
+    commandLine(
+            privateArtifactPython,
+            plaintextModelScanner.absolutePath,
+            '--lock', privateArtifactLockFile.absolutePath,
+            '--source-root', rootProject.projectDir.parentFile.absolutePath)
+}
+
+def verifyPrivateArtifactSourceBoundaryTask = tasks.register(
+        'verifyPrivateArtifactSourceBoundary', Exec) {
+    group = 'verification'
+    description = 'Rejects tracked private artifact paths, bytes, raw models and LFS pointers.'
+    inputs.file(privateArtifactLockFile).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(privateArtifactSourceBoundaryScanner)
+            .withPathSensitivity(PathSensitivity.RELATIVE)
+    commandLine(
+            privateArtifactPython,
+            privateArtifactSourceBoundaryScanner.absolutePath,
+            '--repo-root', rootProject.projectDir.parentFile.absolutePath,
+            '--lock', privateArtifactLockFile.absolutePath)
+}
+
+def verifyProductionPackageHasNoPlaintextModelsTask = tasks.register(
+        'verifyProductionPackageHasNoPlaintextModels') {
+    group = 'verification'
+    description = 'Scans generated release APK/AAB files for plaintext private artifacts.'
+    dependsOn(
+            verifyPublicSourceHasNoPrivateArtifactsTask,
+            verifyPrivateArtifactSourceBoundaryTask)
+    doLast {
+        File outputsRoot = layout.buildDirectory.dir('outputs').get().asFile
+        List<File> releaseRoots = [
+                new File(outputsRoot, 'apk/release'),
+                new File(outputsRoot, 'bundle/release')
+        ]
+        List<File> packages = releaseRoots
+                .findAll { it.isDirectory() }
+                .collectMany { File releaseRoot ->
+                    fileTree(releaseRoot) { include '**/*.apk', '**/*.aab' }.files
+                            .findAll { it.isFile() && it.length() > 0L }
+                }
+                .unique { it.canonicalPath }
+                .sort { left, right -> left.absolutePath <=> right.absolutePath }
+        if (packages.isEmpty()) {
+            throw new GradleException(
+                    'No release APK/AAB exists under build/outputs/apk/release or '
+                            + 'build/outputs/bundle/release; package scan cannot pass.')
+        }
+        packages.each { File artifact ->
+            exec {
+                commandLine(
+                        privateArtifactPython,
+                        plaintextModelScanner.absolutePath,
+                        '--lock', privateArtifactLockFile.absolutePath,
+                        '--archive', artifact.absolutePath)
+            }
+        }
+    }
+}
+
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(
+                verifyPublicSourceHasNoPrivateArtifactsTask,
+                verifyPrivateArtifactSourceBoundaryTask)
+    } else if (task.name in ['assembleRelease', 'bundleRelease']) {
+        task.finalizedBy(verifyProductionPackageHasNoPlaintextModelsTask)
+    }
+}
 def qnnBaselineHtpArchitectures = ['v68', 'v69', 'v73', 'v75', 'v79']
 def readQnnSdkIdentity = { File sdkRoot ->
     File metadata = new File(sdkRoot, 'sdk.yaml')
@@ -581,12 +741,20 @@ def deltaQnnCanonicalLibrary = file(
         '../../analysis_output/delta_416_eval_20260726/'
                 + 'qnn_416_sjz_v8s_split_w8a16/final_android_model_lib/build/'
                 + 'libdelta_416_v8s_w8a16.so')
-def packagedQnnModelLibraries = [
-        valorantQnnCanonicalLibrary,
-        ow2QnnCanonicalLibrary,
-        deltaQnnCanonicalLibrary,
-        cs2QnnCanonicalLibrary
-]
+def packagedQnnModelLibraries = privateArtifactLock.artifacts
+        .findAll { artifact -> artifact.kind == 'model_weight_library' }
+        .collect { artifact ->
+            String targetPath = artifact.target_path as String
+            if (!targetPath.startsWith('jniLibs/arm64-v8a/')) {
+                throw new GradleException(
+                        "QNN model lock target is outside jniLibs/arm64-v8a: ${targetPath}")
+            }
+            new File(generatedDebugPrivateArtifacts, targetPath)
+        }
+if (packagedQnnModelLibraries.size() != 4) {
+    throw new GradleException(
+            'Private-artifact lock must contain exactly four QNN model libraries.')
+}
 def ow2QnnCanonicalSource = new File(ow2QnnCanonicalDir, 'source/OW2.onnx')
 def ow2QnnCanonicalSplit = new File(
         ow2QnnCanonicalDir,
@@ -599,68 +767,9 @@ def cs2QnnCanonicalSplit = new File(
         cs2QnnCanonicalDir,
         'model/cs2_vombit_416_split.onnx')
 def approvedCs2SourceSha256 = '4D7E9F0EA790E0A2A1BBEC16D216F2B54B1F840C20F676BFBC32655E1FFDB0A7'
-def portableModelArtifacts = [
-        [
-                asset: 'valorant-yellow-416-v11s-no-flash.onnx',
-                source: file('../../analysis_output/valorant_head_416_rescreen_20260726/'
-                        + 'phone_qnn_v11s_no_flash/valorant_416_v11s_no_flash_split.onnx'),
-                bytes: 44641316L,
-                sha256: '6BF15ED6554667C1FAD4D7240F7E5EB2AD3EE76CCDE121D0B69E8E5963F95669'
-        ],
-        [
-                asset: 'overwatch2-416-yolov5.onnx',
-                source: ow2QnnCanonicalSplit,
-                bytes: 9038527L,
-                sha256: '805C575BBF6FFEE00002BC20D4BFAF362AABD5DB9B839C457C78416C2756FBA3'
-        ],
-        [
-                asset: 'delta-force-416-v8s.onnx',
-                source: file('../../analysis_output/delta_416_eval_20260726/'
-                        + 'qnn_416_sjz_v8s_split_w8a16/sjz_delta_416_v8s_split.onnx'),
-                bytes: 44641532L,
-                sha256: 'AA560084EB4880AA748E4B32FE545C0AA37EC1FA9EBA55F3B986B3E577BD347A'
-        ],
-        [
-                asset: 'counter-strike-2-vombit-416-v8s.onnx',
-                source: cs2QnnCanonicalSplit,
-                bytes: 44653998L,
-                sha256: 'DD70F00F040421EA216C3FC913B35E9BE822F65F4C3354C41F6787F5282E0E7D'
-        ]
-]
-def generatedPortableModelAssets = layout.buildDirectory.dir(
-        'generated/portable-model-assets')
-def preparePortableModelAssetsTask = tasks.register('preparePortableModelAssets', Sync) {
-    group = 'build setup'
-    description = 'Stages hash-pinned ONNX models for NNAPI/CPU mobile fallback.'
-    portableModelArtifacts.each { artifact ->
-        inputs.file(artifact.source)
-                .withPathSensitivity(PathSensitivity.RELATIVE)
-        from(artifact.source) {
-            into('portable_models')
-            rename { artifact.asset }
-        }
-    }
-    into(generatedPortableModelAssets)
-    doFirst {
-        portableModelArtifacts.each { artifact ->
-            if (!artifact.source.isFile()
-                    || artifact.source.length() != artifact.bytes
-                    || dualMachineSha256Hex(artifact.source.bytes)
-                    .toUpperCase(Locale.ROOT) != artifact.sha256) {
-                throw new GradleException(
-                        "Portable ONNX artifact integrity mismatch: ${artifact.source}")
-            }
-        }
-    }
-}
-android.sourceSets.main.assets.srcDir(generatedPortableModelAssets)
-tasks.configureEach { task ->
-    if (task.name ==~ /merge.*Assets/
-            || task.name.contains('Lint')
-            || task.name.startsWith('lint')) {
-        task.dependsOn(preparePortableModelAssetsTask)
-    }
-}
+// Plaintext ONNX fallback models are no longer staged into the main source
+// set. Debug/QA staging is supplied only by the hash-locked private artifact
+// root above; production remains fail-closed.
 def expectedOw2NumericChecks = [
         'static_coordinates_exact',
         'static_confidences_exact',
@@ -904,34 +1013,10 @@ def detachHardLinkedSyncTargets = { def syncTask, File destinationDirectory ->
     }
 }
 
-tasks.register('stageQnnHtpRuntime', Sync) {
-    onlyIf { !qnnSdkRoot.isBlank() }
-    doFirst { syncTask ->
-        requireApprovedOw2QnnRelease()
-        requireApprovedCs2QnnIntegration()
-        detachHardLinkedSyncTargets(syncTask, qnnRuntimeDir)
-    }
-    from("${qnnSdkRoot}/lib/aarch64-android") {
-        include 'libQnnHtp.so'
-        include 'libQnnHtpPrepare.so'
-        qnnHtpArchitectures.each { architecture ->
-            include "libQnnHtp${architecture.toUpperCase()}Stub.so"
-        }
-    }
-    // Per-game W8A16 HTP graphs with independent FP32 coordinate/confidence outputs.
-    from('../qnn_workspace/valorant_416_v11s_no_flash/w8a16_android_model_lib/build') {
-        include 'libvalorant_416_v11s_no_flash_w8a16.so'
-    }
-    from(new File(ow2QnnCanonicalDir, 'android_model_lib/build')) {
-        include 'libow2_416_w8a16.so'
-    }
-    from('../../analysis_output/delta_416_eval_20260726/qnn_416_sjz_v8s_split_w8a16/final_android_model_lib/build') {
-        include 'libdelta_416_v8s_w8a16.so'
-    }
-    from(new File(cs2QnnCanonicalDir, 'android_model_lib/build')) {
-        include 'libcs2_vombit_416_v8s_w8a16.so'
-    }
-    into qnnRuntimeDir
+tasks.register('stageQnnHtpRuntime') {
+    group = 'build setup'
+    description = 'Compatibility alias for hash-locked debug private-artifact staging.'
+    dependsOn(prepareDebugPrivateArtifactsTask)
 }
 
 tasks.register('verifyOw2QnnReleaseArtifact') {
@@ -981,20 +1066,10 @@ tasks.register('verifyCs2PrivateModelScope') {
     }
 }
 
-tasks.register('stageQnnHtpSkeleton', Sync) {
-    onlyIf { !qnnSdkRoot.isBlank() }
-    doFirst { syncTask ->
-        detachHardLinkedSyncTargets(syncTask, qnnAssetDir)
-    }
-    from("${qnnSdkRoot}/lib/aarch64-android") {
-        include 'libQnnHtp.so'
-    }
-    qnnHtpArchitectures.each { architecture ->
-        from("${qnnSdkRoot}/lib/hexagon-${architecture}/unsigned") {
-            include "libQnnHtp${architecture.toUpperCase()}Skel.so"
-        }
-    }
-    into qnnAssetDir
+tasks.register('stageQnnHtpSkeleton') {
+    group = 'build setup'
+    description = 'Compatibility alias for hash-locked debug private-artifact staging.'
+    dependsOn(prepareDebugPrivateArtifactsTask)
 }
 
 tasks.register('verifyQnnHtpArchitectureClosure') {
@@ -1151,16 +1226,21 @@ tasks.configureEach { task ->
         task.inputs.dir(project.rootProject.file('../dual_machine_runtime/shared'))
                 .withPathSensitivity(PathSensitivity.RELATIVE)
     }
-    if (task.name.startsWith('merge') && (task.name.endsWith('NativeLibs') || task.name.endsWith('JniLibFolders'))) {
-        task.dependsOn(tasks.named('stageQnnHtpRuntime'))
+    String lowerTaskName = task.name.toLowerCase(Locale.ROOT)
+    boolean packagesNativeOrAssets = task.name.startsWith('merge')
+            && (task.name.endsWith('NativeLibs')
+            || task.name.endsWith('JniLibFolders')
+            || task.name.endsWith('Assets'))
+    if (packagesNativeOrAssets && lowerTaskName.contains('debug')) {
+        task.dependsOn(prepareDebugPrivateArtifactsTask)
+    } else if (packagesNativeOrAssets && lowerTaskName.contains('qa')) {
+        task.dependsOn(prepareQaPrivateArtifactsTask)
     }
-    if (task.name.startsWith('merge') && task.name.endsWith('Assets')) {
-        task.dependsOn(tasks.named('stageQnnHtpSkeleton'))
-    }
-    // Release lint also snapshots source assets.  Declare the generated HTP
-    // skeleton as an input producer so Gradle 9 cannot race lint with staging.
-    if (task.name.toLowerCase().contains('lint')) {
-        task.dependsOn(tasks.named('stageQnnHtpSkeleton'))
+    // Lint may inspect debug/QA staged assets; release lint remains source-only.
+    if (lowerTaskName.contains('lint') && lowerTaskName.contains('debug')) {
+        task.dependsOn(prepareDebugPrivateArtifactsTask)
+    } else if (lowerTaskName.contains('lint') && lowerTaskName.contains('qa')) {
+        task.dependsOn(prepareQaPrivateArtifactsTask)
     }
 }
 

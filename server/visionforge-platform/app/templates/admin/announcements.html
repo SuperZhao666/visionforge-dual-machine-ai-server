@@ -59,7 +59,7 @@
         <p style="font-size:0.75rem;color:var(--text-muted);margin:0;">创建：{{ a.created_at[:19] }} | 更新：{{ a.updated_at[:19] }}</p>
         <form method="post" action="/admin/announcements/delete" style="margin:0;">
             <input type="hidden" name="announcement_id" value="{{ a.id }}">
-            <button class="btn btn-danger btn-sm" onclick="return confirm('确认删除公告？')">删除</button>
+            <button class="btn btn-danger btn-sm" data-confirm="确认删除公告？">删除</button>
         </form>
     </div>
 </div>

@@ -3,7 +3,7 @@
 {% block title %}双机卡密管理 - VisionForge{% endblock %}
 
 {% block admin_content %}
-<style>
+<style nonce="{{ csp_nonce }}">
     .dm-stack { display: grid; gap: 18px; }
     .dm-note { color: var(--text-muted, #8f98ad); font-size: 13px; line-height: 1.7; }
     .dm-warning { border-left: 3px solid #f59e0b; padding: 10px 12px; background: rgba(245,158,11,.08); border-radius: 6px; }
@@ -556,7 +556,7 @@
         </div>
     </section>
 </div>
-<script>
+<script nonce="{{ csp_nonce }}">
     (() => {
         const copyText = async (value) => {
             if (navigator.clipboard && window.isSecureContext) {

@@ -108,7 +108,7 @@
                         </form>
                         <form method="post" action="/admin/security/allowlist/delete" class="form-actions">
                             <input type="hidden" name="allowlist_id" value="{{ item.id }}">
-                            <button class="btn btn-danger btn-sm" onclick="return confirm('确认删除该白名单？')">删除白名单</button>
+                            <button class="btn btn-danger btn-sm" data-confirm="确认删除该白名单？">删除白名单</button>
                         </form>
                     </div>
                 </details>

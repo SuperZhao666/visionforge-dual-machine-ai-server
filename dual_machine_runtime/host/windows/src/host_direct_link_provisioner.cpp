@@ -1,4 +1,5 @@
 #include "vfdual/host_direct_link_provisioner.hpp"
+#include "vfdual/host_adapter_identity_policy.hpp"
 #include "vfdual/host_firewall_provisioner.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -343,10 +344,36 @@ std::vector<HostNetworkAdapterProfile> enumerate_network_profiles() {
         profile.adapter_id = adapter->AdapterName == nullptr
             ? std::string{} : normalize_identifier(adapter->AdapterName);
         profile.interface_index = adapter->IfIndex;
+        profile.description = adapter->Description == nullptr
+            ? std::wstring{} : std::wstring{adapter->Description};
         MIB_IF_ROW2 interface_row{};
         interface_row.InterfaceLuid = adapter->Luid;
-        profile.hardware_interface = GetIfEntry2(&interface_row) == NO_ERROR &&
+        const bool interface_row_available =
+            GetIfEntry2(&interface_row) == NO_ERROR;
+        profile.hardware_interface = interface_row_available &&
             interface_row.InterfaceAndOperStatusFlags.HardwareInterface != FALSE;
+        profile.connector_present = interface_row_available &&
+            interface_row.InterfaceAndOperStatusFlags.ConnectorPresent != FALSE;
+        profile.filter_interface = interface_row_available &&
+            interface_row.InterfaceAndOperStatusFlags.FilterInterface != FALSE;
+        profile.endpoint_interface = interface_row_available &&
+            interface_row.InterfaceAndOperStatusFlags.EndPointInterface != FALSE;
+        if (interface_row_available && interface_row.Description[0] != L'\0') {
+            profile.description = interface_row.Description;
+        }
+        profile.virtual_or_loopback =
+            host_adapter_has_virtual_or_loopback_identity(
+                HostAdapterIdentityFacts{
+                    .hardware_interface = profile.hardware_interface,
+                    .connector_present = profile.connector_present,
+                    .filter_interface = profile.filter_interface,
+                    .endpoint_interface = profile.endpoint_interface,
+                    .software_loopback_or_tunnel =
+                        adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK ||
+                        adapter->IfType == IF_TYPE_TUNNEL,
+                    .connection_name = profile.connection_name,
+                    .description = profile.description,
+                });
         profile.operational = adapter->OperStatus == IfOperStatusUp;
         profile.has_default_gateway = has_ipv4_gateway(adapter->FirstGatewayAddress);
         profile.dhcp_enabled = (adapter->Flags & IP_ADAPTER_DHCP_ENABLED) != 0;
@@ -1977,14 +2004,32 @@ const char* dad_state_name(std::uint32_t state) noexcept {
 
 bool is_base_direct_link_candidate(
     const HostNetworkAdapterProfile& adapter) noexcept {
-    return adapter.hardware_interface && adapter.operational &&
+    return host_adapter_has_physical_connector_identity(
+               HostAdapterIdentityFacts{
+                   .hardware_interface = adapter.hardware_interface,
+                   .connector_present = adapter.connector_present,
+                   .filter_interface = adapter.filter_interface,
+                   .endpoint_interface = adapter.endpoint_interface,
+                   .software_loopback_or_tunnel = adapter.virtual_or_loopback,
+                   .connection_name = adapter.connection_name,
+                   .description = adapter.description,
+               }) && adapter.operational &&
         adapter.transport == HostAdapterTransport::ethernet &&
         !adapter.has_default_gateway;
 }
 
 bool is_operational_physical_ethernet(
     const HostNetworkAdapterProfile& adapter) noexcept {
-    return adapter.hardware_interface && adapter.operational &&
+    return host_adapter_has_physical_connector_identity(
+               HostAdapterIdentityFacts{
+                   .hardware_interface = adapter.hardware_interface,
+                   .connector_present = adapter.connector_present,
+                   .filter_interface = adapter.filter_interface,
+                   .endpoint_interface = adapter.endpoint_interface,
+                   .software_loopback_or_tunnel = adapter.virtual_or_loopback,
+                   .connection_name = adapter.connection_name,
+                   .description = adapter.description,
+               }) && adapter.operational &&
         adapter.transport == HostAdapterTransport::ethernet;
 }
 
@@ -2069,6 +2114,12 @@ std::vector<std::string_view> rejection_predicates(
     const HostNetworkAdapterProfile& adapter) {
     std::vector<std::string_view> predicates;
     if (!adapter.hardware_interface) predicates.emplace_back("not_hardware");
+    if (!adapter.connector_present) predicates.emplace_back("connector_not_present");
+    if (adapter.filter_interface) predicates.emplace_back("filter_interface");
+    if (adapter.endpoint_interface) predicates.emplace_back("endpoint_interface");
+    if (adapter.virtual_or_loopback) {
+        predicates.emplace_back("virtual_or_loopback_identity");
+    }
     if (!adapter.operational) predicates.emplace_back("not_operational");
     if (adapter.transport != HostAdapterTransport::ethernet) {
         predicates.emplace_back("transport_not_ethernet");
@@ -2117,7 +2168,17 @@ std::string describe_adapter_inventory(
                << " name=" << std::quoted(wide_to_utf8(adapter.connection_name))
                << " guid=" << std::quoted(adapter.adapter_id)
                << " ifindex=" << adapter.interface_index
+               << " description="
+               << std::quoted(wide_to_utf8(adapter.description))
                << " hardware=" << bool_text(adapter.hardware_interface)
+               << " connector_present="
+               << bool_text(adapter.connector_present)
+               << " filter_interface="
+               << bool_text(adapter.filter_interface)
+               << " endpoint_interface="
+               << bool_text(adapter.endpoint_interface)
+               << " virtual_or_loopback="
+               << bool_text(adapter.virtual_or_loopback)
                << " oper=" << (adapter.operational ? "up" : "down")
                << " transport=" << transport_name(adapter.transport)
                << " has_default_gateway="
@@ -2621,7 +2682,17 @@ HostDirectLinkRestorationResult restore_host_direct_link_ipv4() {
     outcome.snapshot_sha256 = snapshot.sha256;
     const auto adapters = enumerate_network_profiles();
     const HostNetworkAdapterProfile* downstream = find_snapshot_adapter(snapshot, adapters);
-    if (downstream == nullptr || !downstream->hardware_interface ||
+    if (downstream == nullptr ||
+        !host_adapter_has_physical_connector_identity(
+            HostAdapterIdentityFacts{
+                .hardware_interface = downstream->hardware_interface,
+                .connector_present = downstream->connector_present,
+                .filter_interface = downstream->filter_interface,
+                .endpoint_interface = downstream->endpoint_interface,
+                .software_loopback_or_tunnel = downstream->virtual_or_loopback,
+                .connection_name = downstream->connection_name,
+                .description = downstream->description,
+            }) ||
         downstream->transport != HostAdapterTransport::ethernet ||
         downstream->has_default_gateway) {
         outcome.status = HostDirectLinkRestoreStatus::unsafe_snapshot;

@@ -41,21 +41,21 @@
             {% if order.status == 'pending' %}
             <form method="post" action="/admin/orders/confirm">
                 <input type="hidden" name="order_id" value="{{ order.id }}">
-                <button type="submit" class="btn btn-sm btn-primary" onclick="return confirm('确认已收到官网付款？将为该账号增加对应时长。')">确认收款并到账</button>
+                <button type="submit" class="btn btn-sm btn-primary" data-confirm="确认已收到官网付款？将为该账号增加对应时长。">确认收款并到账</button>
             </form>
             <form method="post" action="/admin/orders/cancel">
                 <input type="hidden" name="order_id" value="{{ order.id }}">
-                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('确认取消？')">取消</button>
+                <button type="submit" class="btn btn-sm btn-danger" data-confirm="确认取消？">取消</button>
             </form>
             {% elif order.status in ('delivered', 'refund_required') %}
             <form method="post" action="/admin/orders/refund">
                 <input type="hidden" name="order_id" value="{{ order.id }}">
-                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('确认退款？转账完成后请点已退款确认。')">退款</button>
+                <button type="submit" class="btn btn-sm btn-danger" data-confirm="确认退款？转账完成后请点已退款确认。">退款</button>
             </form>
             {% elif order.status == 'refunding' %}
             <form method="post" action="/admin/orders/refund-done">
                 <input type="hidden" name="order_id" value="{{ order.id }}">
-                <button type="submit" class="btn btn-sm btn-primary" onclick="return confirm('确认已转账退款给用户？')">已退款确认</button>
+                <button type="submit" class="btn btn-sm btn-primary" data-confirm="确认已转账退款给用户？">已退款确认</button>
             </form>
             {% endif %}
             </div>

@@ -40,6 +40,12 @@ class Config:
     # Security — MUST be set in production
     SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     ENVIRONMENT: str = _ENVIRONMENT
+    # Public API documentation is useful for local development/tests only.
+    # Production defaults to disabled and rejects an explicit override.
+    PUBLIC_API_DOCS_ENABLED: bool = os.getenv(
+        "PUBLIC_API_DOCS_ENABLED",
+        "0" if ENVIRONMENT == "production" else "1",
+    ).strip().lower() in {"1", "true", "yes"}
 
     # Database
     DATABASE_PATH: str = os.getenv(
@@ -195,6 +201,8 @@ class Config:
                 errors.append("production forbids ALLOW_INSECURE_RUNTIME_LEASE_HMAC")
             if not cls.COOKIE_SECURE:
                 errors.append("production requires COOKIE_SECURE=1")
+            if cls.PUBLIC_API_DOCS_ENABLED:
+                errors.append("production forbids PUBLIC_API_DOCS_ENABLED")
         if not 10 <= int(cls.EMAIL_CODE_SEND_COOLDOWN_SECONDS) <= 3600:
             errors.append("EMAIL_CODE_SEND_COOLDOWN_SECONDS must be between 10 and 3600")
         return errors

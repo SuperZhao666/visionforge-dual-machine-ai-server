@@ -77,6 +77,7 @@ add_library(vfdual_protocol STATIC
     shared/src/access_unit_reassembler.cpp
     shared/src/authenticated_data_plane_v2.cpp
     shared/src/h264_annex_b_access_units.cpp
+    shared/src/host_data_plane_authorization_gate.cpp
     shared/src/image_preprocessor.cpp
     shared/src/mouse_button_protocol.cpp
     shared/src/protocol.cpp
@@ -261,14 +262,18 @@ if(WIN32)
         host/windows/src/host_display_catalog.cpp
         host/windows/src/host_cat6_protocol.cpp
         host/windows/src/host_cat6_session.cpp
+        host/windows/src/host_probe_fallback_policy.cpp
         host/windows/src/host_cat6_bootstrap.cpp
         host/windows/src/host_cat6_bootstrap_wait.cpp
         host/windows/src/host_direct_link_provisioner.cpp
+        host/windows/src/host_adapter_identity_policy.cpp
         host/windows/src/host_firewall_provisioner.cpp
+        host/windows/src/host_release_identity_policy.cpp
         host/windows/src/isolated_dhcp_protocol.cpp
         host/windows/src/isolated_dhcp_server.cpp
         host/windows/src/host_cat6_monitor.cpp
         host/windows/src/host_runtime_service.cpp
+        host/windows/src/host_runtime_authorization.cpp
         e2e_core/src/host/infrastructure/file_epoch_reservation_store.cpp
         host/windows/src/host_runtime_facade.cpp
         host/windows/src/host_endpoint_discovery_facade.cpp
@@ -304,6 +309,7 @@ if(WIN32)
         target_compile_options(VisionForgeHost PRIVATE
             "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/GS>"
             "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/sdl>"
+            "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/GR->"
             "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/guard:cf>")
         target_link_options(VisionForgeHost PRIVATE
             "$<$<CONFIG:Release>:/DYNAMICBASE>"
@@ -591,6 +597,13 @@ target_link_libraries(vfdual_usage_lease_gate_tests PRIVATE vfdual_protocol)
 add_test(NAME vfdual_usage_lease_gate_tests
     COMMAND vfdual_usage_lease_gate_tests)
 
+add_executable(vfdual_host_data_plane_authorization_gate_tests
+    tests/host_data_plane_authorization_gate_tests.cpp)
+target_link_libraries(
+    vfdual_host_data_plane_authorization_gate_tests PRIVATE vfdual_protocol)
+add_test(NAME vfdual_host_data_plane_authorization_gate_tests
+    COMMAND vfdual_host_data_plane_authorization_gate_tests)
+
 add_executable(vfdual_authenticated_data_plane_v2_tests
     tests/authenticated_data_plane_v2_tests.cpp)
 target_link_libraries(
@@ -824,6 +837,7 @@ if(WIN32)
         host/windows/src/host_cat6_monitor.cpp
         host/windows/src/host_cat6_session.cpp
         host/windows/src/host_cat6_protocol.cpp
+        host/windows/src/host_probe_fallback_policy.cpp
     )
     target_include_directories(vfdual_host_cat6_monitor_policy_tests PRIVATE host/windows/include)
     target_compile_definitions(vfdual_host_cat6_monitor_policy_tests
@@ -835,7 +849,9 @@ if(WIN32)
     add_executable(vfdual_host_direct_link_policy_tests
         host/windows/tests/host_direct_link_policy_tests.cpp
         host/windows/src/host_direct_link_provisioner.cpp
+        host/windows/src/host_adapter_identity_policy.cpp
         host/windows/src/host_firewall_provisioner.cpp
+        host/windows/src/host_release_identity_policy.cpp
     )
     target_include_directories(vfdual_host_direct_link_policy_tests PRIVATE host/windows/include)
     target_link_libraries(vfdual_host_direct_link_policy_tests PRIVATE ws2_32 iphlpapi uuid advapi32 ole32 oleaut32)
@@ -844,6 +860,7 @@ if(WIN32)
     add_executable(vfdual_host_firewall_policy_tests
         host/windows/tests/host_firewall_policy_tests.cpp
         host/windows/src/host_firewall_provisioner.cpp
+        host/windows/src/host_release_identity_policy.cpp
     )
     target_include_directories(vfdual_host_firewall_policy_tests PRIVATE host/windows/include)
     target_link_libraries(vfdual_host_firewall_policy_tests PRIVATE uuid advapi32 ole32 oleaut32)
@@ -941,6 +958,30 @@ if(WIN32)
     target_link_libraries(vfdual_udp_socket_tests PRIVATE ws2_32)
     add_test(NAME vfdual_udp_socket_tests COMMAND vfdual_udp_socket_tests)
 endif()
+
+function(vfdual_add_portable_host_policy_test target test_source policy_source)
+    add_executable(${target} ${test_source} ${policy_source})
+    target_include_directories(${target} PRIVATE host/windows/include)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+vfdual_add_portable_host_policy_test(
+    vfdual_host_adapter_identity_policy_portable_tests
+    host/windows/tests/host_adapter_identity_policy_tests.cpp
+    host/windows/src/host_adapter_identity_policy.cpp)
+vfdual_add_portable_host_policy_test(
+    vfdual_host_release_identity_policy_portable_tests
+    host/windows/tests/host_release_identity_policy_tests.cpp
+    host/windows/src/host_release_identity_policy.cpp)
+vfdual_add_portable_host_policy_test(
+    vfdual_host_probe_fallback_policy_portable_tests
+    host/windows/tests/host_probe_fallback_policy_tests.cpp
+    host/windows/src/host_probe_fallback_policy.cpp)
 
 # The MAKCU ticket/visibility gate is platform-independent. Build it on
 # non-Windows CI as well so generation-bound ACK semantics cannot regress just
