@@ -166,6 +166,10 @@ public:
         authorization_snapshot() noexcept;
 
 private:
+    // Stops capture/encoder/transport workers without ending the current
+    // authorized usage session. Public stop() remains the explicit business
+    // action that terminates that session.
+    void stop_runtime() noexcept;
     void run(HostStreamSettings settings, std::stop_token startup_stop_token);
 
     mutable std::mutex mutex_;

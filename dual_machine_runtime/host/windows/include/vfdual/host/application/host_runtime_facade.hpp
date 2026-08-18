@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vfdual/host/application/host_runtime_models.hpp"
+#include "vfdual/usage_lease_gate.hpp"
 
 #include <memory>
 #include <optional>
@@ -32,6 +33,23 @@ public:
     [[nodiscard]] bool is_running() const noexcept;
     [[nodiscard]] std::optional<HostRuntimeReadModel> snapshot() const;
     [[nodiscard]] std::string last_error() const;
+
+    /**
+     * Production composition-root entry point for an already confirmed peer.
+     * The facade intentionally accepts typed binding data, never raw tokens.
+     */
+    [[nodiscard]] bool install_confirmed_peer_binding(
+        vfdual::UsageLeaseBinding binding);
+    /**
+     * Installs a lease only after verification has happened at the trust
+     * boundary. The caller supplies the trusted server epoch explicitly.
+     */
+    [[nodiscard]] vfdual::UsageLeaseAdmission submit_verified_usage_lease(
+        const vfdual::VerifiedUsageLease& lease,
+        std::uint64_t trusted_now_epoch);
+    /** Explicit logout/session-end action; prevents the old ticket restarting. */
+    void revoke_data_plane_authorization() noexcept;
+    [[nodiscard]] HostAuthorizationReadModel authorization_read_model() noexcept;
 
 private:
     struct State;

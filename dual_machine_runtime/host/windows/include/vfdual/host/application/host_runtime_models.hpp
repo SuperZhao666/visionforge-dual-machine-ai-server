@@ -61,4 +61,26 @@ struct HostRuntimeReadModel final {
     double throughput_mbps{};
 };
 
+/**
+ * Stable UI-facing authorization state. The UI receives only this read model;
+ * verified lease claims and raw token material never cross the application
+ * boundary.
+ */
+enum class HostAuthorizationStatus : std::uint8_t {
+    peer_unconfirmed,
+    lease_missing,
+    authorized,
+    lease_expired,
+    lease_revoked,
+    trusted_time_invalid,
+};
+
+struct HostAuthorizationReadModel final {
+    HostAuthorizationStatus status{
+        HostAuthorizationStatus::peer_unconfirmed};
+    bool permits_data_plane{};
+    std::uint64_t sequence{};
+    std::uint64_t expires_at_epoch{};
+};
+
 }  // namespace vfdual::host::application

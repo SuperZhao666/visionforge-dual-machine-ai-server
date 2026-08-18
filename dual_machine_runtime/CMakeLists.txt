@@ -898,6 +898,14 @@ if(WIN32)
     add_test(NAME vfdual_host_ui_lifecycle_contract_tests
         COMMAND vfdual_host_ui_lifecycle_contract_tests)
 
+    add_executable(vfdual_host_authorization_lifecycle_contract_tests
+        host/windows/tests/host_authorization_lifecycle_contract_tests.cpp
+    )
+    target_compile_definitions(vfdual_host_authorization_lifecycle_contract_tests
+        PRIVATE VFDUAL_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME vfdual_host_authorization_lifecycle_contract_tests
+        COMMAND vfdual_host_authorization_lifecycle_contract_tests)
+
     add_executable(vfdual_host_window_layout_tests
         host/windows/tests/host_window_layout_tests.cpp
         host/windows/src/host_window_layout.cpp

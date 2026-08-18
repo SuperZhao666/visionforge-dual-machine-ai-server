@@ -56,6 +56,58 @@ void HostRuntimeFacade::restore_direct_link_on_clean_shutdown() noexcept {
 bool HostRuntimeFacade::is_running() const noexcept { return state_->runtime.is_running(); }
 std::string HostRuntimeFacade::last_error() const { return state_->runtime.last_error(); }
 
+bool HostRuntimeFacade::install_confirmed_peer_binding(
+    vfdual::UsageLeaseBinding binding) {
+    return state_->runtime.install_confirmed_peer_binding(std::move(binding));
+}
+
+vfdual::UsageLeaseAdmission HostRuntimeFacade::submit_verified_usage_lease(
+    const vfdual::VerifiedUsageLease& lease,
+    const std::uint64_t trusted_now_epoch) {
+    return state_->runtime.submit_verified_usage_lease(lease, trusted_now_epoch);
+}
+
+void HostRuntimeFacade::revoke_data_plane_authorization() noexcept {
+    state_->runtime.revoke_data_plane_authorization();
+}
+
+HostAuthorizationReadModel HostRuntimeFacade::authorization_read_model() noexcept {
+    const auto snapshot = state_->runtime.authorization_snapshot();
+    HostAuthorizationReadModel result{};
+    result.permits_data_plane = snapshot.permits_data_plane;
+    result.sequence = snapshot.sequence;
+    result.expires_at_epoch = snapshot.expires_at_epoch;
+    if (snapshot.monotonic_clock_rollback) {
+        result.status = HostAuthorizationStatus::trusted_time_invalid;
+    } else if (!snapshot.peer_confirmed) {
+        result.status = HostAuthorizationStatus::peer_unconfirmed;
+    } else {
+        switch (snapshot.lease_state) {
+        case vfdual::UsageLeaseGateState::active:
+            result.status = snapshot.permits_data_plane
+                ? HostAuthorizationStatus::authorized
+                : HostAuthorizationStatus::lease_expired;
+            break;
+        case vfdual::UsageLeaseGateState::expired:
+            result.status = HostAuthorizationStatus::lease_expired;
+            break;
+        case vfdual::UsageLeaseGateState::stopped:
+        case vfdual::UsageLeaseGateState::revoked:
+            result.status = HostAuthorizationStatus::lease_revoked;
+            break;
+        case vfdual::UsageLeaseGateState::empty:
+        case vfdual::UsageLeaseGateState::invalid_binding:
+        case vfdual::UsageLeaseGateState::trusted_time_rollback:
+            result.status = vfdual::UsageLeaseGateState::trusted_time_rollback ==
+                    snapshot.lease_state
+                ? HostAuthorizationStatus::trusted_time_invalid
+                : HostAuthorizationStatus::lease_missing;
+            break;
+        }
+    }
+    return result;
+}
+
 std::optional<HostRuntimeReadModel> HostRuntimeFacade::snapshot() const {
     const auto source = state_->runtime.last_metrics();
     if (!source.has_value()) return std::nullopt;
