@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Reject private Android model/runtime bytes from the public source tree.
+"""Enforce the Android model/runtime repository boundary.
 
 This gate is deliberately independent from Gradle so it can run in CI, in a
 clean source archive, and before Android tooling is installed.  It does not
 attempt to protect runtime plaintext; it only enforces the repository boundary
-recorded by ``private-artifacts.lock.json``.
+recorded by ``private-artifacts.lock.json``. User-trained model libraries may be
+kept in the public repository only when an individual lock entry opts in, the
+path is exact, and Git stores the object through a matching LFS pointer.
 """
 
 from __future__ import annotations
@@ -33,9 +35,12 @@ class BoundaryPolicyError(RuntimeError):
 @dataclass(frozen=True)
 class LockedArtifact:
     artifact_id: str
+    kind: str
     target_path: PurePosixPath
     size: int
     sha256: str
+    public_repository_allowed: bool
+    repository_path: PurePosixPath | None
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,13 @@ def load_lock(lock_path: Path) -> tuple[str, list[LockedArtifact]]:
         artifact_id = entry.get("id")
         if not isinstance(artifact_id, str) or not artifact_id or artifact_id in ids:
             raise BoundaryPolicyError(f"artifact {index} has an invalid or duplicate id")
+        kind = entry.get("kind")
+        if kind not in {
+            "vendor_runtime",
+            "model_weight_library",
+            "portable_model_weight",
+        }:
+            raise BoundaryPolicyError(f"artifact {artifact_id} has an invalid kind")
         target = _canonical_relative_path(entry.get("target_path"), "target_path")
         size = entry.get("size")
         digest = entry.get("sha256")
@@ -116,9 +128,10 @@ def load_lock(lock_path: Path) -> tuple[str, list[LockedArtifact]]:
             raise BoundaryPolicyError(f"artifact {artifact_id} has a non-hex SHA-256")
         if target in targets:
             raise BoundaryPolicyError(f"duplicate target path in private-artifact lock: {target}")
-        if entry.get("public_repository_allowed") is not False:
+        public_repository_allowed = entry.get("public_repository_allowed")
+        if not isinstance(public_repository_allowed, bool):
             raise BoundaryPolicyError(
-                f"artifact {artifact_id} must explicitly forbid public repository storage"
+                f"artifact {artifact_id} must declare public_repository_allowed"
             )
         if entry.get("license_review_required") is not True:
             raise BoundaryPolicyError(
@@ -128,10 +141,45 @@ def load_lock(lock_path: Path) -> tuple[str, list[LockedArtifact]]:
             raise BoundaryPolicyError(
                 f"artifact {artifact_id} variants must be exactly ['debug', 'qa']"
             )
+        repository_path: PurePosixPath | None = None
+        if public_repository_allowed:
+            if (
+                kind != "model_weight_library"
+                or entry.get("provenance") != "user_trained"
+                or entry.get("repository_storage") != "git_lfs"
+            ):
+                raise BoundaryPolicyError(
+                    f"artifact {artifact_id} public storage is limited to user-trained Git LFS models"
+                )
+            repository_path = _canonical_relative_path(
+                entry.get("repository_path"), "repository_path"
+            )
+            expected_repository_path = ANDROID_MAIN_PREFIX / target
+            if repository_path != expected_repository_path:
+                raise BoundaryPolicyError(
+                    f"artifact {artifact_id} repository_path must be {expected_repository_path}"
+                )
+        elif any(
+            field in entry
+            for field in ("provenance", "repository_storage", "repository_path")
+        ):
+            raise BoundaryPolicyError(
+                f"artifact {artifact_id} has public storage metadata while public storage is disabled"
+            )
         ids.add(artifact_id)
         targets.add(target)
         hashes.add(digest)
-        artifacts.append(LockedArtifact(artifact_id, target, size, digest))
+        artifacts.append(
+            LockedArtifact(
+                artifact_id,
+                str(kind),
+                target,
+                size,
+                digest,
+                public_repository_allowed,
+                repository_path,
+            )
+        )
     return hashlib.sha256(raw_bytes).hexdigest(), artifacts
 
 
@@ -176,6 +224,73 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _parse_lfs_pointer(data: bytes) -> tuple[str, int] | None:
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    lines = text.replace("\r\n", "\n").splitlines()
+    if len(lines) != 3 or lines[0] != LFS_PREFIX.decode("ascii"):
+        return None
+    oid_prefix = "oid sha256:"
+    size_prefix = "size "
+    if not lines[1].startswith(oid_prefix) or not lines[2].startswith(size_prefix):
+        return None
+    digest = lines[1][len(oid_prefix) :]
+    raw_size = lines[2][len(size_prefix) :]
+    if (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or not raw_size.isdigit()
+        or raw_size.startswith("0")
+    ):
+        return None
+    return digest, int(raw_size)
+
+
+def _git_index_blob(repo_root: Path, relative: PurePosixPath) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.fspath(repo_root), "show", f":{relative.as_posix()}"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", b"")
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", "replace")
+        raise BoundaryPolicyError(
+            f"unable to read Git index object for {relative}: {detail or exc}"
+        ) from exc
+    return result.stdout
+
+
+def _git_filter_is_lfs(repo_root: Path, relative: PurePosixPath) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                os.fspath(repo_root),
+                "check-attr",
+                "filter",
+                "--",
+                relative.as_posix(),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise BoundaryPolicyError(
+            f"unable to inspect Git attributes for {relative}: {exc}"
+        ) from exc
+    return result.stdout.rstrip().endswith(": filter: lfs")
+
+
 def scan_repository(
     repo_root: Path,
     lock_path: Path,
@@ -196,15 +311,19 @@ def scan_repository(
     locked_by_size: dict[int, set[str]] = {}
     locked_targets: set[PurePosixPath] = set()
     locked_names: set[str] = set()
+    public_models_by_path: dict[PurePosixPath, LockedArtifact] = {}
     for artifact in artifacts:
         locked_by_size.setdefault(artifact.size, set()).add(artifact.sha256)
         locked_targets.add(ANDROID_MAIN_PREFIX / artifact.target_path)
         locked_names.add(artifact.target_path.name.lower())
+        if artifact.repository_path is not None:
+            public_models_by_path[artifact.repository_path] = artifact
 
     violations: list[BoundaryViolation] = []
     files_hashed = 0
     for relative in sorted(set(normalized_paths), key=lambda item: item.as_posix()):
         absolute = repo_root.joinpath(*relative.parts)
+        public_model = public_models_by_path.get(relative)
         if absolute.is_symlink():
             if _is_under(relative, ANDROID_MAIN_PREFIX):
                 violations.append(
@@ -213,7 +332,7 @@ def scan_repository(
             continue
         if not absolute.is_file():
             continue
-        if relative in locked_targets:
+        if relative in locked_targets and public_model is None:
             violations.append(
                 BoundaryViolation(
                     "LOCKED_TARGET_TRACKED",
@@ -224,7 +343,7 @@ def scan_repository(
 
         suffix = relative.suffix.lower()
         under_main = _is_under(relative, ANDROID_MAIN_PREFIX)
-        if under_main and suffix in RAW_MODEL_SUFFIXES:
+        if under_main and suffix in RAW_MODEL_SUFFIXES and public_model is None:
             violations.append(
                 BoundaryViolation(
                     "RAW_MODEL_TRACKED",
@@ -232,7 +351,12 @@ def scan_repository(
                     f"raw model extension {suffix} is forbidden in app/src/main",
                 )
             )
-        if under_main and suffix == ".so" and relative.name.lower() in locked_names:
+        if (
+            under_main
+            and suffix == ".so"
+            and relative.name.lower() in locked_names
+            and public_model is None
+        ):
             violations.append(
                 BoundaryViolation(
                     "PRIVATE_LIBRARY_TRACKED",
@@ -247,6 +371,39 @@ def scan_repository(
                 prefix = stream.read(len(LFS_PREFIX))
         except OSError as exc:
             raise BoundaryPolicyError(f"unable to inspect tracked file {relative}: {exc}") from exc
+        if public_model is not None:
+            pointer = _parse_lfs_pointer(absolute.read_bytes())
+            if pointer is not None:
+                valid_worktree = pointer == (public_model.sha256, public_model.size)
+            else:
+                digest = _sha256_file(absolute)
+                files_hashed += 1
+                valid_worktree = (
+                    size == public_model.size and digest == public_model.sha256
+                )
+            if not valid_worktree:
+                violations.append(
+                    BoundaryViolation(
+                        "PUBLIC_MODEL_INTEGRITY",
+                        relative.as_posix(),
+                        "allowlisted user-trained model does not match its locked size and digest",
+                    )
+                )
+            if tracked_paths is None:
+                index_pointer = _parse_lfs_pointer(_git_index_blob(repo_root, relative))
+                if (
+                    not _git_filter_is_lfs(repo_root, relative)
+                    or index_pointer != (public_model.sha256, public_model.size)
+                ):
+                    violations.append(
+                        BoundaryViolation(
+                            "PUBLIC_MODEL_NOT_LOCKED_LFS",
+                            relative.as_posix(),
+                            "public model must have an exact SHA-256/size Git LFS index pointer",
+                        )
+                    )
+            continue
+
         if prefix == LFS_PREFIX and (under_main or suffix in BINARY_SUFFIXES):
             violations.append(
                 BoundaryViolation(
@@ -276,6 +433,7 @@ def scan_repository(
         "tracked_files_checked": len(set(normalized_paths)),
         "size_candidates_hashed": files_hashed,
         "locked_artifacts": len(artifacts),
+        "public_models_allowlisted": len(public_models_by_path),
         "violations": [violation.as_dict() for violation in violations],
     }
 

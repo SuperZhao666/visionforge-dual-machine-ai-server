@@ -32,8 +32,7 @@ APPROVED_PAIR_GENERATION_SCHEMA_LINEAGE = frozenset(
         "20260804_dual_machine_reactivation_mode_v9",
         "20260804_dual_machine_generation_credential_journal_v10",
         "20260804_dual_machine_verified_pair_bootstrap_v11",
-        "20260804_dual_machine_verified_pair_bootstrap_v11",
-        "20260804_dual_machine_generation_credential_journal_v10",
+        "20260804_dual_machine_pair_security_schema_attestation_v12",
     }
 )
 HOST_FORMAL_SECURITY_CAPABILITIES: Mapping[bytes, str] = {
@@ -103,8 +102,9 @@ EXPECTED_ANDROID_FORMAL_SECURITY_LOADER = (
     b"                        + formalSecureDataPlaneImplemented)\n"
     b"    }\n"
     b"}\n"
+    b"def formalReleaseArtifactTaskNames = ['packageRelease', 'bundleRelease']\n"
     b"tasks.configureEach { task ->\n"
-    b"    if (task.name == 'preReleaseBuild') {\n"
+    b"    if (task.name in formalReleaseArtifactTaskNames) {\n"
     b"        task.dependsOn(tasks.named('verifyFormalSecureDataPlaneImplemented'))\n"
     b"    }\n"
     b"}\n"
@@ -112,18 +112,21 @@ EXPECTED_ANDROID_FORMAL_SECURITY_LOADER = (
     b"    group = 'verification'\n"
     b"    description = 'Proves the formal gate is in the Android release task graph.'\n"
     b"    doLast {\n"
-    b"        def releaseTask = tasks.named('preReleaseBuild').get()\n"
     b"        def formalTask = tasks.named(\n"
     b"                'verifyFormalSecureDataPlaneImplemented').get()\n"
-    b"        def dependencies = releaseTask.taskDependencies\n"
-    b"                .getDependencies(releaseTask)\n"
-    b"        if (!dependencies.contains(formalTask)) {\n"
-    b"            throw new GradleException(\n"
-    b"                    'Formal security verification is absent from preReleaseBuild')\n"
+    b"        formalReleaseArtifactTaskNames.each { String taskName ->\n"
+    b"            def releaseTask = tasks.named(taskName).get()\n"
+    b"            def dependencies = releaseTask.taskDependencies\n"
+    b"                    .getDependencies(releaseTask)\n"
+    b"            if (!dependencies.contains(formalTask)) {\n"
+    b"                throw new GradleException(\n"
+    b'                        "Formal security verification is absent from ${taskName}")\n'
+    b"            }\n"
     b"        }\n"
     b"        println(\n"
     b"                'VFDUAL_FORMAL_SECURITY_RELEASE_GRAPH=v1:'\n"
-    b"                        + 'preReleaseBuild->verifyFormalSecureDataPlaneImplemented')\n"
+    b"                        + 'packageRelease,bundleRelease'\n"
+    b"                        + '->verifyFormalSecureDataPlaneImplemented')\n"
     b"    }\n"
     b"}\n"
 )
@@ -538,7 +541,7 @@ def _base_source_contracts(root: Path) -> tuple[SourceContract, ...]:
             name="sidecar-pair-generation-schema-foundation",
             path=sidecar_root / "database.py",
             required=(
-                'SCHEMA_VERSION = "20260804_dual_machine_verified_pair_bootstrap_v11"',
+                'SCHEMA_VERSION = "20260804_dual_machine_pair_security_schema_attestation_v12"',
                 "PAIR_GENERATION_CREDENTIAL_JOURNAL_SCHEMA_VERSION = (",
                 "CREATE TABLE IF NOT EXISTS dm_pair_security_state (",
                 "CREATE TABLE IF NOT EXISTS dm_pair_generation_challenges (",
@@ -846,7 +849,7 @@ def _base_source_contracts(root: Path) -> tuple[SourceContract, ...]:
                 "productionVersionName = '1.0.1'",
                 "previouslyReleasedVersionCode = 3",
                 "Production versionName must be stable SemVer without a prerelease label",
-                "task.name == 'preReleaseBuild'",
+                "task.name in ['packageRelease', 'bundleRelease']",
                 "Release requires 2-4 distinct SHA-256 SPKI pins",
                 "VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS",
                 "Release requires 1-3 pinned RS256 public ticket keys.",
@@ -1160,13 +1163,13 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
             required=(
                 "verifyDualMachineReleaseSecurityInputs",
                 "verifyProductionReleaseVersion",
-                "productionVersionCode = 11",
+                "dualMachineAndroidRelease.version_code",
                 "dualMachineReleaseVersionFile",
                 "../dual_machine_runtime/release_version.txt",
                 "productionVersionName = dualMachineReleaseVersionFile.text.trim()",
-                "previouslyReleasedVersionCode = 10",
+                "dualMachineAndroidRelease.previous_version_code",
                 "Production versionName must be stable SemVer without a prerelease label",
-                "task.name == 'preReleaseBuild'",
+                "task.name in ['packageRelease', 'bundleRelease']",
                 "Release requires 2-4 distinct SHA-256 SPKI pins",
                 "VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS",
                 "Release requires 1-3 pinned RS256 public ticket keys.",
@@ -2406,9 +2409,11 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
                 "if (!formalSecureDataPlaneImplemented)",
                 "VFDUAL_FORMAL_SECURITY_LOADER_CONTRACT=v1:",
                 "tasks.configureEach { task ->",
-                "if (task.name == 'preReleaseBuild')",
+                "formalReleaseArtifactTaskNames",
+                "if (task.name in formalReleaseArtifactTaskNames)",
                 "task.dependsOn(tasks.named('verifyFormalSecureDataPlaneImplemented'))",
                 "tasks.register('probeFormalSecurityReleaseGraphContract')",
+                "formalReleaseArtifactTaskNames.each",
                 ".getDependencies(releaseTask)",
                 "dependencies.contains(formalTask)",
                 "VFDUAL_FORMAL_SECURITY_RELEASE_GRAPH=v1:",
@@ -3582,7 +3587,7 @@ def _probe_android_formal_security_loader(root: Path) -> dict[str, Any]:
     loader_marker = "VFDUAL_FORMAL_SECURITY_LOADER_CONTRACT=v1:true"
     graph_marker = (
         "VFDUAL_FORMAL_SECURITY_RELEASE_GRAPH=v1:"
-        "preReleaseBuild->verifyFormalSecureDataPlaneImplemented"
+        "packageRelease,bundleRelease->verifyFormalSecureDataPlaneImplemented"
     )
     loader_marker_lines = [
         line

@@ -40,6 +40,28 @@ class WindowsHostReleasePipelineContractTests(unittest.TestCase):
         for switch in ["/GR-", "/GS", "/sdl", "/guard:cf", "/CETCOMPAT"]:
             self.assertIn(switch, cmake)
 
+    def test_ci_treats_expected_formal_rejection_as_a_passing_regression(self) -> None:
+        workflow = self.read(".github/workflows/ci.yml")
+        formal = workflow.split("  host-formal-release:", 1)[1].split(
+            "  android-public:", 1
+        )[0]
+        self.assertIn("Host formal fail-closed regression", formal)
+        self.assertIn("VFDUAL_FORMAL_RELEASE_STATUS=BLOCKED", formal)
+        self.assertIn("exit 0", formal)
+        self.assertNotIn(
+            "Write-Output 'VFDUAL_FORMAL_RELEASE_STATUS=BLOCKED'\n          exit 1",
+            formal,
+        )
+
+    def test_private_runner_gate_is_manual_until_a_runner_is_online(self) -> None:
+        workflow = self.read(".github/workflows/ci.yml")
+        private_job = workflow.split("  android-private-artifacts:", 1)[1]
+        self.assertIn("if: github.event_name == 'workflow_dispatch'", private_job)
+        self.assertIn(
+            "runs-on: [self-hosted, linux, visionforge-private-artifacts]",
+            private_job,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

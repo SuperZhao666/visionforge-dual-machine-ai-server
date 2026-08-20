@@ -151,7 +151,10 @@ int main() {
                             "verify_host_release_artifact.ps1") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(host_build_script.find(
-                            "-PrivateSymbolsDirectory") !=
+                            "-DVFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS=OFF") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(host_build_script.find(
+                            "-PrivateSymbolsDirectory") ==
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(host_release_verifier.find(
                             "Control Flow Guard instrumentation") !=
@@ -159,7 +162,7 @@ int main() {
     VFDUAL_TEST_REQUIRE(host_release_verifier.find("CET compatibility") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(host_release_verifier.find(
-                            "private_do_not_ship") != std::string::npos);
+                            "private_out_of_band") != std::string::npos);
     VFDUAL_TEST_REQUIRE(host_release_verifier.find(
                             "Get-AuthenticodeSignature") !=
                          std::string::npos);

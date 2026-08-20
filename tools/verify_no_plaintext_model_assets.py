@@ -15,6 +15,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import sys
 from typing import Iterable, Sequence
 import zipfile
@@ -31,6 +32,7 @@ SKIP_DIRECTORY_NAMES = {
     "__pycache__",
     ".pytest_cache",
     "build",
+    "analysis_output",
     "out",
     "output",
     "releases",
@@ -41,6 +43,18 @@ SKIP_DIRECTORY_NAMES = {
 
 class ScanFailure(RuntimeError):
     pass
+
+
+class LockedArtifactDigests(dict[int, set[str]]):
+    """Locked hashes plus the exact public-source exceptions declared by the lock."""
+
+    def __init__(
+        self,
+        by_size: dict[int, set[str]],
+        public_source_artifacts: dict[PurePosixPath, tuple[int, str]],
+    ) -> None:
+        super().__init__(by_size)
+        self.public_source_artifacts = public_source_artifacts
 
 
 def sha256_stream(stream) -> tuple[str, int]:
@@ -55,7 +69,7 @@ def sha256_stream(stream) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def load_locked_digests(lock_path: Path) -> dict[int, set[str]]:
+def load_locked_digests(lock_path: Path) -> LockedArtifactDigests:
     try:
         payload = json.loads(lock_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -82,6 +96,7 @@ def load_locked_digests(lock_path: Path) -> dict[int, set[str]]:
     if not isinstance(rows, list) or not rows:
         raise ScanFailure("private-artifact lock has no artifacts")
     by_size: dict[int, set[str]] = {}
+    public_source_artifacts: dict[PurePosixPath, tuple[int, str]] = {}
     for row in rows:
         if not isinstance(row, dict):
             raise ScanFailure("private-artifact lock row is invalid")
@@ -95,14 +110,46 @@ def load_locked_digests(lock_path: Path) -> dict[int, set[str]]:
             or not re.fullmatch(r"[0-9a-f]{64}", digest)
         ):
             raise ScanFailure("private-artifact lock hash/size is invalid")
-        if row.get("public_repository_allowed") is not False:
+        public_repository_allowed = row.get("public_repository_allowed")
+        if not isinstance(public_repository_allowed, bool):
             raise ScanFailure("private-artifact public-repository policy is invalid")
         if row.get("license_review_required") is not True:
             raise ScanFailure("private-artifact license-review policy is invalid")
         if row.get("allowed_variants") != ["debug", "qa"]:
             raise ScanFailure("private-artifact row variants are invalid")
+        if public_repository_allowed:
+            target_value = row.get("target_path")
+            if not isinstance(target_value, str):
+                raise ScanFailure("public model target path is invalid")
+            target_path = PurePosixPath(target_value)
+            if (
+                target_path.is_absolute()
+                or target_path.as_posix() != target_value
+                or any(part in {"", ".", ".."} for part in target_path.parts)
+            ):
+                raise ScanFailure("public model target path is invalid")
+            repository_value = row.get("repository_path")
+            expected_repository_path = (
+                PurePosixPath("android_inference_benchmark/app/src/main")
+                / target_path
+            )
+            if (
+                row.get("kind") != "model_weight_library"
+                or row.get("provenance") != "user_trained"
+                or row.get("repository_storage") != "git_lfs"
+                or repository_value != expected_repository_path.as_posix()
+                or not MODEL_LIBRARY.fullmatch(expected_repository_path.name)
+                or expected_repository_path in public_source_artifacts
+            ):
+                raise ScanFailure("public model repository exception is invalid")
+            public_source_artifacts[expected_repository_path] = (size, digest)
+        elif any(
+            field in row
+            for field in ("provenance", "repository_storage", "repository_path")
+        ):
+            raise ScanFailure("private artifact has unexpected repository metadata")
         by_size.setdefault(size, set()).add(digest)
-    return by_size
+    return LockedArtifactDigests(by_size, public_source_artifacts)
 
 
 def path_reason(path: PurePosixPath) -> str | None:
@@ -114,10 +161,76 @@ def path_reason(path: PurePosixPath) -> str | None:
     return None
 
 
-def iter_source_files(root: Path) -> Iterable[tuple[PurePosixPath, Path]]:
+def git_tracked_source_paths(root: Path) -> tuple[PurePosixPath, ...]:
+    resolved_root = root.resolve(strict=True)
+    try:
+        top_level = subprocess.run(
+            ["git", "-C", str(resolved_root), "rev-parse", "--show-toplevel"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+        if Path(top_level).resolve(strict=True) != resolved_root:
+            raise ScanFailure("source root must be the Git repository root")
+        raw_paths = subprocess.run(
+            ["git", "-C", str(resolved_root), "ls-files", "--cached", "-z"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError, UnicodeError) as exc:
+        raise ScanFailure("cannot enumerate Git-tracked public source") from exc
+
+    tracked: list[PurePosixPath] = []
+    for raw_path in raw_paths.split(b"\0"):
+        if not raw_path:
+            continue
+        try:
+            value = raw_path.decode("utf-8")
+        except UnicodeError as exc:
+            raise ScanFailure("Git-tracked source path is not UTF-8") from exc
+        relative = PurePosixPath(value)
+        if (
+            relative.is_absolute()
+            or relative.as_posix() != value
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ScanFailure(f"Git-tracked source path is unsafe: {value!r}")
+        tracked.append(relative)
+    if not tracked:
+        raise ScanFailure("Git-tracked public source is empty")
+    return tuple(sorted(tracked))
+
+
+def iter_source_files(
+    root: Path,
+    tracked_paths: Sequence[PurePosixPath] | None = None,
+) -> Iterable[tuple[PurePosixPath, Path]]:
     root = root.resolve(strict=True)
     if not root.is_dir() or root.is_symlink():
         raise ScanFailure("source root must be a real directory")
+    if tracked_paths is not None:
+        for relative in tracked_paths:
+            entry = root.joinpath(*relative.parts)
+            try:
+                mode = entry.lstat().st_mode
+            except OSError as exc:
+                raise ScanFailure(
+                    f"Git-tracked source entry is unavailable: {relative.as_posix()}"
+                ) from exc
+            if stat.S_ISLNK(mode):
+                raise ScanFailure(
+                    f"Git-tracked source contains symlink: {relative.as_posix()}"
+                )
+            if not stat.S_ISREG(mode):
+                raise ScanFailure(
+                    f"Git-tracked source entry is not a regular file: "
+                    f"{relative.as_posix()}"
+                )
+            yield relative, entry
+        return
     stack = [(PurePosixPath(), root)]
     while stack:
         relative, directory = stack.pop()
@@ -141,12 +254,62 @@ def iter_source_files(root: Path) -> Iterable[tuple[PurePosixPath, Path]]:
                 yield rel, entry
 
 
-def scan_source(root: Path, lock_path: Path, locked: dict[int, set[str]]) -> tuple[int, int]:
+def _canonical_lfs_pointer(size: int, digest: str) -> bytes:
+    return (
+        "version https://git-lfs.github.com/spec/v1\n"
+        f"oid sha256:{digest}\n"
+        f"size {size}\n"
+    ).encode("ascii")
+
+
+def scan_source(
+    root: Path,
+    lock_path: Path,
+    locked: LockedArtifactDigests,
+    tracked_paths: Sequence[PurePosixPath] | None = None,
+) -> tuple[int, int]:
     files = 0
     hashed = 0
     lock_resolved = lock_path.resolve(strict=True)
-    for relative, path in iter_source_files(root):
+    seen_public_artifacts: set[PurePosixPath] = set()
+    for relative, path in iter_source_files(root, tracked_paths):
         files += 1
+        public_artifact = locked.public_source_artifacts.get(relative)
+        if public_artifact is not None:
+            expected_size, expected_digest = public_artifact
+            try:
+                actual_size = path.stat().st_size
+            except OSError as exc:
+                raise ScanFailure(
+                    f"cannot stat public model file: {relative.as_posix()}"
+                ) from exc
+            if actual_size == expected_size:
+                with path.open("rb") as stream:
+                    actual_digest, verified_size = sha256_stream(stream)
+                hashed += 1
+                if (
+                    verified_size != expected_size
+                    or actual_digest != expected_digest
+                ):
+                    raise ScanFailure(
+                        f"public model integrity mismatch: {relative.as_posix()}"
+                    )
+            else:
+                expected_pointer = _canonical_lfs_pointer(
+                    expected_size, expected_digest
+                )
+                try:
+                    actual_pointer = path.read_bytes()
+                except OSError as exc:
+                    raise ScanFailure(
+                        f"cannot read public model LFS pointer: {relative.as_posix()}"
+                    ) from exc
+                if actual_pointer != expected_pointer:
+                    raise ScanFailure(
+                        f"public model integrity mismatch: {relative.as_posix()}"
+                    )
+            seen_public_artifacts.add(relative)
+            continue
         reason = path_reason(relative)
         if reason:
             raise ScanFailure(f"{reason}: {relative.as_posix()}")
@@ -165,6 +328,14 @@ def scan_source(root: Path, lock_path: Path, locked: dict[int, set[str]]) -> tup
             raise ScanFailure(
                 f"locked_private_artifact_bytes: {relative.as_posix()} sha256={digest}"
             )
+    missing_public_artifacts = (
+        set(locked.public_source_artifacts) - seen_public_artifacts
+    )
+    if missing_public_artifacts:
+        missing = ",".join(
+            path.as_posix() for path in sorted(missing_public_artifacts)
+        )
+        raise ScanFailure(f"declared public model is missing: {missing}")
     return files, hashed
 
 
@@ -177,7 +348,7 @@ def strict_archive_name(name: str) -> PurePosixPath:
     return path
 
 
-def scan_archive(path: Path, locked: dict[int, set[str]]) -> tuple[int, int]:
+def scan_archive(path: Path, locked: LockedArtifactDigests) -> tuple[int, int]:
     files = 0
     hashed = 0
     try:
@@ -221,6 +392,11 @@ def parser() -> argparse.ArgumentParser:
     mode = result.add_mutually_exclusive_group(required=True)
     mode.add_argument("--source-root", type=Path)
     mode.add_argument("--archive", type=Path)
+    result.add_argument(
+        "--git-tracked-only",
+        action="store_true",
+        help="scan only paths in the source root's Git index",
+    )
     return result
 
 
@@ -229,9 +405,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         locked = load_locked_digests(args.lock)
         if args.source_root is not None:
-            files, hashed = scan_source(args.source_root, args.lock, locked)
+            tracked_paths = (
+                git_tracked_source_paths(args.source_root)
+                if args.git_tracked_only
+                else None
+            )
+            files, hashed = scan_source(
+                args.source_root,
+                args.lock,
+                locked,
+                tracked_paths,
+            )
             mode = "source"
         else:
+            if args.git_tracked_only:
+                raise ScanFailure("--git-tracked-only requires --source-root")
             files, hashed = scan_archive(args.archive, locked)
             mode = "archive"
     except ScanFailure as exc:

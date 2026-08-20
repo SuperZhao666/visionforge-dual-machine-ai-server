@@ -68,6 +68,11 @@ def _read_password_file(path: Path) -> str:
 
 def _write_generated_password(path: Path, password: str) -> Path:
     resolved = _outside_repository(path)
+    if os.name == "nt":
+        raise AdminBootstrapError(
+            "generated password files require POSIX 0600 permissions; "
+            "use interactive input or a securely provisioned --password-file"
+        )
     resolved.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:

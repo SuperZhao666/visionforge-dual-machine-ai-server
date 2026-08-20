@@ -36,8 +36,9 @@ tasks.register('verifyFormalSecureDataPlaneImplemented') {
                         + formalSecureDataPlaneImplemented)
     }
 }
+def formalReleaseArtifactTaskNames = ['packageRelease', 'bundleRelease']
 tasks.configureEach { task ->
-    if (task.name == 'preReleaseBuild') {
+    if (task.name in formalReleaseArtifactTaskNames) {
         task.dependsOn(tasks.named('verifyFormalSecureDataPlaneImplemented'))
     }
 }
@@ -45,17 +46,20 @@ tasks.register('probeFormalSecurityReleaseGraphContract') {
     group = 'verification'
     description = 'Proves the formal gate is in the Android release task graph.'
     doLast {
-        def releaseTask = tasks.named('preReleaseBuild').get()
         def formalTask = tasks.named(
                 'verifyFormalSecureDataPlaneImplemented').get()
-        def dependencies = releaseTask.taskDependencies
-                .getDependencies(releaseTask)
-        if (!dependencies.contains(formalTask)) {
-            throw new GradleException(
-                    'Formal security verification is absent from preReleaseBuild')
+        formalReleaseArtifactTaskNames.each { String taskName ->
+            def releaseTask = tasks.named(taskName).get()
+            def dependencies = releaseTask.taskDependencies
+                    .getDependencies(releaseTask)
+            if (!dependencies.contains(formalTask)) {
+                throw new GradleException(
+                        "Formal security verification is absent from ${taskName}")
+            }
         }
         println(
                 'VFDUAL_FORMAL_SECURITY_RELEASE_GRAPH=v1:'
-                        + 'preReleaseBuild->verifyFormalSecureDataPlaneImplemented')
+                        + 'packageRelease,bundleRelease'
+                        + '->verifyFormalSecureDataPlaneImplemented')
     }
 }
