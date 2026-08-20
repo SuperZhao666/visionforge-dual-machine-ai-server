@@ -1047,9 +1047,8 @@ HostRuntimeService::HostRuntimeService(
     write_host_event("host_process_start", describe_process_context());
 }
 HostRuntimeService::~HostRuntimeService() { stop(); }
-
 bool HostRuntimeService::start(const HostStreamSettings& settings, std::string& error) {
-    stop();
+    stop_runtime();
     const std::int64_t roi_right =
         static_cast<std::int64_t>(settings.capture_region.x) +
         settings.capture_region.width;
@@ -1158,7 +1157,6 @@ bool HostRuntimeService::start(const HostStreamSettings& settings, std::string& 
     error = last_error_;
     return running_;
 }
-
 void HostRuntimeService::request_stop() noexcept {
     if (authorization_gate_ != nullptr) authorization_gate_->stop();
     {
@@ -1167,9 +1165,11 @@ void HostRuntimeService::request_stop() noexcept {
         startup_stop_source_.request_stop();
     }
 }
-
 void HostRuntimeService::stop() noexcept {
     if (authorization_gate_ != nullptr) authorization_gate_->stop();
+    stop_runtime();
+}
+void HostRuntimeService::stop_runtime() noexcept {
     const bool worker_joinable = worker_.joinable();
     bool should_log_stop_request = false;
     {

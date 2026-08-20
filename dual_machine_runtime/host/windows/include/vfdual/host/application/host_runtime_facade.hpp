@@ -33,6 +33,10 @@ public:
     [[nodiscard]] std::optional<HostRuntimeReadModel> snapshot() const;
     [[nodiscard]] std::string last_error() const;
 
+    /** Explicit logout/session-end action; prevents the old ticket restarting. */
+    void revoke_data_plane_authorization() noexcept;
+    [[nodiscard]] HostAuthorizationReadModel authorization_read_model() noexcept;
+
 private:
     struct State;
     std::unique_ptr<State> state_;

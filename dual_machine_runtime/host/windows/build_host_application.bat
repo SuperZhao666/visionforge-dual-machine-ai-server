@@ -90,6 +90,10 @@ if errorlevel 1 (
   echo ERROR: VFDUAL_HOST_SIGNER_CERT_SHA256 must be exactly 64 hexadecimal characters.
   exit /b 1
 )
+if not defined VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64 (
+  echo ERROR: VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64 is required and must contain 1-3 public PEM files encoded as Base64.
+  exit /b 1
+)
 
 rem OUTPUT_NAME does not remove binaries emitted by the former product name.
 rem Delete only the two formal-build legacy artifacts so a successful build
@@ -105,7 +109,9 @@ if exist "%RUNTIME_ROOT%\out\VisionForgeHost.exe" (
   exit /b 1
 )
 
-"%CMAKE_EXE%" -S "%RUNTIME_ROOT%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" -DVFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS=OFF -DVFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY=ON
+"%CMAKE_EXE%" -S "%RUNTIME_ROOT%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" -DVFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS=OFF -DVFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY=ON -DVFDUAL_ENFORCE_HOST_RELEASE_SECURITY_INPUTS=ON "-DVFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64=%VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64%"
+if errorlevel 1 exit /b 1
+"%CMAKE_EXE%" --build "%BUILD_DIR%" --target verify_host_release_security_inputs
 if errorlevel 1 exit /b 1
 rem A formal one-EXE build must not reuse objects compiled against an older
 rem class layout. Ninja dependency output can be localized on Windows, so a
@@ -123,7 +129,7 @@ if exist "%TEST_BUILD_DIR%" (
   echo ERROR: Failed to remove stale Host test build "%TEST_BUILD_DIR%".
   exit /b 1
 )
-"%CMAKE_EXE%" -S "%RUNTIME_ROOT%" -B "%TEST_BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" -DVFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS=OFF
+"%CMAKE_EXE%" -S "%RUNTIME_ROOT%" -B "%TEST_BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" -DVFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS=OFF "-DVFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64=%VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64%"
 if errorlevel 1 exit /b 1
 "%CMAKE_EXE%" --build "%TEST_BUILD_DIR%" --target vfdual_test_build
 if errorlevel 1 exit /b 1

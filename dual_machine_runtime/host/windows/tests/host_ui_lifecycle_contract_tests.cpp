@@ -426,15 +426,23 @@ int main() {
         runtime_source,
         "bool HostRuntimeService::start(const HostStreamSettings& settings, std::string& error)",
         "void HostRuntimeService::request_stop() noexcept");
-    const std::size_t defensive_stop_index = runtime_start.find("stop();");
+    const std::size_t technical_teardown_index = runtime_start.find("stop_runtime();");
     const std::size_t worker_assignment_index = runtime_start.find("worker_ = std::thread");
     const std::size_t thread_create_failure_index =
         runtime_start.find("host_worker_thread_create_failed");
-    VFDUAL_TEST_REQUIRE(defensive_stop_index != std::string::npos);
+    VFDUAL_TEST_REQUIRE(technical_teardown_index != std::string::npos);
     VFDUAL_TEST_REQUIRE(worker_assignment_index != std::string::npos);
     VFDUAL_TEST_REQUIRE(thread_create_failure_index != std::string::npos);
-    VFDUAL_TEST_REQUIRE(defensive_stop_index < worker_assignment_index);
+    VFDUAL_TEST_REQUIRE(technical_teardown_index < worker_assignment_index);
     VFDUAL_TEST_REQUIRE(worker_assignment_index < thread_create_failure_index);
+
+    const std::string runtime_stop = slice_between(
+        runtime_source,
+        "void HostRuntimeService::stop() noexcept",
+        "void HostRuntimeService::stop_runtime() noexcept");
+    VFDUAL_TEST_REQUIRE(runtime_stop.find("stop_runtime();") != std::string::npos);
+    VFDUAL_TEST_REQUIRE(runtime_stop.find("authorization_gate_->stop()") !=
+                         std::string::npos);
 
     const std::string runtime_request_stop = slice_between(
         runtime_source,

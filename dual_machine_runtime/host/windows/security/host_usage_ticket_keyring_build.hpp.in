@@ -1,0 +1,14 @@
+#pragma once
+
+#include <array>
+#include <string_view>
+
+namespace vfdual::build {
+
+// Public-only PEM files, each outer-encoded as canonical standard Base64.
+// The generated header is private to the Host verifier target.
+inline constexpr std::array<std::string_view, @VFDUAL_USAGE_TICKET_KEY_COUNT@>
+    kUsageTicketPublicPemBase64{
+@VFDUAL_USAGE_TICKET_KEY_ENTRIES@};
+
+}  // namespace vfdual::build
