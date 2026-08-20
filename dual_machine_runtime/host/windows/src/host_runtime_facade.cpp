@@ -56,17 +56,6 @@ void HostRuntimeFacade::restore_direct_link_on_clean_shutdown() noexcept {
 bool HostRuntimeFacade::is_running() const noexcept { return state_->runtime.is_running(); }
 std::string HostRuntimeFacade::last_error() const { return state_->runtime.last_error(); }
 
-bool HostRuntimeFacade::install_confirmed_peer_binding(
-    vfdual::UsageLeaseBinding binding) {
-    return state_->runtime.install_confirmed_peer_binding(std::move(binding));
-}
-
-vfdual::UsageLeaseAdmission HostRuntimeFacade::submit_verified_usage_lease(
-    const vfdual::VerifiedUsageLease& lease,
-    const std::uint64_t trusted_now_epoch) {
-    return state_->runtime.submit_verified_usage_lease(lease, trusted_now_epoch);
-}
-
 void HostRuntimeFacade::revoke_data_plane_authorization() noexcept {
     state_->runtime.revoke_data_plane_authorization();
 }

@@ -19,6 +19,7 @@ public final class DualMachineUsageLeaseVerifierSelfTest {
         verifiesFutureLeaseRemainsFuture(signingKey);
         alignsOnlyAContiguousVerifiedRenewal(signingKey);
         acceptsSmallServerClockAheadWithoutExtendingTtl(signingKey);
+        verifiesLegacyBalanceAuthorizationClaims(signingKey);
         verifiesPermanentAuthorizationClaims(signingKey);
         rejectsSignatureHeaderKeyAndEncodingTampering(signingKey);
         rejectsClaimTypeBindingAndJtiTampering(signingKey);
@@ -85,6 +86,25 @@ public final class DualMachineUsageLeaseVerifierSelfTest {
                 DualMachineUsageLeaseSelfTestSupport.expected(data),
                 100L,
                 0L));
+    }
+
+    private static void verifiesLegacyBalanceAuthorizationClaims(KeyPair keyPair)
+            throws Exception {
+        DualMachineUsageLeaseSelfTestSupport.LeaseData data =
+                DualMachineUsageLeaseSelfTestSupport.initial(
+                        100L, 100L, 105L);
+        data.authorizationKind = "legacy_balance";
+        data.permanent = false;
+        data.remainingSeconds = 900L;
+        DualMachineUsageLeaseVerifier.VerifiedLease lease =
+                new DualMachineUsageLeaseVerifier(keyPair.getPublic()).verify(
+                        DualMachineUsageLeaseSelfTestSupport.token(keyPair, data),
+                        DualMachineUsageLeaseSelfTestSupport.expected(data),
+                        100L,
+                        0L);
+        require(lease.authorizationKind().equals("legacy_balance"));
+        require(!lease.permanent());
+        require(lease.remainingSeconds() == 900L);
     }
 
     private static void verifiesFutureLeaseRemainsFuture(KeyPair keyPair)

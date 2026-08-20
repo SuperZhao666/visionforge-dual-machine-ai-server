@@ -49,6 +49,10 @@ struct VerifiedUsageLeaseClaims final {
     std::string previous_ticket_sha256;
     std::uint64_t sequence{};
     std::string phase;
+    std::string authorization_kind;
+    bool is_permanent{};
+    std::uint64_t remaining_seconds{};
+    std::string lease_id;
     std::uint64_t issued_at_epoch{};
     std::uint64_t not_before_epoch{};
     std::uint64_t expires_at_epoch{};

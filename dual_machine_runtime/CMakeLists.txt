@@ -35,6 +35,10 @@ option(VFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS
     "Generate and privately archive VisionForgeHost symbols without shipping them" ON)
 option(VFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY
     "Build only the authenticated formal v2 data plane without plaintext fallback" OFF)
+option(VFDUAL_ENFORCE_HOST_RELEASE_SECURITY_INPUTS
+    "Require and validate the Host public usage-ticket verification keyring" OFF)
+set(VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64 "" CACHE STRING
+    "Semicolon-separated canonical Base64 encodings of public PEM files")
 include("${CMAKE_CURRENT_SOURCE_DIR}/formal_security_loader.cmake")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -170,6 +174,104 @@ if(WIN32)
 endif()
 
 if(WIN32)
+    set(VFDUAL_GENERATED_SECURITY_DIRECTORY
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/host-security")
+    file(MAKE_DIRECTORY "${VFDUAL_GENERATED_SECURITY_DIRECTORY}/vfdual")
+    set(VFDUAL_USAGE_TICKET_KEY_ENTRIES "")
+    set(VFDUAL_USAGE_TICKET_KEY_COUNT 0)
+    if(NOT "${VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64}" STREQUAL "")
+        set(VFDUAL_USAGE_TICKET_KEY_LIST
+            ${VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64})
+        list(LENGTH VFDUAL_USAGE_TICKET_KEY_LIST
+            VFDUAL_USAGE_TICKET_KEY_COUNT)
+        if(VFDUAL_USAGE_TICKET_KEY_COUNT LESS 1 OR
+                VFDUAL_USAGE_TICKET_KEY_COUNT GREATER 3)
+            message(FATAL_ERROR
+                "Host release requires 1-3 public usage-ticket keys")
+        endif()
+        foreach(VFDUAL_USAGE_TICKET_KEY_BASE64 IN LISTS
+                VFDUAL_USAGE_TICKET_KEY_LIST)
+            string(LENGTH "${VFDUAL_USAGE_TICKET_KEY_BASE64}"
+                VFDUAL_USAGE_TICKET_KEY_BASE64_LENGTH)
+            math(EXPR VFDUAL_USAGE_TICKET_KEY_BASE64_REMAINDER
+                "${VFDUAL_USAGE_TICKET_KEY_BASE64_LENGTH} % 4")
+            if(VFDUAL_USAGE_TICKET_KEY_BASE64_LENGTH LESS 256 OR
+                    VFDUAL_USAGE_TICKET_KEY_BASE64_LENGTH GREATER 32768 OR
+                    NOT VFDUAL_USAGE_TICKET_KEY_BASE64_REMAINDER EQUAL 0 OR
+                    NOT "${VFDUAL_USAGE_TICKET_KEY_BASE64}" MATCHES
+                        "^[A-Za-z0-9+/=]+$")
+                message(FATAL_ERROR
+                    "Host usage-ticket public-key input is not canonical Base64")
+            endif()
+            string(APPEND VFDUAL_USAGE_TICKET_KEY_ENTRIES
+                "        \"${VFDUAL_USAGE_TICKET_KEY_BASE64}\",\n")
+        endforeach()
+    elseif(VFDUAL_ENFORCE_HOST_RELEASE_SECURITY_INPUTS)
+        message(FATAL_ERROR
+            "VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64 is required for a formal Host release")
+    endif()
+    configure_file(
+        host/windows/security/host_usage_ticket_keyring_build.hpp.in
+        "${VFDUAL_GENERATED_SECURITY_DIRECTORY}/vfdual/host_usage_ticket_keyring_build.hpp"
+        @ONLY)
+
+    add_library(vfdual_host_usage_lease_verifier_v1 STATIC
+        host/windows/security/src/host_usage_lease_verifier_v1.cpp
+    )
+    target_include_directories(vfdual_host_usage_lease_verifier_v1 PUBLIC
+        host/windows/security/include
+        shared/include
+    )
+    target_include_directories(vfdual_host_usage_lease_verifier_v1 PRIVATE
+        "${VFDUAL_GENERATED_SECURITY_DIRECTORY}"
+    )
+    target_compile_definitions(vfdual_host_usage_lease_verifier_v1 PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    target_link_libraries(vfdual_host_usage_lease_verifier_v1 PRIVATE
+        bcrypt
+        crypt32
+    )
+
+    add_executable(vfdual_host_release_security_input_probe
+        host/windows/security/tests/host_usage_lease_release_input_probe.cpp
+    )
+    target_link_libraries(vfdual_host_release_security_input_probe PRIVATE
+        vfdual_host_usage_lease_verifier_v1
+    )
+    add_custom_target(verify_host_release_security_inputs
+        COMMAND $<TARGET_FILE:vfdual_host_release_security_input_probe>
+        DEPENDS vfdual_host_release_security_input_probe
+        COMMENT "Validating public-only Host release security inputs (HOST_AUTHORIZATION_GATE=required)"
+        VERBATIM
+    )
+
+    # Compile the verifier again with its fixture-only factory. This target does
+    # not link the production verifier object, so test key material and seams
+    # cannot enter VisionForgeHost.
+    add_executable(vfdual_host_usage_lease_verifier_v1_tests
+        host/windows/security/tests/host_usage_lease_verifier_v1_tests.cpp
+        host/windows/security/src/host_usage_lease_verifier_v1.cpp
+    )
+    target_include_directories(vfdual_host_usage_lease_verifier_v1_tests PRIVATE
+        host/windows/security/include
+        shared/include
+        "${VFDUAL_GENERATED_SECURITY_DIRECTORY}"
+    )
+    target_compile_definitions(vfdual_host_usage_lease_verifier_v1_tests PRIVATE
+        VFDUAL_ENABLE_HOST_USAGE_LEASE_TEST_ACCESS=1
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    target_link_libraries(vfdual_host_usage_lease_verifier_v1_tests PRIVATE
+        vfdual_protocol
+        bcrypt
+        crypt32
+    )
+    add_test(NAME vfdual_host_usage_lease_verifier_v1_tests
+        COMMAND vfdual_host_usage_lease_verifier_v1_tests)
+
     add_library(vfdual_host_cng_device_identity STATIC
         host/windows/security/src/host_cng_device_identity.cpp
     )
@@ -335,7 +437,7 @@ if(WIN32)
         host/windows
         host/windows/include
         third_party/nv-codec-headers/include)
-    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
+    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_host_usage_lease_verifier_v1 ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
         mfplat mf mfuuid wmcodecdspuuid ole32 oleaut32 user32 gdi32 shell32 dwmapi dbghelp)
     if(MSVC AND VFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS)
         target_compile_options(VisionForgeHost PRIVATE /Zi /FS)

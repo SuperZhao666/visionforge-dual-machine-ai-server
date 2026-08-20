@@ -69,10 +69,10 @@ int main() {
                          std::string::npos);
 
     VFDUAL_TEST_REQUIRE(facade_header.find(
-                            "install_confirmed_peer_binding") !=
+                            "install_confirmed_peer_binding") ==
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_header.find(
-                            "submit_verified_usage_lease") !=
+                            "submit_verified_usage_lease") ==
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_header.find(
                             "authorization_read_model") !=
@@ -80,10 +80,10 @@ int main() {
     VFDUAL_TEST_REQUIRE(facade_header.find("std::string token") ==
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_source.find(
-                            "state_->runtime.install_confirmed_peer_binding") !=
+                            "state_->runtime.install_confirmed_peer_binding") ==
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_source.find(
-                            "state_->runtime.submit_verified_usage_lease") !=
+                            "state_->runtime.submit_verified_usage_lease") ==
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_source.find(
                             "state_->runtime.revoke_data_plane_authorization") !=

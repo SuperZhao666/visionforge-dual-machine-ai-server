@@ -18,6 +18,8 @@
 
 namespace vfdual {
 
+class HostRuntimeAuthorizationCoordinator;
+
 void log_host_runtime_event(std::string_view event, std::string_view detail = {});
 
 struct HostStreamSettings {
@@ -156,16 +158,19 @@ public:
     [[nodiscard]] std::optional<HostStreamMetrics> last_metrics() const;
     [[nodiscard]] std::string last_error() const;
 
-    /** Security coordinator entry points. Raw tokens are never accepted here. */
-    [[nodiscard]] bool install_confirmed_peer_binding(UsageLeaseBinding binding);
-    [[nodiscard]] UsageLeaseAdmission submit_verified_usage_lease(
-        const VerifiedUsageLease& lease,
-        std::uint64_t trusted_now_epoch);
     void revoke_data_plane_authorization() noexcept;
     [[nodiscard]] HostDataPlaneAuthorizationGate::Snapshot
         authorization_snapshot() noexcept;
 
 private:
+    // Only the security composition root may install a peer or a lease. The UI
+    // facade cannot manufacture a "verified" aggregate and open this gate.
+    friend class HostRuntimeAuthorizationCoordinator;
+    [[nodiscard]] bool install_confirmed_peer_binding(UsageLeaseBinding binding);
+    [[nodiscard]] UsageLeaseAdmission submit_verified_usage_lease(
+        const VerifiedUsageLease& lease,
+        std::uint64_t trusted_now_epoch);
+
     // Stops capture/encoder/transport workers without ending the current
     // authorized usage session. Public stop() remains the explicit business
     // action that terminates that session.

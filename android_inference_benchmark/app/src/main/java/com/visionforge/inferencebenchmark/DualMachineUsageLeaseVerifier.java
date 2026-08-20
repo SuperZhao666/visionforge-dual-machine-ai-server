@@ -330,7 +330,8 @@ public final class DualMachineUsageLeaseVerifier {
     }
 
     private static boolean isAuthorizationKind(String value) {
-        return "day".equals(value)
+        return "legacy_balance".equals(value)
+                || "day".equals(value)
                 || "week".equals(value)
                 || "month".equals(value)
                 || "permanent".equals(value);
