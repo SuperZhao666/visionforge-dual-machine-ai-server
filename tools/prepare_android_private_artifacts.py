@@ -150,8 +150,35 @@ def load_lock(lock_path: Path) -> tuple[dict[str, object], tuple[Artifact, ...]]
             raise ArtifactPolicyError(f"artifact variants are invalid: {artifact_id}")
         if row.get("license_review_required") is not True:
             raise ArtifactPolicyError(f"license review must be explicit: {artifact_id}")
-        if row.get("public_repository_allowed") is not False:
-            raise ArtifactPolicyError(f"public-repository policy must be false: {artifact_id}")
+        public_repository_allowed = row.get("public_repository_allowed")
+        if not isinstance(public_repository_allowed, bool):
+            raise ArtifactPolicyError(
+                f"public-repository policy must be explicit: {artifact_id}"
+            )
+        if public_repository_allowed:
+            repository_path = _strict_relative_path(
+                row.get("repository_path"), "repository_path"
+            )
+            expected_repository_path = PurePosixPath(
+                "android_inference_benchmark/app/src/main"
+            ) / target
+            if (
+                kind != "model_weight_library"
+                or row.get("provenance") != "user_trained"
+                or row.get("repository_storage") != "git_lfs"
+                or repository_path != expected_repository_path
+            ):
+                raise ArtifactPolicyError(
+                    "public repository storage is limited to exact user-trained "
+                    f"Git LFS model entries: {artifact_id}"
+                )
+        elif any(
+            field in row
+            for field in ("provenance", "repository_storage", "repository_path")
+        ):
+            raise ArtifactPolicyError(
+                f"disabled public-repository entry has public metadata: {artifact_id}"
+            )
         artifacts.append(
             Artifact(
                 artifact_id=artifact_id,
@@ -162,7 +189,7 @@ def load_lock(lock_path: Path) -> tuple[dict[str, object], tuple[Artifact, ...]]
                 sha256=digest,
                 allowed_variants=tuple(variants),
                 license_review_required=True,
-                public_repository_allowed=False,
+                public_repository_allowed=public_repository_allowed,
             )
         )
     return policy, tuple(artifacts)

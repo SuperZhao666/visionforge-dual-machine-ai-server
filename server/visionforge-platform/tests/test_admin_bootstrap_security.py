@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 from pathlib import Path
 import sqlite3
 import stat
@@ -134,6 +135,13 @@ def test_generated_password_file_is_private_and_outside_repository(
 ) -> None:
     module = _load_create_admin()
     target = tmp_path / "bootstrap-password.txt"
+    if os.name == "nt":
+        with pytest.raises(module.AdminBootstrapError, match="POSIX 0600"):
+            module._write_generated_password(
+                target, "A-secure-bootstrap-password-123"
+            )
+        assert not target.exists()
+        return
     written = module._write_generated_password(
         target, "A-secure-bootstrap-password-123"
     )

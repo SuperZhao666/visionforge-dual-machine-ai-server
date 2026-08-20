@@ -44,6 +44,7 @@ class PrivateArtifactSourceBoundaryTests(unittest.TestCase):
                     "artifacts": [
                         {
                             "id": "model",
+                            "kind": "portable_model_weight",
                             "target_path": "assets/portable_models/model.onnx",
                             "size": len(self.payload),
                             "sha256": hashlib.sha256(self.payload).hexdigest(),
@@ -102,6 +103,51 @@ class PrivateArtifactSourceBoundaryTests(unittest.TestCase):
             "GIT_LFS_POINTER", {item["code"] for item in result["violations"]}
         )
 
+    def test_exact_user_trained_public_model_is_allowlisted(self) -> None:
+        relative = (
+            "android_inference_benchmark/app/src/main/jniLibs/arm64-v8a/model.so"
+        )
+        payload = json.loads(self.lock.read_text(encoding="utf-8"))
+        artifact = payload["artifacts"][0]
+        artifact.update(
+            {
+                "kind": "model_weight_library",
+                "target_path": "jniLibs/arm64-v8a/model.so",
+                "public_repository_allowed": True,
+                "provenance": "user_trained",
+                "repository_storage": "git_lfs",
+                "repository_path": relative,
+            }
+        )
+        self.lock.write_text(json.dumps(payload), encoding="utf-8")
+        self.write(relative, self.payload)
+
+        result = self.scan([relative, "private-artifacts.lock.json"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([], result["violations"])
+        self.assertEqual(1, result["public_models_allowlisted"])
+
+    def test_public_repository_exception_rejects_non_model_artifact(self) -> None:
+        payload = json.loads(self.lock.read_text(encoding="utf-8"))
+        artifact = payload["artifacts"][0]
+        artifact.update(
+            {
+                "public_repository_allowed": True,
+                "provenance": "user_trained",
+                "repository_storage": "git_lfs",
+                "repository_path": (
+                    "android_inference_benchmark/app/src/main/assets/"
+                    "portable_models/model.onnx"
+                ),
+            }
+        )
+        self.lock.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(
+            self.module.BoundaryPolicyError, "user-trained Git LFS models"
+        ):
+            self.scan(["private-artifacts.lock.json"])
+
 
     def test_gradle_stager_declares_external_root_input_before_execution(self) -> None:
         gradle = (
@@ -121,6 +167,11 @@ class PrivateArtifactSourceBoundaryTests(unittest.TestCase):
         self.assertIn("new File(outputsRoot, 'bundle/release')", gradle)
         self.assertNotIn(
             "fileTree(outputsRoot) { include '**/*.apk', '**/*.aab' }",
+            gradle,
+        )
+        self.assertIn("android.sourceSets.main.jniLibs.setSrcDirs([])", gradle)
+        self.assertIn(
+            "android.sourceSets.main.assets.exclude('qnn/**', 'portable_models/**')",
             gradle,
         )
 

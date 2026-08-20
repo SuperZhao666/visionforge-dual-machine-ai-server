@@ -66,6 +66,33 @@ class PlaintextModelScanTests(unittest.TestCase):
         files, _ = self.module.scan_source(self.source, self.lock, self.lock_digests)
         self.assertEqual(1, files)
 
+    def test_ignored_analysis_output_is_not_treated_as_public_source(self) -> None:
+        output = self.source / "analysis_output"
+        output.mkdir()
+        (output / "local-model.onnx").write_bytes(self.private_bytes)
+
+        files, hashed = self.module.scan_source(
+            self.source, self.lock, self.lock_digests
+        )
+
+        self.assertEqual(0, files)
+        self.assertEqual(0, hashed)
+
+    def test_explicit_tracked_paths_ignore_untracked_private_workspace_bytes(self) -> None:
+        readme = self.source / "README.md"
+        readme.write_text("public", encoding="utf-8")
+        (self.source / "local-private.onnx").write_bytes(self.private_bytes)
+
+        files, hashed = self.module.scan_source(
+            self.source,
+            self.lock,
+            self.lock_digests,
+            [self.module.PurePosixPath("README.md")],
+        )
+
+        self.assertEqual(1, files)
+        self.assertEqual(0, hashed)
+
     def test_onnx_extension_is_rejected(self) -> None:
         (self.source / "model.onnx").write_bytes(b"not-even-a-model")
         with self.assertRaisesRegex(self.module.ScanFailure, "plaintext_onnx"):
@@ -81,6 +108,82 @@ class PlaintextModelScanTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.ScanFailure, "locked_private"):
             self.module.scan_source(self.source, self.lock, self.lock_digests)
 
+    def _declare_public_user_trained_model(self) -> tuple[str, Path]:
+        relative = (
+            "android_inference_benchmark/app/src/main/jniLibs/arm64-v8a/"
+            "libvalorant_demo_w8a16.so"
+        )
+        payload = json.loads(self.lock.read_text(encoding="utf-8"))
+        payload["artifacts"][0].update(
+            {
+                "kind": "model_weight_library",
+                "source_path": "android/qnn/jni/arm64-v8a/libvalorant_demo_w8a16.so",
+                "target_path": "jniLibs/arm64-v8a/libvalorant_demo_w8a16.so",
+                "public_repository_allowed": True,
+                "provenance": "user_trained",
+                "repository_storage": "git_lfs",
+                "repository_path": relative,
+            }
+        )
+        self.lock.write_text(json.dumps(payload), encoding="utf-8")
+        model_path = self.source / Path(*relative.split("/"))
+        model_path.parent.mkdir(parents=True)
+        return relative, model_path
+
+    def test_exact_public_user_trained_model_source_is_accepted(self) -> None:
+        _, model_path = self._declare_public_user_trained_model()
+        model_path.write_bytes(self.private_bytes)
+        locked = self.module.load_locked_digests(self.lock)
+
+        files, hashed = self.module.scan_source(self.source, self.lock, locked)
+
+        self.assertEqual(1, files)
+        self.assertEqual(1, hashed)
+
+    def test_exact_public_model_git_lfs_pointer_is_accepted(self) -> None:
+        _, model_path = self._declare_public_user_trained_model()
+        digest = hashlib.sha256(self.private_bytes).hexdigest()
+        model_path.write_bytes(
+            self.module._canonical_lfs_pointer(len(self.private_bytes), digest)
+        )
+        locked = self.module.load_locked_digests(self.lock)
+
+        files, hashed = self.module.scan_source(self.source, self.lock, locked)
+
+        self.assertEqual(1, files)
+        self.assertEqual(0, hashed)
+
+    def test_public_model_copy_outside_exact_path_is_rejected(self) -> None:
+        _, model_path = self._declare_public_user_trained_model()
+        model_path.write_bytes(self.private_bytes)
+        (self.source / "copied.bin").write_bytes(self.private_bytes)
+        locked = self.module.load_locked_digests(self.lock)
+
+        with self.assertRaisesRegex(self.module.ScanFailure, "locked_private"):
+            self.module.scan_source(self.source, self.lock, locked)
+
+    def test_public_repository_exception_rejects_vendor_runtime(self) -> None:
+        payload = json.loads(self.lock.read_text(encoding="utf-8"))
+        payload["artifacts"][0].update(
+            {
+                "kind": "vendor_runtime",
+                "target_path": "jniLibs/arm64-v8a/libvalorant_demo_w8a16.so",
+                "public_repository_allowed": True,
+                "provenance": "user_trained",
+                "repository_storage": "git_lfs",
+                "repository_path": (
+                    "android_inference_benchmark/app/src/main/jniLibs/arm64-v8a/"
+                    "libvalorant_demo_w8a16.so"
+                ),
+            }
+        )
+        self.lock.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            self.module.ScanFailure, "public model repository exception"
+        ):
+            self.module.load_locked_digests(self.lock)
+
 
     def test_weakened_lock_policy_is_rejected(self) -> None:
         payload = json.loads(self.lock.read_text())
@@ -95,6 +198,19 @@ class PlaintextModelScanTests(unittest.TestCase):
             output.writestr("assets/renamed.bin", self.private_bytes)
         with self.assertRaisesRegex(self.module.ScanFailure, "locked_private"):
             self.module.scan_archive(archive, self.lock_digests)
+
+    def test_public_source_exception_does_not_allow_model_in_archive(self) -> None:
+        _, model_path = self._declare_public_user_trained_model()
+        model_path.write_bytes(self.private_bytes)
+        locked = self.module.load_locked_digests(self.lock)
+        archive = self.root / "release.apk"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr(
+                "lib/arm64-v8a/libvalorant_demo_w8a16.so", self.private_bytes
+            )
+
+        with self.assertRaisesRegex(self.module.ScanFailure, "weight_library"):
+            self.module.scan_archive(archive, locked)
 
 
 if __name__ == "__main__":

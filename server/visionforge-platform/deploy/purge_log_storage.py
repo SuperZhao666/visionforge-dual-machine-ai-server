@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import logging
 import sqlite3
@@ -43,7 +44,7 @@ def smoke_check_entrypoint() -> dict[str, object]:
         raise RuntimeError("retention database path is not a regular file")
 
     database_uri = f"{database_path.resolve(strict=True).as_uri()}?mode=ro"
-    with sqlite3.connect(database_uri, uri=True) as conn:
+    with closing(sqlite3.connect(database_uri, uri=True)) as conn:
         conn.execute("PRAGMA query_only = ON")
         table_rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' "

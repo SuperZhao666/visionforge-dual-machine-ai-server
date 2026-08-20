@@ -1045,7 +1045,9 @@ if(WIN32)
         host/windows/src/idr_request_listener.cpp
         host/windows/src/udp_socket.cpp
     )
-    target_include_directories(vfdual_idr_request_listener_tests PRIVATE host/windows/include)
+    target_include_directories(vfdual_idr_request_listener_tests PRIVATE
+        host/windows/include
+        shared/include)
     target_link_libraries(vfdual_idr_request_listener_tests PRIVATE ws2_32)
     add_test(NAME vfdual_idr_request_listener_tests COMMAND vfdual_idr_request_listener_tests)
 

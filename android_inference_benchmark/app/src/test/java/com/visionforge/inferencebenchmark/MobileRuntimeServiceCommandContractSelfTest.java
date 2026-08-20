@@ -39,7 +39,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(gradleSource.contains(
                 "apply from: 'formal-security-loader.gradle'"));
         require(compactGradleSource.contains(
-                "if(task.name=='preReleaseBuild')"));
+                "if(task.namein['packageRelease','bundleRelease'])"));
         require(compactGradleSource.contains(
                 "task.dependsOn(tasks.named('verifyMobileReleaseContracts'))"));
         require(formalCapabilityLoaderSource.contains(
@@ -86,8 +86,11 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(formalCapabilityLoaderSource.contains(
                 "Formal secure data plane is not implemented; refusing release APK"));
         require(compactFormalCapabilityLoaderSource.contains(
+                "defformalReleaseArtifactTaskNames="
+                        + "['packageRelease','bundleRelease']"));
+        require(compactFormalCapabilityLoaderSource.contains(
                 "tasks.configureEach{task->"
-                        + "if(task.name=='preReleaseBuild'){"
+                        + "if(task.nameinformalReleaseArtifactTaskNames){"
                         + "task.dependsOn(tasks.named("
                         + "'verifyFormalSecureDataPlaneImplemented'))"));
         require(formalCapabilityLoaderSource.contains(
@@ -99,7 +102,9 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(formalCapabilityLoaderSource.contains(
                 "VFDUAL_FORMAL_SECURITY_RELEASE_GRAPH=v1:"));
         require(formalCapabilityLoaderSource.contains(
-                "preReleaseBuild->verifyFormalSecureDataPlaneImplemented"));
+                "+ 'packageRelease,bundleRelease'"));
+        require(formalCapabilityLoaderSource.contains(
+                "+ '->verifyFormalSecureDataPlaneImplemented'"));
         require(formalCapabilitySource.equals(
                 "formalSecureDataPlaneImplemented=false\n")
                 || formalCapabilitySource.equals(
@@ -126,7 +131,8 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         Path hostVideoPresenceProbePath = Paths.get(projectDirectory, "src", "main", "java",
                 "com", "visionforge", "inferencebenchmark", "HostVideoPresenceProbe.java");
         String hostVideoPresenceProbeSource = new String(
-                Files.readAllBytes(hostVideoPresenceProbePath), StandardCharsets.UTF_8);
+                Files.readAllBytes(hostVideoPresenceProbePath), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
         Path nativeReadyAgentPath = Paths.get(projectDirectory, "src", "main", "java",
                 "com", "visionforge", "inferencebenchmark", "NativeCat6ReadyAgent.java");
         String nativeReadyAgent = new String(

@@ -445,7 +445,7 @@ tasks.register('verifyProductionReleaseVersion') {
 }
 
 tasks.configureEach { task ->
-    if (task.name == 'preReleaseBuild') {
+    if (task.name in ['packageRelease', 'bundleRelease']) {
         task.dependsOn(
                 tasks.named('verifyDualMachineReleaseSecurityInputs'),
                 tasks.named('verifyProductionReleaseVersion'))
@@ -470,6 +470,21 @@ if (privateArtifactLock.schema != 'visionforge-android-private-artifacts-lock-v1
         || privateArtifactLock.artifacts.isEmpty()) {
     throw new GradleException('Android private-artifact lock policy is invalid.')
 }
+def publicRepositoryModelArtifacts = privateArtifactLock.artifacts.findAll { artifact ->
+    artifact.public_repository_allowed == true
+}
+if (publicRepositoryModelArtifacts.size() != 4
+        || publicRepositoryModelArtifacts.any { artifact ->
+            String targetPath = artifact.target_path as String
+            artifact.kind != 'model_weight_library'
+                    || artifact.provenance != 'user_trained'
+                    || artifact.repository_storage != 'git_lfs'
+                    || artifact.repository_path
+                        != "android_inference_benchmark/app/src/main/${targetPath}"
+        }) {
+    throw new GradleException(
+            'Only the four hash-locked user-trained Git LFS model libraries may be public.')
+}
 def privateArtifactRoot = providers
         .gradleProperty('visionforgeAndroidPrivateArtifactRoot')
         .getOrElse(System.getenv('VISIONFORGE_ANDROID_PRIVATE_ARTIFACT_ROOT') ?: '')
@@ -491,6 +506,11 @@ def qnnAssetDir = new File(generatedDebugPrivateArtifacts, 'assets/qnn')
 def privateArtifactBuildRequested = gradle.startParameter.taskNames.any { taskPath ->
     taskPath.toLowerCase(Locale.ROOT) ==~ /.*(assemble|bundle|lint)(debug|qa)$/
 }
+// The four user-trained LFS models remain in Git for owner-controlled recovery,
+// but src/main is not an Android native-library source. This prevents any local
+// hydrated model or ignored QNN runtime beside it from entering a release APK.
+android.sourceSets.main.jniLibs.setSrcDirs([])
+android.sourceSets.main.assets.exclude('qnn/**', 'portable_models/**')
 android.sourceSets.debug.assets.srcDir(new File(generatedDebugPrivateArtifacts, 'assets'))
 android.sourceSets.debug.jniLibs.srcDir(new File(generatedDebugPrivateArtifacts, 'jniLibs'))
 android.sourceSets.qa.assets.srcDir(new File(generatedQaPrivateArtifacts, 'assets'))
@@ -545,14 +565,15 @@ tasks.configureEach { task ->
 def verifyPublicSourceHasNoPrivateArtifactsTask = tasks.register(
         'verifyPublicSourceHasNoPrivateAndroidArtifacts', Exec) {
     group = 'verification'
-    description = 'Rejects plaintext ONNX/QNN private bytes in the public repository tree.'
+    description = 'Rejects plaintext ONNX/QNN private bytes in Git-tracked public source.'
     inputs.file(privateArtifactLockFile).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.file(plaintextModelScanner).withPathSensitivity(PathSensitivity.RELATIVE)
     commandLine(
             privateArtifactPython,
             plaintextModelScanner.absolutePath,
             '--lock', privateArtifactLockFile.absolutePath,
-            '--source-root', rootProject.projectDir.parentFile.absolutePath)
+            '--source-root', rootProject.projectDir.parentFile.absolutePath,
+            '--git-tracked-only')
 }
 
 def verifyPrivateArtifactSourceBoundaryTask = tasks.register(
@@ -2383,14 +2404,10 @@ tasks.named('check').configure {
             tasks.named('verifyMakcuOutputGateNative'))
 }
 
-tasks.register('verifyMobileReleaseContracts') {
+def verifyMobilePublicContractsTask = tasks.register('verifyMobilePublicContracts') {
     group = 'verification'
-    description = 'Runs every QNN, CAT6, runtime and move-only control release contract.'
+    description = 'Runs public CAT6, runtime, cryptographic and move-only control contracts.'
     dependsOn(
-            tasks.named('verifyCs2PrivateModelScope'),
-            tasks.named('verifyQnnHtpArchitectureClosure'),
-            tasks.named('verifyQnnHtpArchitectureDiscoveryPolicy'),
-            tasks.named('verifyQnnSdkModelToolchainIdentityPolicy'),
             tasks.named('verifyEthernetTransportContract'),
             tasks.named('verifyCat6ReadyContract'),
             tasks.named('verifyCat6ReadyLifecycle'),
@@ -2417,6 +2434,17 @@ tasks.register('verifyMobileReleaseContracts') {
             tasks.named('verifyReceiverReferenceSyncPolicyNative'),
             tasks.named('verifyMobileTargetTrackerNative'),
             tasks.named('verifyMakcuOutputGateNative'))
+}
+
+tasks.register('verifyMobileReleaseContracts') {
+    group = 'verification'
+    description = 'Adds protected QNN/model contracts to the complete production release gate.'
+    dependsOn(
+            verifyMobilePublicContractsTask,
+            tasks.named('verifyCs2PrivateModelScope'),
+            tasks.named('verifyQnnHtpArchitectureClosure'),
+            tasks.named('verifyQnnHtpArchitectureDiscoveryPolicy'),
+            tasks.named('verifyQnnSdkModelToolchainIdentityPolicy'))
 }
 
 def releaseApkArtifact = layout.buildDirectory.file(
@@ -2471,10 +2499,10 @@ def verifyMobileReleasePageCompatibilityTask = tasks.register(
             verifyMobileReleaseZipAlignmentTask)
 }
 tasks.named('check').configure {
-    dependsOn(tasks.named('verifyMobileReleaseContracts'))
+    dependsOn(verifyMobilePublicContractsTask)
 }
 tasks.configureEach { task ->
-    if (task.name == 'preReleaseBuild') {
+    if (task.name in ['packageRelease', 'bundleRelease']) {
         task.dependsOn(tasks.named('verifyMobileReleaseContracts'))
     }
     if (task.name == 'assembleRelease') {

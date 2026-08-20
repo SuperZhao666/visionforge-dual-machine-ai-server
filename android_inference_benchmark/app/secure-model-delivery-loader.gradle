@@ -29,8 +29,9 @@ tasks.register('verifySecureEncryptedModelDeliveryImplemented') {
                         + secureEncryptedModelDeliveryImplemented)
     }
 }
+def secureModelReleaseArtifactTaskNames = ['packageRelease', 'bundleRelease']
 tasks.configureEach { task ->
-    if (task.name == 'preReleaseBuild') {
+    if (task.name in secureModelReleaseArtifactTaskNames) {
         task.dependsOn(tasks.named('verifySecureEncryptedModelDeliveryImplemented'))
     }
 }
@@ -39,14 +40,17 @@ tasks.register('probeSecureModelDeliveryReleaseGraphContract') {
     group = 'verification'
     description = 'Proves the secure model-delivery gate is in the Android release graph.'
     doLast {
-        def releaseTask = tasks.named('preReleaseBuild').get()
         def gateTask = tasks.named('verifySecureEncryptedModelDeliveryImplemented').get()
-        if (!releaseTask.taskDependencies.getDependencies(releaseTask).contains(gateTask)) {
-            throw new GradleException(
-                    'Secure model-delivery verification is absent from preReleaseBuild')
+        secureModelReleaseArtifactTaskNames.each { String taskName ->
+            def releaseTask = tasks.named(taskName).get()
+            if (!releaseTask.taskDependencies.getDependencies(releaseTask).contains(gateTask)) {
+                throw new GradleException(
+                        "Secure model-delivery verification is absent from ${taskName}")
+            }
         }
         println(
                 'VISIONFORGE_SECURE_MODEL_DELIVERY_RELEASE_GRAPH=v1:'
-                        + 'preReleaseBuild->verifySecureEncryptedModelDeliveryImplemented')
+                        + 'packageRelease,bundleRelease'
+                        + '->verifySecureEncryptedModelDeliveryImplemented')
     }
 }

@@ -106,7 +106,12 @@ class PrivateArtifactStagingTests(unittest.TestCase):
         real = self.root / "outside.onnx"
         real.write_bytes(source_path.read_bytes())
         source_path.unlink()
-        source_path.symlink_to(real)
+        try:
+            source_path.symlink_to(real)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows symlink privilege is unavailable")
+            raise
         with self.assertRaisesRegex(self.module.ArtifactPolicyError, "symlink"):
             self.module.stage_artifacts(lock, self.source, self.output, "debug")
 
@@ -164,6 +169,52 @@ class PrivateArtifactStagingTests(unittest.TestCase):
         payload["artifacts"][0]["target_path"] = "../escape.onnx"
         lock.write_text(json.dumps(payload), encoding="utf-8")
         with self.assertRaises(self.module.ArtifactPolicyError):
+            self.module.load_lock(lock)
+
+    def test_user_trained_git_lfs_model_public_metadata_is_accepted(self) -> None:
+        lock = self.write_lock()
+        payload = json.loads(lock.read_text())
+        artifact = payload["artifacts"][0]
+        artifact.update(
+            {
+                "kind": "model_weight_library",
+                "target_path": "jniLibs/arm64-v8a/model.so",
+                "public_repository_allowed": True,
+                "provenance": "user_trained",
+                "repository_storage": "git_lfs",
+                "repository_path": (
+                    "android_inference_benchmark/app/src/main/"
+                    "jniLibs/arm64-v8a/model.so"
+                ),
+            }
+        )
+        lock.write_text(json.dumps(payload), encoding="utf-8")
+
+        _, artifacts = self.module.load_lock(lock)
+
+        self.assertTrue(artifacts[0].public_repository_allowed)
+
+    def test_vendor_runtime_cannot_opt_into_public_repository(self) -> None:
+        lock = self.write_lock()
+        payload = json.loads(lock.read_text())
+        artifact = payload["artifacts"][0]
+        artifact.update(
+            {
+                "kind": "vendor_runtime",
+                "public_repository_allowed": True,
+                "provenance": "user_trained",
+                "repository_storage": "git_lfs",
+                "repository_path": (
+                    "android_inference_benchmark/app/src/main/"
+                    "assets/portable_models/model.onnx"
+                ),
+            }
+        )
+        lock.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            self.module.ArtifactPolicyError, "user-trained Git LFS model"
+        ):
             self.module.load_lock(lock)
 
 

@@ -20,7 +20,11 @@ VERIFIED_PAIR_BOOTSTRAP_SCHEMA_VERSION = (
 PAIR_SECURITY_SCHEMA_ATTESTATION_VERSION = (
     "20260804_dual_machine_pair_security_schema_attestation_v12"
 )
-SCHEMA_VERSION = PAIR_SECURITY_SCHEMA_ATTESTATION_VERSION
+# Keep the active version as an exact top-level literal. The release verifier
+# reads this assignment without importing database code, while the equality
+# assertion prevents the named migration constant from drifting independently.
+SCHEMA_VERSION = "20260804_dual_machine_pair_security_schema_attestation_v12"
+assert SCHEMA_VERSION == PAIR_SECURITY_SCHEMA_ATTESTATION_VERSION
 SCHEMA_MIGRATIONS = (
     PAIR_GENERATION_FOUNDATION_SCHEMA_VERSION,
     REACTIVATION_SCHEMA_VERSION,

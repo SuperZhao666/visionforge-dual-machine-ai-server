@@ -205,7 +205,10 @@
         "qa"
       ],
       "license_review_required": true,
-      "public_repository_allowed": false
+      "public_repository_allowed": true,
+      "provenance": "user_trained",
+      "repository_storage": "git_lfs",
+      "repository_path": "android_inference_benchmark/app/src/main/jniLibs/arm64-v8a/libcs2_vombit_416_v8s_w8a16.so"
     },
     {
       "id": "model_libdelta_416_v8s_w8a16",
@@ -219,7 +222,10 @@
         "qa"
       ],
       "license_review_required": true,
-      "public_repository_allowed": false
+      "public_repository_allowed": true,
+      "provenance": "user_trained",
+      "repository_storage": "git_lfs",
+      "repository_path": "android_inference_benchmark/app/src/main/jniLibs/arm64-v8a/libdelta_416_v8s_w8a16.so"
     },
     {
       "id": "model_libow2_416_w8a16",
@@ -233,7 +239,10 @@
         "qa"
       ],
       "license_review_required": true,
-      "public_repository_allowed": false
+      "public_repository_allowed": true,
+      "provenance": "user_trained",
+      "repository_storage": "git_lfs",
+      "repository_path": "android_inference_benchmark/app/src/main/jniLibs/arm64-v8a/libow2_416_w8a16.so"
     },
     {
       "id": "model_libvalorant_416_v11s_no_flash_w8a16",
@@ -247,7 +256,10 @@
         "qa"
       ],
       "license_review_required": true,
-      "public_repository_allowed": false
+      "public_repository_allowed": true,
+      "provenance": "user_trained",
+      "repository_storage": "git_lfs",
+      "repository_path": "android_inference_benchmark/app/src/main/jniLibs/arm64-v8a/libvalorant_416_v11s_no_flash_w8a16.so"
     },
     {
       "id": "portable_valorant_yellow_416_v11s_no_flash",

@@ -65,10 +65,12 @@ out\VFHost.exe
 
 The wrapper delegates to the repository CMake target instead of maintaining a
 second source-file list. Release optimisation and the static MSVC runtime stay
-enabled. A private PDB is generated and archived under
-`out_ninja_host_release\private_symbols\<exe-sha256>.pdb`; it is for resolving
-crash dumps and stack addresses and must not be distributed with the one-EXE
-product.
+enabled. The formal one-EXE wrapper disables linker PDB generation so the
+distributed image cannot retain a CodeView/PDB locator or a build-machine path.
+Ordinary local CMake builds keep `VFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS=ON` by
+default and archive their development PDB under
+`private_symbols\<exe-sha256>.pdb`; those symbols are private development
+material and must never be copied beside or distributed with `VFHost.exe`.
 
 The application selects the output covered by the topmost eligible full-screen
 or large borderless external window and captures only its centered 320x320
