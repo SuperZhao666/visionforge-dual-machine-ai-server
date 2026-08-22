@@ -3671,6 +3671,83 @@ def _code_contract_gaps(
     return missing_paths, missing_tokens
 
 
+_FASTAPI_ROUTE_DECORATORS = frozenset(
+    {"delete", "get", "head", "options", "patch", "post", "put", "trace"}
+)
+
+
+def _python_ast_route_literals(path: Path) -> tuple[str, ...]:
+    """Read literal APIRouter routes without importing application dependencies.
+
+    This is intentionally a narrow fail-closed fallback for source-only
+    readiness environments. Dynamic prefixes, dynamic route paths, aliased
+    router objects and malformed modules are not accepted as route evidence.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, UnicodeError, SyntaxError):
+        return ()
+
+    prefixes: list[str] = []
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        call = statement.value
+        if (
+            not isinstance(target, ast.Name)
+            or target.id != "router"
+            or not isinstance(call, ast.Call)
+            or not isinstance(call.func, ast.Name)
+            or call.func.id != "APIRouter"
+        ):
+            continue
+        prefix_keywords = [
+            keyword
+            for keyword in call.keywords
+            if keyword.arg == "prefix"
+        ]
+        if len(prefix_keywords) != 1:
+            return ()
+        prefix_node = prefix_keywords[0].value
+        if (
+            not isinstance(prefix_node, ast.Constant)
+            or type(prefix_node.value) is not str
+        ):
+            return ()
+        prefix = prefix_node.value
+        if not prefix.startswith("/") or prefix.endswith("/"):
+            return ()
+        prefixes.append(prefix)
+
+    if len(prefixes) != 1:
+        return ()
+    prefix = prefixes[0]
+    routes: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if (
+                not isinstance(decorator, ast.Call)
+                or not isinstance(decorator.func, ast.Attribute)
+                or decorator.func.attr not in _FASTAPI_ROUTE_DECORATORS
+                or not isinstance(decorator.func.value, ast.Name)
+                or decorator.func.value.id != "router"
+                or not decorator.args
+            ):
+                continue
+            route_node = decorator.args[0]
+            if (
+                not isinstance(route_node, ast.Constant)
+                or type(route_node.value) is not str
+                or not route_node.value.startswith("/")
+            ):
+                return ()
+            routes.append(prefix + route_node.value)
+    return tuple(routes)
+
+
 def _python_route_literals(path: Path) -> tuple[str, ...]:
     if not path.is_file():
         return ()
@@ -3747,19 +3824,19 @@ print("VFDUAL_RUNTIME_ROUTES=" + json.dumps(routes, separators=(",", ":")))
                 check=False,
             )
     except (OSError, subprocess.SubprocessError):
-        return ()
+        return _python_ast_route_literals(path)
     if result.returncode != 0:
-        return ()
+        return _python_ast_route_literals(path)
     prefix = "VFDUAL_RUNTIME_ROUTES="
     lines = [line for line in result.stdout.splitlines() if line.startswith(prefix)]
     if len(lines) != 1:
-        return ()
+        return _python_ast_route_literals(path)
     try:
         routes = json.loads(lines[0][len(prefix):])
     except (json.JSONDecodeError, TypeError):
-        return ()
+        return _python_ast_route_literals(path)
     if type(routes) is not list or any(type(route) is not str for route in routes):
-        return ()
+        return _python_ast_route_literals(path)
     return tuple(routes)
 
 
@@ -4508,6 +4585,7 @@ def _pair_generation_credential_foundation_evidence(
             (
                 "build_pair_generation_authorization_service",
                 "application.state.pair_generation_service",
+                "application.include_router(router)",
             ),
         ),
         "credential_authorization_regressions": (
