@@ -82,9 +82,9 @@ jobs:
       - name: Install the locked development environment
         run: python -m pip install --require-hashes -r requirements-dev.lock
 
-      - name: Test public-only dual-machine release materials
+      - name: Test repository-level release tooling
         working-directory: .
-        run: python -m pytest -q tests/test_prepare_dual_machine_release_materials.py
+        run: python -m pytest -q tests
 
       - name: Compile and import the Platform
         run: |
