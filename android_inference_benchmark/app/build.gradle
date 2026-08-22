@@ -1784,6 +1784,42 @@ tasks.configureEach { task ->
     }
 }
 
+// VFB1 is the bounded, direction-separated TCP record used only before the
+// transcript signatures and Finished proofs establish VFC1 traffic keys.
+// Freeze the C++/Java bytes and all reflection/length rejection rules before
+// either production socket coordinator is allowed to consume it.
+def authenticatedControlBootstrapV1SelfTestClasses =
+        layout.buildDirectory.dir(
+                'authenticated-control-bootstrap-v1-self-test/classes')
+tasks.register('compileAuthenticatedControlBootstrapV1SelfTest', JavaCompile) {
+    source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1.java',
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1SelfTest.java')
+    classpath = files()
+    destinationDirectory = authenticatedControlBootstrapV1SelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_1_8.toString()
+    targetCompatibility = JavaVersion.VERSION_1_8.toString()
+    options.release.set(8)
+    options.compilerArgs.addAll(['-Xlint:all,-options', '-Werror'])
+}
+tasks.register('verifyAuthenticatedControlBootstrapV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs VFB1 direction, length-bound, mutation and C++ interop contracts.'
+    dependsOn(tasks.named('compileAuthenticatedControlBootstrapV1SelfTest'))
+    classpath = files(authenticatedControlBootstrapV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1SelfTest'
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyAuthenticatedControlBootstrapV1'))
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyAuthenticatedControlBootstrapV1'))
+    }
+}
+
 // The server-authoritative generation credential is a separate JCA boundary.
 // Keep the verifier independent from Android framework state and exercise its
 // strict RS256/keyring/canonical-JWT contract on the build JVM. This gate does

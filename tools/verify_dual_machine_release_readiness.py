@@ -2843,6 +2843,114 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
             ),
         ),
         SourceContract(
+            name="authenticated-control-bootstrap-v1-cpp-framing",
+            path=(
+                root
+                / "dual_machine_runtime"
+                / "shared"
+                / "include"
+                / "vfdual"
+                / "authenticated_control_bootstrap_record_v1.hpp"
+            ),
+            required=(
+                "kAuthenticatedControlBootstrapHeaderBytes = 12U",
+                "kMaximumAuthenticatedControlBootstrapPayloadBytes",
+                "ControlBootstrapDirectionV1",
+                "ControlBootstrapMessageTypeV1",
+                "host_handshake_signature",
+                "android_handshake_confirmation",
+                "parse_authenticated_control_bootstrap_record_v1",
+                "never treat a successfully parsed bootstrap record as peer authentication",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-v1-cpp-regressions",
+            path=(
+                root
+                / "dual_machine_runtime"
+                / "tests"
+                / "authenticated_control_bootstrap_record_v1_tests.cpp"
+            ),
+            required=(
+                "56464231010c01010000000a686f73742d68656c6c6f",
+                "unexpected_direction",
+                "direction_mismatch",
+                "payload_too_large",
+                "test_maximum_payload_is_exact",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-v1-cmake-gate",
+            path=root / "dual_machine_runtime" / "CMakeLists.txt",
+            required=(
+                "shared/src/authenticated_control_bootstrap_record_v1.cpp",
+                "vfdual_authenticated_control_bootstrap_record_v1_tests",
+                "NAME vfdual_authenticated_control_bootstrap_record_v1_tests",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-v1-android-framing",
+            path=(
+                root
+                / "android_inference_benchmark"
+                / "app"
+                / "src"
+                / "main"
+                / "java"
+                / "com"
+                / "visionforge"
+                / "inferencebenchmark"
+                / "handshake"
+                / "AuthenticatedControlBootstrapRecordV1.java"
+            ),
+            required=(
+                "public static final int HEADER_BYTES = 12",
+                "public static final int MAX_PAYLOAD_BYTES = 65_536",
+                "HOST_HANDSHAKE_SIGNATURE",
+                "ANDROID_HANDSHAKE_CONFIRMATION",
+                "public static boolean isAllowed",
+                "public static byte[] encode",
+                "public static Record parse",
+                "A parsed record is not proof of peer identity",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-v1-android-regressions",
+            path=(
+                root
+                / "android_inference_benchmark"
+                / "app"
+                / "src"
+                / "test"
+                / "java"
+                / "com"
+                / "visionforge"
+                / "inferencebenchmark"
+                / "handshake"
+                / "AuthenticatedControlBootstrapRecordV1SelfTest.java"
+            ),
+            required=(
+                "AuthenticatedControlBootstrapRecordV1SelfTest: PASS",
+                "56464231010c01010000000a686f73742d68656c6c6f",
+                "UNEXPECTED_DIRECTION",
+                "DIRECTION_MISMATCH",
+                "PAYLOAD_TOO_LARGE",
+                "CLOSED",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-v1-android-gradle-gate",
+            path=root / "android_inference_benchmark" / "app" / "build.gradle",
+            required=(
+                "compileAuthenticatedControlBootstrapV1SelfTest",
+                "verifyAuthenticatedControlBootstrapV1",
+                "tasks.named('check')",
+                "preReleaseBuild",
+                "JavaVersion.VERSION_1_8",
+                "options.release.set(8)",
+            ),
+        ),
+        SourceContract(
             name="authenticated-peer-handshake-v1-api29-plus-probe",
             path=(
                 root
