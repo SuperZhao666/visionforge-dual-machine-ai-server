@@ -3792,9 +3792,26 @@ else:
     spec.loader.exec_module(module)
     route_container = getattr(module, "router", None)
 routes = []
+seen_routes = set()
+
+
+def append_route_path(value):
+    if type(value) is str and value not in seen_routes:
+        seen_routes.add(value)
+        routes.append(value)
+
+
 for route in getattr(route_container, "routes", ()):
-    if isinstance(route, APIRoute) and type(route.path) is str:
-        routes.append(route.path)
+    if isinstance(route, APIRoute):
+        append_route_path(route.path)
+        continue
+    # FastAPI 0.141.1 keeps include_router() entries as lazy included-router
+    # objects. Use their effective contexts without importing a private class.
+    effective_route_contexts = getattr(route, "effective_route_contexts", None)
+    if callable(effective_route_contexts):
+        for context in effective_route_contexts():
+            if isinstance(getattr(context, "original_route", None), APIRoute):
+                append_route_path(getattr(context, "path", None))
 print("VFDUAL_RUNTIME_ROUTES=" + json.dumps(routes, separators=(",", ":")))
 '''
     environment = dict(os.environ)
