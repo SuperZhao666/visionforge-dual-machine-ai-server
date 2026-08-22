@@ -81,6 +81,7 @@ endif()
 add_library(vfdual_protocol STATIC
     shared/src/access_unit_fragmenter.cpp
     shared/src/access_unit_reassembler.cpp
+    shared/src/authenticated_control_bootstrap_record_v1.cpp
     shared/src/authenticated_control_record_v1.cpp
     shared/src/authenticated_data_plane_v2.cpp
     shared/src/h264_annex_b_access_units.cpp
@@ -834,6 +835,14 @@ target_link_libraries(
     vfdual_authenticated_control_record_v1_tests PRIVATE vfdual_protocol)
 add_test(NAME vfdual_authenticated_control_record_v1_tests
     COMMAND vfdual_authenticated_control_record_v1_tests)
+
+add_executable(vfdual_authenticated_control_bootstrap_record_v1_tests
+    tests/authenticated_control_bootstrap_record_v1_tests.cpp)
+target_link_libraries(
+    vfdual_authenticated_control_bootstrap_record_v1_tests PRIVATE
+    vfdual_protocol)
+add_test(NAME vfdual_authenticated_control_bootstrap_record_v1_tests
+    COMMAND vfdual_authenticated_control_bootstrap_record_v1_tests)
 
 # Compile the implementation again for this executable so the private test
 # access macro is confined to both test translation units.  Never link this
