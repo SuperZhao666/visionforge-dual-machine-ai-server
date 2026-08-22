@@ -11,6 +11,7 @@
 
 namespace vfdual {
 
+class CanonicalPeerHandshakeTranscriptV1;
 class HostPeerHandshakeTranscriptSignerV1;
 class HostPairGenerationPopSignerV1;
 
@@ -382,5 +383,22 @@ verify_host_identity_proof_of_possession(
     const HostPublicIdentity& public_identity,
     const HostIdentityChallenge& challenge,
     const HostIdentitySignature& signature);
+
+/**
+ * Verify the Android long-term identity signature over one already-validated
+ * peer-handshake transcript.
+ *
+ * This deliberately accepts the typed transcript rather than arbitrary bytes
+ * or a caller-provided digest.  The supplied SPKI must hash to the transcript's
+ * Android identity field, and the signature must be strict canonical low-S
+ * ECDSA P-256/SHA-256.  A valid result proves only possession of that Android
+ * private key; the authenticated coordinator must separately bind the same
+ * fingerprint to a server-verified pair-generation credential.
+ */
+[[nodiscard]] HostIdentityVerificationResult
+verify_android_peer_handshake_identity_signature_v1(
+    std::span<const std::uint8_t> android_subject_public_key_info_der,
+    const CanonicalPeerHandshakeTranscriptV1& transcript,
+    std::span<const std::uint8_t> signature_der_low_s);
 
 }  // namespace vfdual
