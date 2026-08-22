@@ -240,6 +240,92 @@ void test_maximum_payload_is_exact() {
     CHECK(parsed.record.payload.size() == maximum.size());
 }
 
+void test_host_and_android_complete_the_same_exact_sequence() {
+    using A = vfdual::ControlBootstrapAdvanceStatusV1;
+    using F = vfdual::ControlBootstrapFlowV1;
+    using M = vfdual::ControlBootstrapMessageTypeV1;
+    using P = vfdual::ControlBootstrapSequencePhaseV1;
+    using R = vfdual::ControlBootstrapRoleV1;
+    constexpr std::array sequence{
+        M::host_hello,
+        M::android_challenge_request,
+        M::host_challenge_proof,
+        M::server_challenge,
+        M::host_final_proof,
+        M::pair_generation_credential,
+        M::host_handshake_signature,
+        M::android_handshake_confirmation,
+        M::host_finished,
+    };
+    vfdual::ControlBootstrapSequenceV1 host(R::host);
+    vfdual::ControlBootstrapSequenceV1 android(R::android);
+    for (std::size_t index = 0U; index < sequence.size(); ++index) {
+        const bool host_sends = index % 2U == 0U;
+        const auto host_expected = host.expected_next();
+        const auto android_expected = android.expected_next();
+        CHECK(host_expected.present);
+        CHECK(android_expected.present);
+        CHECK(host_expected.message_type == sequence[index]);
+        CHECK(android_expected.message_type == sequence[index]);
+        CHECK(host_expected.flow ==
+            (host_sends ? F::outbound : F::inbound));
+        CHECK(android_expected.flow ==
+            (host_sends ? F::inbound : F::outbound));
+        const A expected_status = index + 1U == sequence.size()
+            ? A::completed
+            : A::advanced;
+        CHECK((host_sends
+            ? host.advance_outbound(sequence[index])
+            : host.advance_inbound(sequence[index])) == expected_status);
+        CHECK((host_sends
+            ? android.advance_inbound(sequence[index])
+            : android.advance_outbound(sequence[index])) == expected_status);
+        CHECK(host.accepted_event_count() == index + 1U);
+        CHECK(android.accepted_event_count() == index + 1U);
+    }
+    CHECK(host.phase() == P::completed);
+    CHECK(android.phase() == P::completed);
+    CHECK(!host.expected_next().present);
+    CHECK(host.advance_outbound(M::abort) == A::already_terminal);
+    CHECK(android.advance_inbound(M::host_finished) == A::already_terminal);
+}
+
+void test_sequence_failures_and_abort_are_terminal() {
+    using A = vfdual::ControlBootstrapAdvanceStatusV1;
+    using M = vfdual::ControlBootstrapMessageTypeV1;
+    using P = vfdual::ControlBootstrapSequencePhaseV1;
+    using R = vfdual::ControlBootstrapRoleV1;
+
+    vfdual::ControlBootstrapSequenceV1 wrong_flow(R::host);
+    CHECK(wrong_flow.advance_inbound(M::host_hello) == A::wrong_flow);
+    CHECK(wrong_flow.phase() == P::failed);
+    CHECK(wrong_flow.accepted_event_count() == 0U);
+    CHECK(wrong_flow.advance_outbound(M::host_hello) == A::already_terminal);
+
+    vfdual::ControlBootstrapSequenceV1 skipped(R::host);
+    CHECK(skipped.advance_outbound(M::host_final_proof) ==
+        A::unexpected_message);
+    CHECK(skipped.phase() == P::failed);
+
+    vfdual::ControlBootstrapSequenceV1 repeated(R::host);
+    CHECK(repeated.advance_outbound(M::host_hello) == A::advanced);
+    CHECK(repeated.advance_outbound(M::host_hello) == A::wrong_flow);
+    CHECK(repeated.phase() == P::failed);
+
+    vfdual::ControlBootstrapSequenceV1 local_abort(R::host);
+    CHECK(local_abort.advance_outbound(M::abort) == A::aborted);
+    CHECK(local_abort.phase() == P::aborted);
+    CHECK(local_abort.advance_inbound(M::abort) == A::already_terminal);
+
+    vfdual::ControlBootstrapSequenceV1 peer_abort(R::android);
+    CHECK(peer_abort.advance_inbound(M::abort) == A::aborted);
+    CHECK(peer_abort.phase() == P::aborted);
+
+    vfdual::ControlBootstrapSequenceV1 invalid(R::invalid);
+    CHECK(invalid.phase() == P::failed);
+    CHECK(invalid.advance_outbound(M::abort) == A::already_terminal);
+}
+
 }  // namespace
 
 int main() {
@@ -248,6 +334,8 @@ int main() {
     test_invalid_encode_inputs_fail_before_allocation();
     test_parser_rejects_mutation_reflection_and_length_confusion();
     test_maximum_payload_is_exact();
+    test_host_and_android_complete_the_same_exact_sequence();
+    test_sequence_failures_and_abort_are_terminal();
     std::cout << "authenticated control bootstrap record v1 tests passed\n";
     return EXIT_SUCCESS;
 }

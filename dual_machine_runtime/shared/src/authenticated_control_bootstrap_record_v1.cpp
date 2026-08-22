@@ -16,6 +16,41 @@ constexpr std::size_t kDirectionOffset = 6U;
 constexpr std::size_t kMessageTypeOffset = 7U;
 constexpr std::size_t kPayloadLengthOffset = 8U;
 
+struct BootstrapSequenceEvent final {
+    ControlBootstrapDirectionV1 direction;
+    ControlBootstrapMessageTypeV1 message_type;
+};
+
+constexpr std::array kBootstrapSequence{
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::host_to_android,
+        ControlBootstrapMessageTypeV1::host_hello},
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::android_to_host,
+        ControlBootstrapMessageTypeV1::android_challenge_request},
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::host_to_android,
+        ControlBootstrapMessageTypeV1::host_challenge_proof},
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::android_to_host,
+        ControlBootstrapMessageTypeV1::server_challenge},
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::host_to_android,
+        ControlBootstrapMessageTypeV1::host_final_proof},
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::android_to_host,
+        ControlBootstrapMessageTypeV1::pair_generation_credential},
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::host_to_android,
+        ControlBootstrapMessageTypeV1::host_handshake_signature},
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::android_to_host,
+        ControlBootstrapMessageTypeV1::android_handshake_confirmation},
+    BootstrapSequenceEvent{
+        ControlBootstrapDirectionV1::host_to_android,
+        ControlBootstrapMessageTypeV1::host_finished},
+};
+
 [[nodiscard]] bool valid_direction(
     const ControlBootstrapDirectionV1 direction) noexcept {
     return direction == ControlBootstrapDirectionV1::host_to_android ||
@@ -31,6 +66,28 @@ constexpr std::size_t kPayloadLengthOffset = 8U;
         encoded <=
             static_cast<std::uint8_t>(
                 ControlBootstrapMessageTypeV1::abort);
+}
+
+[[nodiscard]] bool valid_role(
+    const ControlBootstrapRoleV1 role) noexcept {
+    return role == ControlBootstrapRoleV1::host ||
+        role == ControlBootstrapRoleV1::android;
+}
+
+[[nodiscard]] ControlBootstrapFlowV1 flow_for_role(
+    const ControlBootstrapRoleV1 role,
+    const ControlBootstrapDirectionV1 direction) noexcept {
+    if (!valid_role(role) || !valid_direction(direction)) {
+        return ControlBootstrapFlowV1::invalid;
+    }
+    const bool local_is_sender =
+        (role == ControlBootstrapRoleV1::host &&
+         direction == ControlBootstrapDirectionV1::host_to_android) ||
+        (role == ControlBootstrapRoleV1::android &&
+         direction == ControlBootstrapDirectionV1::android_to_host);
+    return local_is_sender
+        ? ControlBootstrapFlowV1::outbound
+        : ControlBootstrapFlowV1::inbound;
 }
 
 void write_u32_be(
@@ -216,6 +273,77 @@ parse_authenticated_control_bootstrap_record_v1(
             kAuthenticatedControlBootstrapHeaderBytes, payload_size),
     };
     return result;
+}
+
+ControlBootstrapSequenceV1::ControlBootstrapSequenceV1(
+    const ControlBootstrapRoleV1 local_role) noexcept
+    : local_role_(local_role),
+      phase_(valid_role(local_role)
+          ? ControlBootstrapSequencePhaseV1::in_progress
+          : ControlBootstrapSequencePhaseV1::failed) {}
+
+ControlBootstrapAdvanceStatusV1
+ControlBootstrapSequenceV1::advance_outbound(
+    const ControlBootstrapMessageTypeV1 message_type) noexcept {
+    return advance(ControlBootstrapFlowV1::outbound, message_type);
+}
+
+ControlBootstrapAdvanceStatusV1
+ControlBootstrapSequenceV1::advance_inbound(
+    const ControlBootstrapMessageTypeV1 message_type) noexcept {
+    return advance(ControlBootstrapFlowV1::inbound, message_type);
+}
+
+ControlBootstrapExpectedEventV1
+ControlBootstrapSequenceV1::expected_next() const noexcept {
+    if (phase_ != ControlBootstrapSequencePhaseV1::in_progress ||
+        next_event_index_ >= kBootstrapSequence.size()) {
+        return {};
+    }
+    const auto& event = kBootstrapSequence[next_event_index_];
+    return {
+        .present = true,
+        .flow = flow_for_role(local_role_, event.direction),
+        .message_type = event.message_type,
+    };
+}
+
+ControlBootstrapSequencePhaseV1
+ControlBootstrapSequenceV1::phase() const noexcept {
+    return phase_;
+}
+
+std::size_t ControlBootstrapSequenceV1::accepted_event_count() const noexcept {
+    return next_event_index_;
+}
+
+ControlBootstrapAdvanceStatusV1 ControlBootstrapSequenceV1::advance(
+    const ControlBootstrapFlowV1 flow,
+    const ControlBootstrapMessageTypeV1 message_type) noexcept {
+    if (phase_ != ControlBootstrapSequencePhaseV1::in_progress) {
+        return ControlBootstrapAdvanceStatusV1::already_terminal;
+    }
+    if ((flow == ControlBootstrapFlowV1::outbound ||
+         flow == ControlBootstrapFlowV1::inbound) &&
+        message_type == ControlBootstrapMessageTypeV1::abort) {
+        phase_ = ControlBootstrapSequencePhaseV1::aborted;
+        return ControlBootstrapAdvanceStatusV1::aborted;
+    }
+    const ControlBootstrapExpectedEventV1 expected = expected_next();
+    if (!expected.present || flow != expected.flow) {
+        phase_ = ControlBootstrapSequencePhaseV1::failed;
+        return ControlBootstrapAdvanceStatusV1::wrong_flow;
+    }
+    if (message_type != expected.message_type) {
+        phase_ = ControlBootstrapSequencePhaseV1::failed;
+        return ControlBootstrapAdvanceStatusV1::unexpected_message;
+    }
+    ++next_event_index_;
+    if (next_event_index_ == kBootstrapSequence.size()) {
+        phase_ = ControlBootstrapSequencePhaseV1::completed;
+        return ControlBootstrapAdvanceStatusV1::completed;
+    }
+    return ControlBootstrapAdvanceStatusV1::advanced;
 }
 
 }  // namespace vfdual

@@ -2861,6 +2861,11 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
                 "android_handshake_confirmation",
                 "parse_authenticated_control_bootstrap_record_v1",
                 "never treat a successfully parsed bootstrap record as peer authentication",
+                "class ControlBootstrapSequenceV1 final",
+                "Any skipped, repeated or wrong-flow non-abort record permanently fails",
+                "advance_outbound",
+                "advance_inbound",
+                "already_terminal",
             ),
         ),
         SourceContract(
@@ -2877,6 +2882,8 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
                 "direction_mismatch",
                 "payload_too_large",
                 "test_maximum_payload_is_exact",
+                "test_host_and_android_complete_the_same_exact_sequence",
+                "test_sequence_failures_and_abort_are_terminal",
             ),
         ),
         SourceContract(
@@ -2939,11 +2946,62 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
             ),
         ),
         SourceContract(
+            name="authenticated-control-bootstrap-v1-android-sequence",
+            path=(
+                root
+                / "android_inference_benchmark"
+                / "app"
+                / "src"
+                / "main"
+                / "java"
+                / "com"
+                / "visionforge"
+                / "inferencebenchmark"
+                / "handshake"
+                / "ControlBootstrapSequenceV1.java"
+            ),
+            required=(
+                "public final class ControlBootstrapSequenceV1",
+                "HOST_HANDSHAKE_SIGNATURE",
+                "ANDROID_HANDSHAKE_CONFIRMATION",
+                "advanceOutbound",
+                "advanceInbound",
+                "ALREADY_TERMINAL",
+                "phase = Phase.FAILED",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-v1-android-sequence-regressions",
+            path=(
+                root
+                / "android_inference_benchmark"
+                / "app"
+                / "src"
+                / "test"
+                / "java"
+                / "com"
+                / "visionforge"
+                / "inferencebenchmark"
+                / "handshake"
+                / "ControlBootstrapSequenceV1SelfTest.java"
+            ),
+            required=(
+                "ControlBootstrapSequenceV1SelfTest: PASS",
+                "completesTheSameExactHostAndAndroidSequence",
+                "rejectsWrongFlowSkippedAndRepeatedMessages",
+                "makesAbortAndCompletionTerminal",
+                "UNEXPECTED_MESSAGE",
+                "WRONG_FLOW",
+                "ALREADY_TERMINAL",
+            ),
+        ),
+        SourceContract(
             name="authenticated-control-bootstrap-v1-android-gradle-gate",
             path=root / "android_inference_benchmark" / "app" / "build.gradle",
             required=(
                 "compileAuthenticatedControlBootstrapV1SelfTest",
                 "verifyAuthenticatedControlBootstrapV1",
+                "verifyControlBootstrapSequenceV1",
                 "tasks.named('check')",
                 "preReleaseBuild",
                 "JavaVersion.VERSION_1_8",
