@@ -131,9 +131,10 @@ else()
     target_compile_options(vfdual_e2e_domain_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
-# Cryptographic foundation only.  Do not link this target into VisionForgeHost
-# until pairing identity signatures, persistent generation allocation, the
-# authenticated control record, and the three-step raw-lease install are wired.
+# Cryptographic foundation only. VisionForgeHost reaches it solely through the
+# restricted Host identity runtime; no peer session or data-plane permit can be
+# created until the authenticated coordinator and three-step lease install are
+# wired.
 add_library(vfdual_authenticated_peer_handshake_v1 STATIC
     shared/src/authenticated_peer_handshake_v1.cpp
 )
@@ -283,6 +284,7 @@ if(WIN32)
         NOMINMAX
     )
     target_link_libraries(vfdual_host_cng_device_identity PUBLIC
+        advapi32
         bcrypt
         ncrypt
     )
@@ -310,10 +312,11 @@ if(WIN32)
         crypt32
     )
 
-    # Restricted typed-transcript signing foundation only.  It owns the Host
-    # ephemeral key across signature and one-shot derivation, and deliberately
-    # remains unlinked from VisionForgeHost until trusted pair records and the
-    # complete authenticated control-plane state machine exist.
+    # Restricted typed-transcript signing foundation only. It owns the Host
+    # ephemeral key across signature and one-shot derivation. VisionForgeHost
+    # links it behind HostDeviceIdentityRuntime, whose signer accessor is
+    # private to the authenticated control coordinator; UI/runtime code cannot
+    # invoke it directly.
     add_library(vfdual_host_peer_handshake_transcript_signer_v1 STATIC
         host/windows/security/src/host_peer_handshake_transcript_signer_v1.cpp
     )
@@ -330,6 +333,19 @@ if(WIN32)
         vfdual_host_peer_handshake_transcript_signer_v1 PUBLIC
         vfdual_host_cng_device_identity
         vfdual_authenticated_peer_handshake_v1
+    )
+
+    add_library(vfdual_host_device_identity_runtime STATIC
+        host/windows/security/src/host_device_identity_runtime.cpp
+    )
+    target_include_directories(vfdual_host_device_identity_runtime PUBLIC
+        host/windows/security/include
+    )
+    target_compile_definitions(vfdual_host_device_identity_runtime PRIVATE
+        VFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY=$<BOOL:${VFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY}>
+    )
+    target_link_libraries(vfdual_host_device_identity_runtime PUBLIC
+        vfdual_host_peer_handshake_transcript_signer_v1
     )
 
     set(VFDUAL_GENERATED_RESOURCE_DIRECTORY
@@ -437,8 +453,10 @@ if(WIN32)
         host/windows
         host/windows/include
         third_party/nv-codec-headers/include)
-    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_host_usage_lease_verifier_v1 ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
+    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_host_usage_lease_verifier_v1 vfdual_host_device_identity_runtime ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
         mfplat mf mfuuid wmcodecdspuuid ole32 oleaut32 user32 gdi32 shell32 dwmapi dbghelp)
+    add_test(NAME vfdual_host_device_identity_runtime_probe
+        COMMAND $<TARGET_FILE:VisionForgeHost> --host-device-identity-probe)
     if(MSVC AND VFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS)
         target_compile_options(VisionForgeHost PRIVATE /Zi /FS)
         target_link_options(VisionForgeHost PRIVATE

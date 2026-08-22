@@ -3147,18 +3147,40 @@ def _check_host_independent_hardware_identity(root: Path) -> CheckResult:
         / "host_cng_device_identity.cpp"
     )
     cmake_path = root / "dual_machine_runtime" / "CMakeLists.txt"
-    runtime_path = (
+    identity_runtime_path = (
+        root
+        / "dual_machine_runtime"
+        / "host"
+        / "windows"
+        / "security"
+        / "src"
+        / "host_device_identity_runtime.cpp"
+    )
+    facade_path = (
         root
         / "dual_machine_runtime"
         / "host"
         / "windows"
         / "src"
-        / "host_runtime_service.cpp"
+        / "host_runtime_facade.cpp"
+    )
+    tests_path = (
+        root
+        / "dual_machine_runtime"
+        / "host"
+        / "windows"
+        / "security"
+        / "tests"
+        / "host_cng_device_identity_tests.cpp"
     )
     header_text = _read_text(header_path) if header_path.is_file() else ""
     source_text = _read_text(source_path) if source_path.is_file() else ""
     cmake_text = _read_text(cmake_path) if cmake_path.is_file() else ""
-    runtime_text = _read_text(runtime_path) if runtime_path.is_file() else ""
+    identity_runtime_text = (
+        _read_text(identity_runtime_path) if identity_runtime_path.is_file() else ""
+    )
+    facade_text = _read_text(facade_path) if facade_path.is_file() else ""
+    tests_text = _read_text(tests_path) if tests_path.is_file() else ""
     foundation_text = "\n".join((header_text, source_text))
     required_foundation_tokens = (
         "HostCngDeviceIdentity",
@@ -3180,26 +3202,46 @@ def _check_host_independent_hardware_identity(root: Path) -> CheckResult:
     )
     linked_into_host = bool(
         host_link_match
-        and "vfdual_host_cng_device_identity" in host_link_match.group("body")
+        and "vfdual_host_device_identity_runtime" in host_link_match.group("body")
     )
     missing_runtime_tokens = [
         token
-        for token in ("HostCngDeviceIdentity", "open_windows(")
-        if token not in runtime_text
+        for token in (
+            "HostCngDeviceIdentity::open_windows",
+            "HostDeviceIdentityRuntime::open_for_current_build",
+        )
+        if token not in "\n".join((identity_runtime_text, facade_text))
     ]
     acl_markers = (
+        "NCRYPT_SECURITY_DESCR_SUPPORT_PROPERTY",
         "NCRYPT_SECURITY_DESCR_PROPERTY",
         "DACL_SECURITY_INFORMATION",
-        "service_sid",
+        "SE_DACL_PROTECTED",
+        "WinLocalSystemSid",
+        "WinBuiltinAdministratorsSid",
+        "read_current_process_user_sid",
+        "validate_formal_machine_key_security_descriptor_impl",
     )
     missing_acl_markers = [
         token for token in acl_markers if token not in foundation_text
+    ]
+    required_acl_test_tokens = (
+        "test_formal_machine_key_dacl_is_exact_and_fail_closed",
+        "broad_everyone",
+        "unprotected",
+        "missing_user",
+        "read_only_user",
+    )
+    missing_acl_test_tokens = [
+        token for token in required_acl_test_tokens if token not in tests_text
     ]
     evidence = {
         "header": str(header_path),
         "source": str(source_path),
         "cmake": str(cmake_path),
-        "runtime": str(runtime_path),
+        "identity_runtime": str(identity_runtime_path),
+        "facade": str(facade_path),
+        "tests": str(tests_path),
         "header_present": header_path.is_file(),
         "source_present": source_path.is_file(),
         "foundation_present": bool(
@@ -3211,6 +3253,7 @@ def _check_host_independent_hardware_identity(root: Path) -> CheckResult:
         "linked_into_host": linked_into_host,
         "missing_host_runtime_identity_tokens": missing_runtime_tokens,
         "missing_machine_key_acl_markers": missing_acl_markers,
+        "missing_machine_key_acl_test_tokens": missing_acl_test_tokens,
     }
     if (
         not header_path.is_file()
@@ -3219,6 +3262,7 @@ def _check_host_independent_hardware_identity(root: Path) -> CheckResult:
         or not linked_into_host
         or missing_runtime_tokens
         or missing_acl_markers
+        or missing_acl_test_tokens
     ):
         return _fail(
             REVERSE_RESISTANCE_CHECK_PREFIX + "host-independent-hardware-identity",

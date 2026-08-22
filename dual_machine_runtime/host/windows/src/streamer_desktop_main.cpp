@@ -1,5 +1,6 @@
 #include "vfdual/streamer_desktop_app.hpp"
 #include "vfdual/host_crash_diagnostics.hpp"
+#include "vfdual/host_device_identity_runtime.hpp"
 #include "vfdual/host_direct_link_provisioner.hpp"
 
 #include <cwctype>
@@ -70,6 +71,19 @@ bool command_line_is(PWSTR command_line, std::wstring_view expected) {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     vfdual::install_host_crash_diagnostics();
     try {
+        if (command_line_is(
+                command_line,
+                vfdual::kHostDeviceIdentityProbeArgument)) {
+            vfdual::HostIdentityError identity_error;
+            const auto identity =
+                vfdual::HostDeviceIdentityRuntime::open_for_current_build(
+                    identity_error);
+            if (identity != nullptr) return ERROR_SUCCESS;
+            vfdual::record_host_cpp_exception(
+                "host_device_identity_probe_failed",
+                vfdual::format_host_identity_error(identity_error));
+            return ERROR_ACCESS_DENIED;
+        }
         if (command_line_is(command_line, vfdual::kHostDirectLinkWorkerArgument)) {
             return vfdual::run_host_direct_link_provisioning_worker();
         }

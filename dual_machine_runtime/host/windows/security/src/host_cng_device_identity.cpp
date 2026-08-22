@@ -14,9 +14,9 @@
 
 #include <bcrypt.h>
 #include <ncrypt.h>
-
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <iomanip>
 #include <limits>
@@ -34,6 +34,7 @@ constexpr std::size_t kMaximumHostIdBytes = 128U;
 constexpr std::size_t kMaximumCngPropertyBytes = 4096U;
 constexpr std::size_t kMaximumSignatureBytes = 512U;
 constexpr std::size_t kMaximumPublicBlobBytes = 1024U;
+constexpr std::size_t kMaximumTokenUserBytes = 64U * 1024U;
 constexpr DWORD kCreateRaceOpenAttempts = 25U;
 constexpr DWORD kCreateRaceRetryDelayMilliseconds = 10U;
 constexpr NTSTATUS kStatusInvalidSignature =
@@ -99,6 +100,37 @@ constexpr std::array<std::uint8_t, 32U> kP256HalfOrder{
         static_cast<std::uint32_t>(status),
         operation);
 }
+
+[[nodiscard]] HostIdentityError win32_error(
+    const HostIdentityErrorCode code,
+    const DWORD status,
+    const std::string_view operation) {
+    return make_error(
+        code,
+        HostIdentityNativeStatusDomain::win32_error,
+        static_cast<std::uint32_t>(status),
+        operation);
+}
+
+class UniqueWin32Handle final {
+public:
+    UniqueWin32Handle() = default;
+    explicit UniqueWin32Handle(HANDLE handle) noexcept : handle_(handle) {}
+    ~UniqueWin32Handle() {
+        if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+            (void)CloseHandle(handle_);
+        }
+    }
+    UniqueWin32Handle(const UniqueWin32Handle&) = delete;
+    UniqueWin32Handle& operator=(const UniqueWin32Handle&) = delete;
+    UniqueWin32Handle(UniqueWin32Handle&&) = delete;
+    UniqueWin32Handle& operator=(UniqueWin32Handle&&) = delete;
+
+    [[nodiscard]] HANDLE get() const noexcept { return handle_; }
+
+private:
+    HANDLE handle_{};
+};
 
 class UniqueNcryptHandle final {
 public:
@@ -689,6 +721,455 @@ void append_der_integer(
     return false;
 }
 
+[[nodiscard]] bool sid_bytes_are_valid(
+    const std::span<const std::uint8_t> sid) noexcept {
+    constexpr std::size_t kSidFixedBytes = 8U;
+    if (sid.size() < kSidFixedBytes) return false;
+    const std::uint8_t sub_authority_count = sid[1U];
+    if (sub_authority_count > SID_MAX_SUB_AUTHORITIES) return false;
+    const std::size_t required =
+        kSidFixedBytes + sizeof(DWORD) * sub_authority_count;
+    return sid.size() == required && sid[0U] == SID_REVISION;
+}
+
+[[nodiscard]] bool sid_bytes_equal(
+    const std::span<const std::uint8_t> left,
+    const std::span<const std::uint8_t> right) noexcept {
+    return left.size() == right.size() &&
+        std::equal(left.begin(), left.end(), right.begin());
+}
+
+[[nodiscard]] bool copy_well_known_sid(
+    const WELL_KNOWN_SID_TYPE type,
+    std::vector<std::uint8_t>& sid,
+    HostIdentityError& error) {
+    DWORD required = SECURITY_MAX_SID_SIZE;
+    sid.assign(required, 0U);
+    if (!CreateWellKnownSid(type, nullptr, sid.data(), &required)) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "create_formal_principal_sid");
+        sid.clear();
+        return false;
+    }
+    if (required == 0U || required > sid.size()) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            "validate_formal_principal_sid_size");
+        sid.clear();
+        return false;
+    }
+    sid.resize(required);
+    if (!sid_bytes_are_valid(sid)) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            "validate_formal_principal_sid");
+        sid.clear();
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool collect_formal_machine_key_principals(
+    const std::span<const std::uint8_t> authorized_user_sid,
+    std::vector<std::vector<std::uint8_t>>& principals,
+    HostIdentityError& error) {
+    if (!sid_bytes_are_valid(authorized_user_sid)) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            "validate_authorized_user_sid");
+        return false;
+    }
+
+    std::vector<std::uint8_t> local_system_sid;
+    std::vector<std::uint8_t> administrators_sid;
+    if (!copy_well_known_sid(
+            WinLocalSystemSid, local_system_sid, error) ||
+        !copy_well_known_sid(
+            WinBuiltinAdministratorsSid, administrators_sid, error)) {
+        return false;
+    }
+
+    principals.clear();
+    principals.reserve(3U);
+    const auto add_distinct = [&principals](
+        const std::span<const std::uint8_t> candidate) {
+        const bool already_present = std::any_of(
+            principals.begin(), principals.end(),
+            [candidate](const std::vector<std::uint8_t>& existing) {
+                return sid_bytes_equal(existing, candidate);
+            });
+        if (!already_present) {
+            principals.emplace_back(candidate.begin(), candidate.end());
+        }
+    };
+    add_distinct(local_system_sid);
+    add_distinct(administrators_sid);
+    add_distinct(authorized_user_sid);
+    return true;
+}
+
+[[nodiscard]] bool validate_formal_machine_key_security_descriptor_impl(
+    const std::span<const std::uint8_t> descriptor,
+    const std::span<const std::uint8_t> authorized_user_sid,
+    HostIdentityError& error) {
+    const auto reject = [&error](const std::string_view operation) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed, operation);
+        return false;
+    };
+
+    std::vector<std::vector<std::uint8_t>> expected_principals;
+    if (!collect_formal_machine_key_principals(
+            authorized_user_sid, expected_principals, error)) {
+        return false;
+    }
+    if (descriptor.size() < sizeof(SECURITY_DESCRIPTOR_RELATIVE)) {
+        return reject("validate_formal_security_descriptor_size");
+    }
+
+    SECURITY_DESCRIPTOR_RELATIVE relative{};
+    std::memcpy(&relative, descriptor.data(), sizeof(relative));
+    if (relative.Revision != SECURITY_DESCRIPTOR_REVISION ||
+        (relative.Control & SE_SELF_RELATIVE) == 0U ||
+        (relative.Control & SE_DACL_PRESENT) == 0U ||
+        (relative.Control & SE_DACL_PROTECTED) == 0U ||
+        relative.Dacl < sizeof(SECURITY_DESCRIPTOR_RELATIVE) ||
+        relative.Dacl > descriptor.size() - sizeof(ACL) ||
+        relative.Dacl % alignof(DWORD) != 0U) {
+        return reject("validate_formal_protected_dacl_header");
+    }
+
+    ACL acl{};
+    std::memcpy(&acl, descriptor.data() + relative.Dacl, sizeof(acl));
+    if (acl.AclRevision != ACL_REVISION ||
+        acl.AclSize < sizeof(ACL) ||
+        acl.AclSize > descriptor.size() - relative.Dacl ||
+        acl.AceCount != expected_principals.size()) {
+        return reject("validate_formal_dacl_shape");
+    }
+
+    std::vector<bool> principal_seen(expected_principals.size(), false);
+    std::size_t ace_offset = sizeof(ACL);
+    for (std::size_t index{}; index < acl.AceCount; ++index) {
+        if (ace_offset > acl.AclSize - sizeof(ACE_HEADER)) {
+            return reject("validate_formal_ace_bounds");
+        }
+        ACE_HEADER ace_header{};
+        std::memcpy(
+            &ace_header,
+            descriptor.data() + relative.Dacl + ace_offset,
+            sizeof(ace_header));
+        constexpr std::size_t kAllowedAceSidOffset =
+            offsetof(ACCESS_ALLOWED_ACE, SidStart);
+        if (ace_header.AceType != ACCESS_ALLOWED_ACE_TYPE ||
+            ace_header.AceFlags != 0U ||
+            ace_header.AceSize < kAllowedAceSidOffset + 8U ||
+            ace_header.AceSize > acl.AclSize - ace_offset) {
+            return reject("validate_formal_allow_ace");
+        }
+
+        ACCESS_MASK access_mask{};
+        std::memcpy(
+            &access_mask,
+            descriptor.data() + relative.Dacl + ace_offset +
+                sizeof(ACE_HEADER),
+            sizeof(access_mask));
+        if (access_mask != GENERIC_ALL) {
+            return reject("validate_formal_ace_access_mask");
+        }
+
+        const std::size_t sid_offset =
+            relative.Dacl + ace_offset + kAllowedAceSidOffset;
+        const std::size_t maximum_sid_size =
+            ace_header.AceSize - kAllowedAceSidOffset;
+        const auto sid_prefix = descriptor.subspan(
+            sid_offset, maximum_sid_size);
+        if (sid_prefix.size() < 8U ||
+            sid_prefix[1U] > SID_MAX_SUB_AUTHORITIES) {
+            return reject("validate_formal_ace_sid");
+        }
+        const std::size_t sid_size =
+            8U + sizeof(DWORD) * sid_prefix[1U];
+        if (sid_size != maximum_sid_size) {
+            return reject("validate_formal_ace_sid_size");
+        }
+        const auto sid = sid_prefix.first(sid_size);
+        if (!sid_bytes_are_valid(sid)) {
+            return reject("validate_formal_ace_sid");
+        }
+
+        std::optional<std::size_t> principal_index;
+        for (std::size_t principal{};
+             principal < expected_principals.size(); ++principal) {
+            if (sid_bytes_equal(sid, expected_principals[principal])) {
+                principal_index = principal;
+                break;
+            }
+        }
+        if (!principal_index.has_value() ||
+            principal_seen[*principal_index]) {
+            return reject("validate_formal_ace_principal_set");
+        }
+        principal_seen[*principal_index] = true;
+        ace_offset += ace_header.AceSize;
+    }
+    if (ace_offset != acl.AclSize ||
+        std::any_of(
+            principal_seen.begin(), principal_seen.end(),
+            [](const bool seen) { return !seen; })) {
+        return reject("validate_formal_dacl_principal_completeness");
+    }
+    error = {};
+    return true;
+}
+
+[[nodiscard]] bool read_current_process_user_sid(
+    std::vector<std::uint8_t>& user_sid,
+    HostIdentityError& error) {
+    HANDLE token_handle{};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token_handle)) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "open_current_process_token");
+        return false;
+    }
+    UniqueWin32Handle token(token_handle);
+
+    DWORD required{};
+    if (GetTokenInformation(
+            token.get(), TokenUser, nullptr, 0U, &required) != FALSE ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        required < sizeof(TOKEN_USER) ||
+        required > kMaximumTokenUserBytes) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "query_current_process_user_size");
+        return false;
+    }
+
+    std::vector<std::uint8_t> token_user_buffer(required, 0U);
+    if (!GetTokenInformation(
+            token.get(), TokenUser, token_user_buffer.data(), required,
+            &required)) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "read_current_process_user");
+        return false;
+    }
+    const auto* token_user =
+        reinterpret_cast<const TOKEN_USER*>(token_user_buffer.data());
+    if (token_user->User.Sid == nullptr ||
+        !IsValidSid(token_user->User.Sid)) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            "validate_current_process_user_sid");
+        return false;
+    }
+    const DWORD sid_size = GetLengthSid(token_user->User.Sid);
+    if (sid_size == 0U || sid_size > SECURITY_MAX_SID_SIZE) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            "validate_current_process_user_sid_size");
+        return false;
+    }
+    user_sid.assign(sid_size, 0U);
+    if (!CopySid(sid_size, user_sid.data(), token_user->User.Sid) ||
+        !sid_bytes_are_valid(user_sid)) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "copy_current_process_user_sid");
+        user_sid.clear();
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool build_formal_machine_key_security_descriptor(
+    const std::span<const std::uint8_t> authorized_user_sid,
+    std::vector<std::uint8_t>& descriptor,
+    HostIdentityError& error) {
+    std::vector<std::vector<std::uint8_t>> principals;
+    if (!collect_formal_machine_key_principals(
+            authorized_user_sid, principals, error)) {
+        return false;
+    }
+
+    std::size_t acl_size = sizeof(ACL);
+    for (const auto& sid : principals) {
+        acl_size += offsetof(ACCESS_ALLOWED_ACE, SidStart) + sid.size();
+    }
+    if (acl_size > (std::numeric_limits<WORD>::max)()) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            "validate_formal_dacl_size");
+        return false;
+    }
+    std::vector<std::uint8_t> acl_bytes(acl_size, 0U);
+    auto* acl = reinterpret_cast<ACL*>(acl_bytes.data());
+    if (!InitializeAcl(
+            acl, static_cast<DWORD>(acl_bytes.size()), ACL_REVISION)) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "initialize_formal_dacl");
+        return false;
+    }
+    for (const auto& sid : principals) {
+        if (!AddAccessAllowedAceEx(
+                acl, ACL_REVISION, 0U, GENERIC_ALL,
+                const_cast<std::uint8_t*>(sid.data()))) {
+            error = win32_error(
+                HostIdentityErrorCode::key_access_control_failed,
+                GetLastError(),
+                "add_formal_dacl_principal");
+            return false;
+        }
+    }
+
+    SECURITY_DESCRIPTOR absolute{};
+    if (!InitializeSecurityDescriptor(
+            &absolute, SECURITY_DESCRIPTOR_REVISION) ||
+        !SetSecurityDescriptorDacl(&absolute, TRUE, acl, FALSE) ||
+        !SetSecurityDescriptorControl(
+            &absolute, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "build_formal_security_descriptor");
+        return false;
+    }
+
+    DWORD required{};
+    if (MakeSelfRelativeSD(&absolute, nullptr, &required) != FALSE ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        required < sizeof(SECURITY_DESCRIPTOR_RELATIVE) ||
+        required > kMaximumTokenUserBytes) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "query_formal_security_descriptor_size");
+        return false;
+    }
+    descriptor.assign(required, 0U);
+    if (!MakeSelfRelativeSD(&absolute, descriptor.data(), &required)) {
+        error = win32_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            GetLastError(),
+            "make_formal_security_descriptor_self_relative");
+        descriptor.clear();
+        return false;
+    }
+    descriptor.resize(required);
+    return validate_formal_machine_key_security_descriptor_impl(
+        descriptor, authorized_user_sid, error);
+}
+
+[[nodiscard]] bool provider_supports_key_security_descriptors(
+    const NCRYPT_PROV_HANDLE provider,
+    HostIdentityError& error) {
+    DWORD supported{};
+    DWORD copied{};
+    const SECURITY_STATUS status = NCryptGetProperty(
+        provider,
+        NCRYPT_SECURITY_DESCR_SUPPORT_PROPERTY,
+        reinterpret_cast<PBYTE>(&supported),
+        sizeof(supported),
+        &copied,
+        NCRYPT_SILENT_FLAG);
+    if (status != ERROR_SUCCESS) {
+        error = ncrypt_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            status,
+            "read_security_descriptor_support");
+        return false;
+    }
+    if (copied != sizeof(supported) || supported != 1U) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            "validate_security_descriptor_support");
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool set_and_verify_formal_machine_key_dacl(
+    const NCRYPT_KEY_HANDLE key,
+    const std::span<const std::uint8_t> authorized_user_sid,
+    HostIdentityError& error) {
+    std::vector<std::uint8_t> expected_descriptor;
+    if (!build_formal_machine_key_security_descriptor(
+            authorized_user_sid, expected_descriptor, error)) {
+        return false;
+    }
+    const DWORD security_flags =
+        NCRYPT_PERSIST_FLAG | NCRYPT_SILENT_FLAG |
+        DACL_SECURITY_INFORMATION;
+    SECURITY_STATUS status = NCryptSetProperty(
+        key,
+        NCRYPT_SECURITY_DESCR_PROPERTY,
+        expected_descriptor.data(),
+        static_cast<DWORD>(expected_descriptor.size()),
+        security_flags);
+    if (status != ERROR_SUCCESS) {
+        error = ncrypt_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            status,
+            "persist_formal_machine_key_dacl");
+        return false;
+    }
+
+    constexpr DWORD kReadSecurityFlags =
+        NCRYPT_SILENT_FLAG | DACL_SECURITY_INFORMATION;
+    DWORD required{};
+    status = NCryptGetProperty(
+        key, NCRYPT_SECURITY_DESCR_PROPERTY, nullptr, 0U, &required,
+        kReadSecurityFlags);
+    if (status != ERROR_SUCCESS ||
+        required < sizeof(SECURITY_DESCRIPTOR_RELATIVE) ||
+        required > kMaximumTokenUserBytes) {
+        error = status == ERROR_SUCCESS
+            ? policy_error(
+                HostIdentityErrorCode::key_access_control_failed,
+                "validate_persisted_formal_dacl_size")
+            : ncrypt_error(
+                HostIdentityErrorCode::key_access_control_failed,
+                status,
+                "read_persisted_formal_dacl_size");
+        return false;
+    }
+    std::vector<std::uint8_t> persisted(required, 0U);
+    DWORD copied{};
+    status = NCryptGetProperty(
+        key,
+        NCRYPT_SECURITY_DESCR_PROPERTY,
+        persisted.data(),
+        required,
+        &copied,
+        kReadSecurityFlags);
+    if (status != ERROR_SUCCESS) {
+        error = ncrypt_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            status,
+            "read_persisted_formal_dacl");
+        return false;
+    }
+    if (copied != required) {
+        error = policy_error(
+            HostIdentityErrorCode::key_access_control_failed,
+            "validate_persisted_formal_dacl_size");
+        return false;
+    }
+    persisted.resize(copied);
+    return validate_formal_machine_key_security_descriptor_impl(
+        persisted, authorized_user_sid, error);
+}
+
 class WindowsCngSigningKey final : public CngSigningKey {
 public:
     WindowsCngSigningKey(
@@ -1012,6 +1493,15 @@ public:
             return {nullptr, std::move(error)};
         }
 
+        std::vector<std::uint8_t> authorized_user_sid;
+        if (request.machine_scope &&
+            (!provider_supports_key_security_descriptors(
+                 provider_handle, error) ||
+             !read_current_process_user_sid(
+                 authorized_user_sid, error))) {
+            return {nullptr, std::move(error)};
+        }
+
         UniqueNcryptHandle key;
         bool created{};
         if (!open_or_create_persisted_key(
@@ -1025,6 +1515,17 @@ public:
                 cleanup_created_key_after_failure(
                     key, std::move(error)),
             };
+        }
+        if (request.machine_scope &&
+            !set_and_verify_formal_machine_key_dacl(
+                static_cast<NCRYPT_KEY_HANDLE>(key.get()),
+                authorized_user_sid,
+                error)) {
+            if (created) {
+                error = cleanup_created_key_after_failure(
+                    key, std::move(error));
+            }
+            return {nullptr, std::move(error)};
         }
 
         CngKeyMetadata metadata{};
@@ -1040,6 +1541,7 @@ public:
             }
             return {nullptr, std::move(error)};
         }
+        metadata.formal_machine_key_dacl_verified = request.machine_scope;
 
         return {
             std::make_unique<WindowsCngSigningKey>(
@@ -1128,8 +1630,16 @@ public:
             !hardware || software) {
             return reject("validate_formal_hardware_provider");
         }
-    } else if (!software || hardware) {
-        return reject("validate_development_software_provider");
+        if (!metadata.formal_machine_key_dacl_verified) {
+            return reject("validate_formal_machine_key_dacl");
+        }
+    } else {
+        if (!software || hardware) {
+            return reject("validate_development_software_provider");
+        }
+        if (metadata.formal_machine_key_dacl_verified) {
+            return reject("validate_development_dacl_assurance_claim");
+        }
     }
     return true;
 }
@@ -1168,6 +1678,7 @@ const char* host_identity_error_code_name(
         case HostIdentityErrorCode::key_finalize_failed: return "key_finalize_failed";
         case HostIdentityErrorCode::key_cleanup_failed: return "key_cleanup_failed";
         case HostIdentityErrorCode::key_property_read_failed: return "key_property_read_failed";
+        case HostIdentityErrorCode::key_access_control_failed: return "key_access_control_failed";
         case HostIdentityErrorCode::key_contract_rejected: return "key_contract_rejected";
         case HostIdentityErrorCode::public_key_export_failed: return "public_key_export_failed";
         case HostIdentityErrorCode::public_key_format_rejected: return "public_key_format_rejected";
@@ -1195,10 +1706,22 @@ std::string format_host_identity_error(const HostIdentityError& error) {
     formatted << "code=" << host_identity_error_code_name(error.code);
     if (!error.operation.empty()) formatted << " operation=" << error.operation;
     if (error.native_domain != HostIdentityNativeStatusDomain::none) {
-        formatted << " native_domain=" <<
-            (error.native_domain ==
-                HostIdentityNativeStatusDomain::ncrypt_security_status
-                ? "ncrypt" : "bcrypt")
+        const char* native_domain = "unknown";
+        switch (error.native_domain) {
+            case HostIdentityNativeStatusDomain::none:
+                native_domain = "none";
+                break;
+            case HostIdentityNativeStatusDomain::ncrypt_security_status:
+                native_domain = "ncrypt";
+                break;
+            case HostIdentityNativeStatusDomain::bcrypt_ntstatus:
+                native_domain = "bcrypt";
+                break;
+            case HostIdentityNativeStatusDomain::win32_error:
+                native_domain = "win32";
+                break;
+        }
+        formatted << " native_domain=" << native_domain
             << " native_status=0x" << std::hex << std::setw(8)
             << std::setfill('0') << error.native_status;
     }
@@ -1212,10 +1735,22 @@ std::string format_host_identity_error(const HostIdentityError& error) {
         }
         if (cleanup.native_domain !=
             HostIdentityNativeStatusDomain::none) {
-            formatted << " cleanup_native_domain=" <<
-                (cleanup.native_domain ==
-                    HostIdentityNativeStatusDomain::ncrypt_security_status
-                    ? "ncrypt" : "bcrypt")
+            const char* cleanup_domain = "unknown";
+            switch (cleanup.native_domain) {
+                case HostIdentityNativeStatusDomain::none:
+                    cleanup_domain = "none";
+                    break;
+                case HostIdentityNativeStatusDomain::ncrypt_security_status:
+                    cleanup_domain = "ncrypt";
+                    break;
+                case HostIdentityNativeStatusDomain::bcrypt_ntstatus:
+                    cleanup_domain = "bcrypt";
+                    break;
+                case HostIdentityNativeStatusDomain::win32_error:
+                    cleanup_domain = "win32";
+                    break;
+            }
+            formatted << " cleanup_native_domain=" << cleanup_domain
                 << " cleanup_native_status=0x" << std::hex <<
                 std::setw(8) << std::setfill('0') <<
                 cleanup.native_status;
@@ -1272,6 +1807,15 @@ bool validate_cng_key_metadata_for_policy(
     if (!policy_is_valid(policy, error)) return false;
     return metadata_matches_policy(
         policy, key_request_for_policy(policy), metadata, error);
+}
+
+bool validate_formal_machine_key_security_descriptor(
+    const std::span<const std::uint8_t> self_relative_security_descriptor,
+    const std::span<const std::uint8_t> authorized_user_sid,
+    HostIdentityError& error) {
+    error = {};
+    return validate_formal_machine_key_security_descriptor_impl(
+        self_relative_security_descriptor, authorized_user_sid, error);
 }
 
 HostIdentityBytesResult build_host_identity_challenge(

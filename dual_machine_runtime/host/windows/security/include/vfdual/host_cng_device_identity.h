@@ -67,6 +67,7 @@ enum class HostIdentityNativeStatusDomain : std::uint8_t {
     none = 0U,
     ncrypt_security_status = 1U,
     bcrypt_ntstatus = 2U,
+    win32_error = 3U,
 };
 
 enum class HostIdentityErrorCode : std::uint8_t {
@@ -79,6 +80,7 @@ enum class HostIdentityErrorCode : std::uint8_t {
     key_finalize_failed,
     key_cleanup_failed,
     key_property_read_failed,
+    key_access_control_failed,
     key_contract_rejected,
     public_key_export_failed,
     public_key_format_rejected,
@@ -199,6 +201,12 @@ struct CngKeyMetadata final {
     std::uint32_t export_policy{};
     std::uint32_t implementation_type{};
     std::uint32_t key_type{};
+    // Set only after the trusted Windows adapter has persisted and read back
+    // the protected machine-key DACL for SYSTEM, Administrators and the
+    // current interactive Windows user.  Test adapters cannot use this bit to
+    // mint a formal identity because formal policy is rejected before their
+    // open method is invoked.
+    bool formal_machine_key_dacl_verified{};
 };
 
 /**
@@ -244,6 +252,20 @@ public:
 [[nodiscard]] bool validate_cng_key_metadata_for_policy(
     const HostIdentityPolicy& policy,
     const CngKeyMetadata& metadata,
+    HostIdentityError& error);
+
+/**
+ * Pure parser/auditor for the formal machine-key DACL.
+ *
+ * The descriptor must be self-relative and protected, contain exactly one
+ * GENERIC_ALL allow ACE for each of LOCAL_SYSTEM, Builtin Administrators and
+ * the supplied authorized user SID (deduplicated when those SIDs coincide),
+ * and contain no deny, inherited, broad or additional ACE.  The function does
+ * not read or mutate the process token or any persisted key.
+ */
+[[nodiscard]] bool validate_formal_machine_key_security_descriptor(
+    std::span<const std::uint8_t> self_relative_security_descriptor,
+    std::span<const std::uint8_t> authorized_user_sid,
     HostIdentityError& error);
 
 struct HostPublicIdentity final {
