@@ -18,12 +18,21 @@ public final class AuthenticatedControlBootstrapPayloadV1SelfTest {
             + "0200000020"
             + "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
             + "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5";
+    private static final String PAIR_GENERATION_CREDENTIAL_VECTOR =
+            "00000000080000000000000007"
+            + "01000000080102030405060708"
+            + "0200000020"
+            + "99999999999999999999999999999999"
+            + "99999999999999999999999999999999"
+            + "030000001d"
+            + "65794a68624763694f694a53557a49314e694a392e6533302e63326c6e";
 
     private AuthenticatedControlBootstrapPayloadV1SelfTest() {}
 
     public static void main(String[] arguments) throws Exception {
         everyMessageRoundTripsWithExactSchema();
         serverChallengeMatchesCppVectorAndOwnsCopies();
+        pairGenerationCredentialMatchesCppVector();
         rejectsTagLengthValueAndTrailingConfusion();
         rejectsNoncanonicalAndCrossFieldValues();
         credentialBoundIsExactAndJwtShaped();
@@ -76,6 +85,25 @@ public final class AuthenticatedControlBootstrapPayloadV1SelfTest {
         expect(Reason.CLOSED, -1, () -> parsed.field(0));
         clearFields(fields);
         clear(encoded, first, second);
+    }
+
+    private static void pairGenerationCredentialMatchesCppVector()
+            throws Exception {
+        byte[][] fields = validFields(MessageType.PAIR_GENERATION_CREDENTIAL);
+        byte[] encoded = AuthenticatedControlBootstrapPayloadV1.encode(
+                MessageType.PAIR_GENERATION_CREDENTIAL, fields);
+        require(Arrays.equals(
+                encoded, hex(PAIR_GENERATION_CREDENTIAL_VECTOR)),
+                "pair credential C++ vector");
+        try (ParsedPayload parsed = AuthenticatedControlBootstrapPayloadV1.parse(
+                MessageType.PAIR_GENERATION_CREDENTIAL, encoded)) {
+            require(AuthenticatedControlBootstrapPayloadV1.readPositiveSigned64(
+                    parsed.field(0)) == 7L, "generation");
+            require(AuthenticatedControlBootstrapPayloadV1.readPositiveSigned64(
+                    parsed.field(1)) == 0x0102030405060708L, "connection id");
+        }
+        clearFields(fields);
+        clear(encoded);
     }
 
     private static void rejectsTagLengthValueAndTrailingConfusion()
@@ -143,22 +171,60 @@ public final class AuthenticatedControlBootstrapPayloadV1SelfTest {
                 AuthenticatedControlBootstrapPayloadV1.MAXIMUM_CREDENTIAL_BYTES - 4];
         Arrays.fill(middle, 'b');
         String maximum = "a." + new String(middle) + ".c";
+        byte[][] fields = validFields(MessageType.PAIR_GENERATION_CREDENTIAL);
+        fields[3] = ascii(maximum);
         byte[] encoded = AuthenticatedControlBootstrapPayloadV1.encode(
-                MessageType.PAIR_GENERATION_CREDENTIAL, ascii(maximum));
+                MessageType.PAIR_GENERATION_CREDENTIAL, fields);
         try (ParsedPayload parsed = AuthenticatedControlBootstrapPayloadV1.parse(
                 MessageType.PAIR_GENERATION_CREDENTIAL, encoded)) {
-            require(parsed.field(0).length
+            require(parsed.field(3).length
                     == AuthenticatedControlBootstrapPayloadV1.MAXIMUM_CREDENTIAL_BYTES,
                     "exact credential maximum");
         }
         byte[] oversized = ascii("a" + maximum);
-        expect(Reason.INVALID_FIELD_LENGTH, 0, () ->
+        byte[][] oversizedFields = validFields(
+                MessageType.PAIR_GENERATION_CREDENTIAL);
+        oversizedFields[3] = oversized;
+        expect(Reason.INVALID_FIELD_LENGTH, 3, () ->
                 AuthenticatedControlBootstrapPayloadV1.encode(
-                        MessageType.PAIR_GENERATION_CREDENTIAL, oversized));
+                        MessageType.PAIR_GENERATION_CREDENTIAL,
+                        oversizedFields));
+        byte[][] badJwtFields = validFields(
+                MessageType.PAIR_GENERATION_CREDENTIAL);
+        badJwtFields[3] = ascii("header.payload.");
+        expect(Reason.INVALID_FIELD_VALUE, 3, () ->
+                AuthenticatedControlBootstrapPayloadV1.encode(
+                        MessageType.PAIR_GENERATION_CREDENTIAL,
+                        badJwtFields));
+
+        byte[][] zeroGeneration = validFields(
+                MessageType.PAIR_GENERATION_CREDENTIAL);
+        zeroGeneration[0] = u64(0L);
         expect(Reason.INVALID_FIELD_VALUE, 0, () ->
                 AuthenticatedControlBootstrapPayloadV1.encode(
                         MessageType.PAIR_GENERATION_CREDENTIAL,
-                        ascii("header.payload.")));
+                        zeroGeneration));
+        byte[][] negativeConnection = validFields(
+                MessageType.PAIR_GENERATION_CREDENTIAL);
+        negativeConnection[1][0] = (byte) 0x80;
+        expect(Reason.INVALID_FIELD_VALUE, 1, () ->
+                AuthenticatedControlBootstrapPayloadV1.encode(
+                        MessageType.PAIR_GENERATION_CREDENTIAL,
+                        negativeConnection));
+        byte[][] zeroProposalHash = validFields(
+                MessageType.PAIR_GENERATION_CREDENTIAL);
+        zeroProposalHash[2] = new byte[32];
+        expect(Reason.INVALID_FIELD_VALUE, 2, () ->
+                AuthenticatedControlBootstrapPayloadV1.encode(
+                        MessageType.PAIR_GENERATION_CREDENTIAL,
+                        zeroProposalHash));
+
+        clearFields(fields);
+        clearFields(oversizedFields);
+        clearFields(badJwtFields);
+        clearFields(zeroGeneration);
+        clearFields(negativeConnection);
+        clearFields(zeroProposalHash);
         clear(encoded, oversized);
         Arrays.fill(middle, '\0');
     }
@@ -193,7 +259,12 @@ public final class AuthenticatedControlBootstrapPayloadV1SelfTest {
                         u64(1_756_000_000L), filled(32, 0xa5)
                 };
             case PAIR_GENERATION_CREDENTIAL:
-                return new byte[][] {ascii("eyJhbGciOiJSUzI1NiJ9.e30.c2ln")};
+                return new byte[][] {
+                        u64(7L),
+                        u64(0x0102030405060708L),
+                        filled(32, 0x99),
+                        ascii("eyJhbGciOiJSUzI1NiJ9.e30.c2ln")
+                };
             case ANDROID_HANDSHAKE_CONFIRMATION:
                 return new byte[][] {signature(), filled(32, 0x77)};
             case HOST_FINISHED:

@@ -12,6 +12,7 @@
 namespace vfdual {
 
 class CanonicalPeerHandshakeTranscriptV1;
+class CanonicalPairGenerationChallengeRequestV1;
 class HostPeerHandshakeTranscriptSignerV1;
 class HostPairGenerationPopSignerV1;
 
@@ -399,6 +400,18 @@ verify_host_identity_proof_of_possession(
 verify_android_peer_handshake_identity_signature_v1(
     std::span<const std::uint8_t> android_subject_public_key_info_der,
     const CanonicalPeerHandshakeTranscriptV1& transcript,
+    std::span<const std::uint8_t> signature_der_low_s);
+
+/**
+ * Verify Android possession of the pair-bound identity before the Host emits
+ * its challenge proof. The typed request supplies both the exact digest and
+ * the expected Android fingerprint; no arbitrary digest verification API is
+ * exposed.
+ */
+[[nodiscard]] HostIdentityVerificationResult
+verify_android_pair_generation_challenge_identity_signature_v1(
+    std::span<const std::uint8_t> android_subject_public_key_info_der,
+    const CanonicalPairGenerationChallengeRequestV1& challenge_request,
     std::span<const std::uint8_t> signature_der_low_s);
 
 }  // namespace vfdual

@@ -1,6 +1,6 @@
 # VisionForge 双机认证握手 v1 合同
 
-状态：**基础密码合同草案；鼠标发布/接收已迁移到显式 confirmed-session 安装边界；完整生产握手协调器仍未接线；不得解除 formal gate**
+状态：**基础密码合同草案；VFB1 九记录及 payload 字节合同已冻结；鼠标发布/接收已迁移到显式 confirmed-session 安装边界；完整生产握手协调器仍未接线；不得解除 formal gate**
 更新日期：2026-08-22
 
 ## 1. 目标与非目标
@@ -91,7 +91,7 @@ prerelease 和 build metadata。`pair_id` 为空只表示 `pairing_only`，已�
 | 5 | android_ephemeral_public_key | 65-byte SEC1 |
 | 6 | host_nonce | 32-byte uniform CSPRNG output；仅拒绝全零串 |
 | 7 | android_nonce | 32-byte uniform CSPRNG output；仅拒绝全零串 |
-| 8 | connection_id | non-zero u64 BE；Host CSPRNG 产生 |
+| 8 | connection_id | non-zero positive signed-64 BE；由第 4 条 server challenge 和双方 fresh nonce/身份绑定推导 |
 | 9 | session_generation | non-zero u64 BE；同 pair 持久、原子、单调递增 |
 | 10 | transport_kind | u8：CAT6=1，WLAN=2 |
 | 11 | host_ipv4 | 4 network-order bytes；Host-owned A→H 目标地址 |
@@ -104,13 +104,16 @@ prerelease 和 build metadata。`pair_id` 为空只表示 `pairing_only`，已�
 
 `transcript_hash = SHA256(canonical_transcript)`。
 
-消息顺序必须固定为 Host/Android Hello、类型化 transcript proposal、双方 identity signature、双方
-Finished；完整 wire format 仍是本草案的 P1 阻断。每端只生成自己的 ephemeral key 和 nonce，并在
-签名前从类型化字段本地重建完整 transcript；禁止让安全服务签署调用方提供的任意 bytes。双方必须
-核对本端 nonce、ephemeral、地址、端口和版本与本地实际值完全一致。
+消息顺序必须使用 4.2 节冻结的九记录 VFB1 交换：类型化 generation proposal、双方 identity
+signature 和双方 Finished 均不得跳过。尚未冻结的是 VFC1 后续 control/raw lease 三步安装和首次
+pairing wire，不是 VFB1 payload。每端只生成自己的 ephemeral key 和 nonce，并在签名前从类型化
+字段本地重建完整 transcript；禁止让安全服务签署调用方提供的任意 bytes。双方必须核对本端 nonce、
+ephemeral、地址、端口和版本与本地实际值完全一致。
 
-`connection_id` 由 Host CSPRNG 产生，Android 必须拒绝当前或 recent-ID 冲突。`session_generation`
-必须由服务器或专用 Host 安全服务按 pair 原子分配，服务器和两端维护 durable high-water mark；
+`connection_id` 由 server nonce、challenge id、Host/Android fresh nonce、pair id 和角色化身份 hash
+通过 `visionforge-pair-generation-connection-id-derivation-v1` 合同推导；两端必须独立得到同一正的
+signed-64 值，并拒绝当前或 recent-ID 冲突。`session_generation` 必须由服务器或专用 Host 安全服务
+按 pair 原子分配，服务器和两端维护 durable high-water mark；
 并发、崩溃恢复、状态回滚、Android 重装或高水位不确定均 fail closed。当前仓库尚未实现该持久服务，
 因此基础 transcript/KDF 不能用于 production。
 
@@ -134,6 +137,41 @@ nonce 必须由服务器原子单次消费；客户端自报的 assurance 不进
 并由用户在两端可信 UI 明确确认；确认结果不能由远端网络消息代替。QR/SAS 或 credential 成功后，
 双方先持久化同一 binding，再关闭 pairing-only 会话并用非空 `pair_id` 全新握手。首次 bootstrap 的
 wire、SAS 字数/熵、用户取消/超时与账户恢复尚未冻结，是 production blocker。
+
+### 4.2 已绑定 pair 的 VFB1 九记录重连
+
+已存在服务端可信 pair/binding 的 Host 与 Android，必须在一条 fresh TCP 连接上使用下列唯一顺序；
+每条 record 都使用 `VFB1` header 和本文件规定的 canonical payload TLV。任何跳过、重复、乱序、
+错误方向或错误类型都永久烧毁当前协调器和 fresh ephemeral 状态，只能新建连接重新开始：
+
+| 序号 | 方向 | message type | 语义 |
+|---:|---|---|---|
+| 1 | Host → Android | `HOST_HELLO` | Host 长期 SPKI、fresh ephemeral/nonce、传输端点和版本 |
+| 2 | Android → Host | `ANDROID_CHALLENGE_REQUEST` | pair/binding、Android 身份和 challenge request/signature |
+| 3 | Host → Android | `HOST_CHALLENGE_PROOF` | Host 对同一 challenge request 的身份签名 |
+| 4 | Android → Host | `SERVER_CHALLENGE` | 服务端 challenge id、到期时间和 nonce |
+| 5 | Host → Android | `HOST_FINAL_PROOF` | Host 对 final credential proof 的身份签名 |
+| 6 | Android → Host | `PAIR_GENERATION_CREDENTIAL` | 服务器分配元数据和 compact signed credential |
+| 7 | Host → Android | `HOST_HANDSHAKE_SIGNATURE` | Host 对含已验证 generation 的最终 transcript 签名 |
+| 8 | Android → Host | `ANDROID_HANDSHAKE_CONFIRMATION` | Android transcript 签名和 Android Finished |
+| 9 | Host → Android | `HOST_FINISHED` | Host Finished；双方成功后才可释放方向化 traffic keys |
+
+第 6 条 payload 固定为四个严格递增 tag；不得恢复旧的“只传 JWT”单字段形式：
+
+| tag | 字段 | 长度/约束 |
+|---:|---|---|
+| 0 | `generation` | 8-byte BE，`1..2^63-1` |
+| 1 | `connection_id` | 8-byte BE，`1..2^63-1`；必须等于双方从 challenge/proposal 推导的值 |
+| 2 | `transcript_proposal_sha256` | 32 bytes，非全零；必须等于本地 canonical proposal SHA-256 |
+| 3 | `compact_credential` | 1..8192 bytes，严格三段 Base64url compact JWT 形状 |
+
+前 3 个字段来自服务端响应，但在服务端签名验证前仍是未认证候选元数据。Host 必须先用本地推导的
+`connection_id` 和 proposal hash 做精确比较，再把候选 `generation` 以及完整 expected pair/binding/
+revision/revocation/identity 字段交给 build-pinned credential verifier；只有签名、时间、用途和每项 claim
+全部通过，并且 `generation` 严格大于 Host 从 durable pair state 读出的本地/服务端 high-water mark 后，
+才能用该 generation 构建最终 transcript。解析成功、候选值相等或 Android 已自行验过都不能代替
+Host 的独立凭据验证，也不能安装 VFC1 key。成功后的 high-water mark 持久化与崩溃恢复属于外层
+三步安装事务，未完成该事务时不得把本协调器结果标记为 active。
 
 ## 5. ECDH 与 HKDF-SHA256
 

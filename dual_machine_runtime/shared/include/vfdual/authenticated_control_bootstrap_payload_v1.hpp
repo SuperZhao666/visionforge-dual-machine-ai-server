@@ -48,6 +48,13 @@ enum class ServerChallengeFieldTagV1 : std::uint8_t {
     server_nonce = 2U,
 };
 
+enum class PairGenerationCredentialFieldTagV1 : std::uint8_t {
+    generation = 0U,
+    connection_id = 1U,
+    transcript_proposal_sha256 = 2U,
+    compact_credential = 3U,
+};
+
 enum class AndroidHandshakeConfirmationFieldTagV1 : std::uint8_t {
     transcript_signature_der = 0U,
     android_finished = 1U,
