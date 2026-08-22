@@ -1949,6 +1949,20 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(releaseSecurityConfig.contains("rsaPublicKey.getModulus().bitLength() < 3072"));
         require(releaseSecurityConfig.contains("dual_machine_ticket_public_key_too_weak"));
         require(releaseSecurityConfig.contains("sha256Hex(publicKey.getEncoded())"));
+        require(releaseSecurityConfig.contains(
+                "BuildConfig.DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEYS_BASE64"));
+        require(releaseSecurityConfig.contains(
+                "pairGenerationCredentialVerifier"));
+        require(releaseSecurityConfig.contains(
+                "new PairGenerationCredentialV1Verifier("));
+        require(releaseSecurityConfig.contains(
+                "pairCredentialKeys.toArray(new PublicKey[0])"));
+        require(releaseSecurityConfig.contains(
+                "ticketKeys.toArray(new PublicKey[0])"));
+        require(releaseSecurityConfig.contains(
+                "dual_machine_pair_credential_key_duplicated"));
+        require(releaseSecurityConfig.contains(
+                "dual_machine_pair_credential_public_key_too_weak"));
         require(!source.contains("pipeline.start("));
         require(!source.contains("requestIdr("));
         require(onCreateMethod.contains(

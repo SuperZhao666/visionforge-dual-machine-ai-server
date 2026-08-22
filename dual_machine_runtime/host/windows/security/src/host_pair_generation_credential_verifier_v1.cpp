@@ -15,6 +15,8 @@
 #include <bcrypt.h>
 #include <wincrypt.h>
 
+#include "vfdual/host_pair_generation_credential_keyring_build.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -27,7 +29,10 @@ namespace vfdual {
 namespace {
 
 constexpr std::size_t kMaximumSpkiDerBytes = 4096U;
+constexpr std::size_t kMaximumOuterPemBase64Bytes = 32768U;
 constexpr std::size_t kMinimumPairRsaBits = 3072U;
+constexpr std::string_view kPemBegin{"-----BEGIN PUBLIC KEY-----"};
+constexpr std::string_view kPemEnd{"-----END PUBLIC KEY-----"};
 constexpr std::array<std::uint8_t, 3U> kRequiredRsaExponent{
     0x01U, 0x00U, 0x01U};
 constexpr std::array<std::uint8_t, 2U> kCanonicalDerNull{
@@ -156,6 +161,146 @@ struct ParsedClaims final {
     return constant_time_equal(
         {reinterpret_cast<const std::uint8_t*>(left.data()), left.size()},
         {reinterpret_cast<const std::uint8_t*>(right.data()), right.size()});
+}
+
+[[nodiscard]] bool decode_standard_base64_canonical(
+    const std::string_view encoded,
+    std::vector<std::uint8_t>& decoded) {
+    decoded.clear();
+    if (encoded.empty() || encoded.size() > kMaximumOuterPemBase64Bytes ||
+        encoded.size() % 4U != 0U ||
+        encoded.size() > std::numeric_limits<DWORD>::max()) {
+        return false;
+    }
+    std::size_t first_padding = encoded.size();
+    for (std::size_t index{}; index < encoded.size(); ++index) {
+        const char character = encoded[index];
+        const bool data = (character >= 'A' && character <= 'Z') ||
+            (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || character == '+' ||
+            character == '/';
+        if (character == '=') {
+            if (first_padding == encoded.size()) first_padding = index;
+        } else if (!data || first_padding != encoded.size()) {
+            return false;
+        }
+    }
+    if (encoded.size() - first_padding > 2U) return false;
+
+    DWORD required{};
+    if (!CryptStringToBinaryA(
+            encoded.data(),
+            static_cast<DWORD>(encoded.size()),
+            CRYPT_STRING_BASE64,
+            nullptr,
+            &required,
+            nullptr,
+            nullptr) ||
+        required == 0U) {
+        return false;
+    }
+    decoded.resize(required);
+    DWORD written = required;
+    if (!CryptStringToBinaryA(
+            encoded.data(),
+            static_cast<DWORD>(encoded.size()),
+            CRYPT_STRING_BASE64,
+            decoded.data(),
+            &written,
+            nullptr,
+            nullptr) ||
+        written != required) {
+        decoded.clear();
+        return false;
+    }
+
+    DWORD canonical_size{};
+    if (!CryptBinaryToStringA(
+            decoded.data(),
+            written,
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            nullptr,
+            &canonical_size) ||
+        canonical_size == 0U) {
+        decoded.clear();
+        return false;
+    }
+    std::string canonical(canonical_size, '\0');
+    if (!CryptBinaryToStringA(
+            decoded.data(),
+            written,
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            canonical.data(),
+            &canonical_size)) {
+        decoded.clear();
+        return false;
+    }
+    if (!canonical.empty() && canonical.back() == '\0') canonical.pop_back();
+    if (!constant_time_equal(canonical, encoded)) {
+        decoded.clear();
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool decode_public_pem_outer_base64(
+    const std::string_view outer_base64,
+    std::vector<std::uint8_t>& canonical_spki_der) {
+    std::vector<std::uint8_t> pem_bytes;
+    if (!decode_standard_base64_canonical(outer_base64, pem_bytes)) {
+        return false;
+    }
+    std::string normalized;
+    normalized.reserve(pem_bytes.size());
+    for (std::size_t index{}; index < pem_bytes.size(); ++index) {
+        const std::uint8_t character = pem_bytes[index];
+        if (character == '\r') {
+            if (index + 1U >= pem_bytes.size() ||
+                pem_bytes[index + 1U] != '\n') {
+                return false;
+            }
+            continue;
+        }
+        if (character != '\n' &&
+            (character < 0x20U || character > 0x7eU)) {
+            return false;
+        }
+        normalized.push_back(static_cast<char>(character));
+    }
+    if (!normalized.empty() && normalized.back() == '\n') {
+        normalized.pop_back();
+    }
+    const std::string prefix = std::string{kPemBegin} + "\n";
+    const std::string suffix = "\n" + std::string{kPemEnd};
+    if (!normalized.starts_with(prefix) || !normalized.ends_with(suffix) ||
+        normalized.find("PRIVATE KEY") != std::string::npos ||
+        normalized.find(kPemBegin, prefix.size()) != std::string::npos ||
+        normalized.find(kPemEnd) != normalized.size() - kPemEnd.size()) {
+        return false;
+    }
+    const std::string_view body = std::string_view{normalized}.substr(
+        prefix.size(), normalized.size() - prefix.size() - suffix.size());
+    if (body.empty()) return false;
+    std::string compact_body;
+    compact_body.reserve(body.size());
+    std::size_t line_size{};
+    for (const char character : body) {
+        if (character == '\n') {
+            if (line_size != 64U) return false;
+            line_size = 0U;
+            continue;
+        }
+        const bool valid = (character >= 'A' && character <= 'Z') ||
+            (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || character == '+' ||
+            character == '/' || character == '=';
+        if (!valid || line_size >= 64U) return false;
+        compact_body.push_back(character);
+        ++line_size;
+    }
+    if (line_size == 0U || line_size > 64U) return false;
+    return decode_standard_base64_canonical(
+        compact_body, canonical_spki_der);
 }
 
 [[nodiscard]] bool sha256(
@@ -972,17 +1117,49 @@ HostPairGenerationCredentialV1Verifier::
 HostPairGenerationCredentialV1VerifierConstructionResult
 HostPairGenerationCredentialV1Verifier::
 create_from_build_pinned_keyring() noexcept {
-    // No production pair-credential public ring is approved in the current
-    // capability-OFF build. Keeping this array empty makes accidental runtime
-    // construction fail closed. A later reviewed release step must replace it
-    // with generated, compile-time public DER arrays and cross-purpose pins;
-    // this function must remain argument-free.
-    constexpr std::array<std::span<const std::uint8_t>, 0U>
-        kBuildPinnedPairKeys{};
-    constexpr std::array<std::span<const std::uint8_t>, 0U>
-        kBuildPinnedOtherPurposeKeys{};
-    return create_from_canonical_spki_der_for_internal_use(
-        kBuildPinnedPairKeys, kBuildPinnedOtherPurposeKeys);
+    try {
+        std::vector<std::vector<std::uint8_t>> owned_pair_der;
+        owned_pair_der.reserve(
+            build::kPairGenerationCredentialPublicPemBase64.size());
+        for (const std::string_view encoded :
+             build::kPairGenerationCredentialPublicPemBase64) {
+            std::vector<std::uint8_t> der;
+            if (!decode_public_pem_outer_base64(encoded, der)) {
+                return {nullptr, error(
+                    HostPairGenerationCredentialErrorCodeV1::key_invalid)};
+            }
+            owned_pair_der.push_back(std::move(der));
+        }
+
+        std::vector<std::vector<std::uint8_t>> owned_other_der;
+        owned_other_der.reserve(
+            build::kPairGenerationOtherPurposeUsageTicketPublicPemBase64
+                .size());
+        for (const std::string_view encoded :
+             build::kPairGenerationOtherPurposeUsageTicketPublicPemBase64) {
+            std::vector<std::uint8_t> der;
+            if (!decode_public_pem_outer_base64(encoded, der)) {
+                return {nullptr, error(
+                    HostPairGenerationCredentialErrorCodeV1::key_invalid)};
+            }
+            owned_other_der.push_back(std::move(der));
+        }
+
+        std::vector<std::span<const std::uint8_t>> pair_spans;
+        pair_spans.reserve(owned_pair_der.size());
+        for (const auto& der : owned_pair_der) pair_spans.emplace_back(der);
+        std::vector<std::span<const std::uint8_t>> other_spans;
+        other_spans.reserve(owned_other_der.size());
+        for (const auto& der : owned_other_der) other_spans.emplace_back(der);
+        return create_from_canonical_spki_der_for_internal_use(
+            pair_spans, other_spans);
+    } catch (const std::bad_alloc&) {
+        return {nullptr, error(
+            HostPairGenerationCredentialErrorCodeV1::allocation_failed)};
+    } catch (...) {
+        return {nullptr, error(
+            HostPairGenerationCredentialErrorCodeV1::operation_failed)};
+    }
 }
 
 #if defined(VFDUAL_ENABLE_HOST_PAIR_CREDENTIAL_TEST_ACCESS)
