@@ -82,6 +82,10 @@ jobs:
       - name: Install the locked development environment
         run: python -m pip install --require-hashes -r requirements-dev.lock
 
+      - name: Test public-only dual-machine release materials
+        working-directory: .
+        run: python -m pytest -q tests/test_prepare_dual_machine_release_materials.py
+
       - name: Compile and import the Platform
         run: |
           export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
