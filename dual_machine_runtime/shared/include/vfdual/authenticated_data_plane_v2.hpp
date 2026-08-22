@@ -180,6 +180,7 @@ public:
 
 private:
     friend class AuthenticatedPacketOpener;
+    friend class AuthenticatedControlRecordOpenerV1;
 
     [[nodiscard]] bool commit_authenticated(std::uint64_t counter) noexcept;
 

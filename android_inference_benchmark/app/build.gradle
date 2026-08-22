@@ -1523,7 +1523,8 @@ tasks.register('compileAuthenticatedDataPlaneV2SelfTest', JavaCompile) {
             fileTree('src/main/java/com/visionforge/inferencebenchmark/dataplane') {
                 include '*.java'
             },
-            'src/test/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedDataPlaneV2SelfTest.java')
+            'src/test/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedDataPlaneV2SelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedControlRecordV1SelfTest.java')
     classpath = files()
     destinationDirectory = authenticatedDataPlaneV2SelfTestClasses
     sourceCompatibility = JavaVersion.VERSION_17.toString()
@@ -1538,12 +1539,24 @@ tasks.register('verifyAuthenticatedDataPlaneV2', JavaExec) {
     mainClass =
             'com.visionforge.inferencebenchmark.dataplane.AuthenticatedDataPlaneV2SelfTest'
 }
+tasks.register('verifyAuthenticatedControlRecordV1', JavaExec) {
+    group = 'verification'
+    description = 'Runs the VFC1 AES-GCM, shared-counter, replay and interop contract.'
+    dependsOn(tasks.named('compileAuthenticatedDataPlaneV2SelfTest'))
+    classpath = files(authenticatedDataPlaneV2SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.dataplane.AuthenticatedControlRecordV1SelfTest'
+}
 tasks.named('check').configure {
-    dependsOn(tasks.named('verifyAuthenticatedDataPlaneV2'))
+    dependsOn(
+            tasks.named('verifyAuthenticatedDataPlaneV2'),
+            tasks.named('verifyAuthenticatedControlRecordV1'))
 }
 tasks.configureEach { task ->
     if (task.name == 'preReleaseBuild') {
-        task.dependsOn(tasks.named('verifyAuthenticatedDataPlaneV2'))
+        task.dependsOn(
+                tasks.named('verifyAuthenticatedDataPlaneV2'),
+                tasks.named('verifyAuthenticatedControlRecordV1'))
     }
 }
 
@@ -2456,6 +2469,7 @@ def verifyMobilePublicContractsTask = tasks.register('verifyMobilePublicContract
             tasks.named('verifyCat6ReadyLifecycle'),
             tasks.named('verifyMobileRuntimeSnapshot'),
             tasks.named('verifyAuthenticatedDataPlaneV2'),
+            tasks.named('verifyAuthenticatedControlRecordV1'),
             tasks.named('verifyAuthenticatedPeerHandshakeV1'),
             tasks.named('verifyPairGenerationProposalV1'),
             tasks.named('verifyPairGenerationPopV1'),

@@ -199,21 +199,31 @@ usage canonical payload 分别签名。服务器只接受与本次 start/heartbe
 
 ## 7. Control record（production blocker）
 
-当前合同只派生 control key/prefix，尚未定义可生产使用的 control record；因此不得用这些裸 key
-传输 raw lease、ack、关闭、替换或 rekey 命令。正式实现必须且只能选择一种经过独立审查的路径：
+v1 唯一正式选择是自有 AES-256-GCM AEAD record，不保留 TLS/QUIC 或明文运行时 fallback。规范名为
+`VFC1`，envelope 固定为 40-byte AAD header、ciphertext、16-byte tag；所有整数均为网络字节序：
 
-1. 定义自有 AEAD record，将独立 domain/version、`connection_id`、`session_generation`、
-   `key_epoch`、direction、control message type、u64 counter 和 ciphertext length 全部放入 AAD；或
-2. 使用禁用 0-RTT 的 TLS 1.3/QUIC 标准 record，并把双方已绑定 identity 与标准 exporter 绑定。
+| offset | 字段 | 长度/约束 |
+| ---: | --- | --- |
+| 0 | magic | 4 bytes，ASCII `VFC1` |
+| 4 | version | u8，固定 1 |
+| 5 | header size | u8，固定 40 |
+| 6 | direction | u8，Host→Android=1，Android→Host=2 |
+| 7 | message type | u8，Offer=1，Accept=2，Commit=3，Close=4，CloseAck=5 |
+| 8 | connection id | u64 BE，非零 |
+| 16 | session generation | u64 BE，非零 |
+| 24 | key epoch | u32 BE，非零 |
+| 28 | counter | u64 BE，范围 `0..2^23-1` |
+| 36 | ciphertext length | u32 BE，范围 `0..65536` |
 
-自有 record 必须使用 key[32] + prefix[4] 与 u64 BE counter 组成 AES-256-GCM nonce。每个方向只有一个
-control key/prefix 和一个共享的 counter/replay domain；control message type 必须进入 AAD，禁止在同一
-key/prefix 下为不同 type 各自从 counter 0 开始。tag 成功后才提交至少 1024-bit replay window，
-provider 失败仍消耗 counter，单 key 最多 `2^23` 包。错误 tag、格式、tuple、duplicate/too-old 对网络
-和上层状态机只表现为 generic unauthenticated drop，不得触发 rekey、teardown 或高成本日志。
+完整 40-byte header 是 AAD。nonce 固定为握手派生的 prefix[4] 加同一 u64 BE counter。每个方向只有
+一个 control key/prefix 和一个共享的 counter/replay domain；message type 只进入 AAD，禁止为不同
+type 各自从 counter 0 开始。tag 成功后才提交 1024-bit replay window；provider 失败仍消耗 counter；
+单 key 最多 `2^23` 条 record。错误 tag、格式、tuple、duplicate/too-old 对网络和上层状态机只表现为
+generic unauthenticated drop，不得触发 rekey、teardown 或高成本日志。
 
-两种路径不能同时保留为运行时 fallback。完成 control record、跨语言 mutation/replay tests 和正式
-产物无明文 fallback 扫描前，`finished_confirmed` 后仍不能进入 `lease_pending`。
+当前 C++/Java 基础实现与固定 AES-GCM 向量已落地，但 Host/Android socket coordinator、raw lease 三步
+状态机和正式产物无明文 fallback 扫描仍未完成。因此 `finished_confirmed` 后仍不能进入
+`lease_pending`，本节仍是 production blocker，且不得据此修改 formal implementation flag。
 
 ## 8. Raw lease 三步安装边界（production blocker）
 
