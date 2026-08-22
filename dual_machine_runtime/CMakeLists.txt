@@ -159,7 +159,8 @@ endif()
 # Pre-generation transcript proposal foundation only.  This target canonicalizes
 # the two peers' proposed identity/session fields and can insert only a later
 # positive signed-64 server generation into the existing final transcript.  It
-# remains deliberately unlinked from VisionForgeHost and every runtime service.
+# is consumed only by the authenticated Host coordinator; no UI/runtime service
+# can construct or sign a proposal directly.
 add_library(vfdual_pair_generation_proposal_v1 STATIC
     shared/src/pair_generation_proposal_v1.cpp
 )
@@ -344,6 +345,7 @@ if(WIN32)
     )
     target_link_libraries(vfdual_host_cng_device_identity PUBLIC
         vfdual_authenticated_peer_handshake_v1
+        vfdual_pair_generation_pop_v1
         advapi32
         bcrypt
         ncrypt
@@ -351,8 +353,8 @@ if(WIN32)
 
     # Strict RS256 pair-generation credential verifier. Its production factory
     # accepts only generated build-pinned public material and checks every
-    # usage-ticket key as an explicitly disjoint other-purpose keyring. Keep it
-    # unlinked from VisionForgeHost until the authenticated coordinator owns it.
+    # usage-ticket key as an explicitly disjoint other-purpose keyring. The
+    # authenticated coordinator is its only Host-side protocol consumer.
     add_library(vfdual_host_pair_generation_credential_verifier_v1 STATIC
         host/windows/security/src/host_pair_generation_credential_verifier_v1.cpp
     )
@@ -445,6 +447,37 @@ if(WIN32)
     target_link_libraries(vfdual_host_device_identity_runtime PUBLIC
         vfdual_host_peer_handshake_transcript_signer_v1
         vfdual_host_pair_generation_pop_signer_v1
+    )
+
+    # Exact nine-record Host cryptographic owner. It consumes the private
+    # identity-runtime signer capabilities, verifies the server-authoritative
+    # generation credential, and releases only a Finished-confirmed session.
+    # The outer TCP/lease composition remains a separate release gate.
+    add_library(vfdual_host_authenticated_control_coordinator_v1 STATIC
+        host/windows/src/authenticated_pairing_handshake.cpp
+    )
+    target_include_directories(
+        vfdual_host_authenticated_control_coordinator_v1 PUBLIC
+        host/windows/security/include
+        shared/include
+    )
+    target_compile_definitions(
+        vfdual_host_authenticated_control_coordinator_v1 PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    if(MSVC)
+        target_compile_options(
+            vfdual_host_authenticated_control_coordinator_v1 PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(
+        vfdual_host_authenticated_control_coordinator_v1 PUBLIC
+        vfdual_protocol
+        vfdual_pair_generation_pop_v1
+        vfdual_host_device_identity_runtime
+        vfdual_host_pair_generation_credential_verifier_v1
+        bcrypt
     )
 
     set(VFDUAL_GENERATED_RESOURCE_DIRECTORY
@@ -552,7 +585,7 @@ if(WIN32)
         host/windows
         host/windows/include
         third_party/nv-codec-headers/include)
-    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_authenticated_peer_handshake_v1 vfdual_host_usage_lease_verifier_v1 vfdual_host_device_identity_runtime ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
+    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_authenticated_peer_handshake_v1 vfdual_host_usage_lease_verifier_v1 vfdual_host_device_identity_runtime vfdual_host_authenticated_control_coordinator_v1 ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
         mfplat mf mfuuid wmcodecdspuuid ole32 oleaut32 user32 gdi32 shell32 dwmapi dbghelp)
     add_test(NAME vfdual_host_device_identity_runtime_probe
         COMMAND $<TARGET_FILE:VisionForgeHost> --host-device-identity-probe)
@@ -940,6 +973,39 @@ if(WIN32)
     add_test(
         NAME vfdual_host_peer_handshake_transcript_signer_v1_tests
         COMMAND vfdual_host_peer_signer_v1_tests)
+
+    # Compile the coordinator separately with only its callback-based test
+    # seam. The production coordinator and Host never receive this macro.
+    add_executable(vfdual_host_auth_control_v1_tests
+        host/windows/security/tests/host_authenticated_control_coordinator_v1_tests.cpp
+        host/windows/src/authenticated_pairing_handshake.cpp
+    )
+    add_executable(
+        vfdual_host_authenticated_control_coordinator_v1_tests ALIAS
+        vfdual_host_auth_control_v1_tests)
+    target_include_directories(vfdual_host_auth_control_v1_tests PRIVATE
+        host/windows/security/include
+        shared/include
+    )
+    target_compile_definitions(vfdual_host_auth_control_v1_tests PRIVATE
+        VFDUAL_ENABLE_HOST_AUTHENTICATED_CONTROL_TEST_ACCESS=1
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    if(MSVC)
+        target_compile_options(vfdual_host_auth_control_v1_tests PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(vfdual_host_auth_control_v1_tests PRIVATE
+        vfdual_protocol
+        vfdual_pair_generation_pop_v1
+        vfdual_host_device_identity_runtime
+        vfdual_host_pair_generation_credential_verifier_v1
+        bcrypt
+    )
+    add_test(
+        NAME vfdual_host_authenticated_control_coordinator_v1_tests
+        COMMAND vfdual_host_auth_control_v1_tests)
 
     # Compile a separate object with the fixture-only keyring API. The macro
     # must never reach the production library or the Host executable. This

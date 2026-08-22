@@ -1,5 +1,6 @@
 #include "vfdual/host_cng_device_identity.h"
 #include "vfdual/authenticated_peer_handshake_v1.hpp"
+#include "vfdual/pair_generation_pop_v1.hpp"
 
 #ifndef _WIN32
 #error "host_cng_device_identity is a Windows-only module"
@@ -609,6 +610,70 @@ void append_der_integer(
             HostIdentityErrorCode::signature_failed,
             status,
             "verify_peer_handshake_transcript_signature");
+}
+
+[[nodiscard]] HostIdentityVerificationResult
+verify_android_typed_identity_signature(
+    const std::span<const std::uint8_t>
+        android_subject_public_key_info_der,
+    const std::span<const std::byte, kSha256Bytes> expected_fingerprint,
+    const std::span<const std::byte, kSha256Bytes> typed_digest,
+    const std::span<const std::uint8_t> signature_der_low_s) {
+    if (android_subject_public_key_info_der.empty() ||
+        signature_der_low_s.empty() ||
+        signature_der_low_s.size() > kMaximumP256DerSignatureBytes) {
+        return {false, {}};
+    }
+
+    HostIdentityBytesResult fingerprint = sha256(
+        android_subject_public_key_info_der,
+        "hash_android_typed_identity_spki");
+    if (!fingerprint.succeeded() ||
+        fingerprint.bytes.size() != kSha256Bytes) {
+        return {false, fingerprint.error.has_error()
+            ? std::move(fingerprint.error)
+            : policy_error(
+                HostIdentityErrorCode::sha256_failed,
+                "validate_android_typed_identity_fingerprint")};
+    }
+    if (!std::equal(
+            fingerprint.bytes.begin(), fingerprint.bytes.end(),
+            expected_fingerprint.begin(),
+            [](const std::uint8_t left, const std::byte right) {
+                return left == std::to_integer<std::uint8_t>(right);
+            })) {
+        return {false, {}};
+    }
+
+    std::array<std::uint8_t, kSha256Bytes> digest{};
+    std::transform(
+        typed_digest.begin(), typed_digest.end(), digest.begin(),
+        [](const std::byte value) {
+            return std::to_integer<std::uint8_t>(value);
+        });
+    HostIdentityError verification_error =
+        verify_canonical_p256_signature_for_digest(
+            android_subject_public_key_info_der,
+            digest,
+            signature_der_low_s);
+    SecureZeroMemory(digest.data(), digest.size());
+    if (!verification_error.has_error()) return {true, {}};
+
+    // Peer-controlled malformed material and an ordinary signature mismatch
+    // are authentication failures. Preserve only genuine local provider
+    // failures for the coordinator's sanitized diagnostics.
+    if (verification_error.code ==
+            HostIdentityErrorCode::public_key_format_rejected ||
+        verification_error.code ==
+            HostIdentityErrorCode::signature_format_rejected ||
+        (verification_error.code == HostIdentityErrorCode::signature_failed &&
+         (verification_error.native_domain ==
+              HostIdentityNativeStatusDomain::none ||
+          verification_error.operation ==
+              "import_peer_handshake_signature_verifier"))) {
+        return {false, {}};
+    }
+    return {false, std::move(verification_error)};
 }
 
 [[nodiscard]] bool read_ncrypt_dword(
@@ -2208,64 +2273,24 @@ verify_android_peer_handshake_identity_signature_v1(
         android_subject_public_key_info_der,
     const CanonicalPeerHandshakeTranscriptV1& transcript,
     const std::span<const std::uint8_t> signature_der_low_s) {
-    if (android_subject_public_key_info_der.empty() ||
-        signature_der_low_s.empty() ||
-        signature_der_low_s.size() > kMaximumP256DerSignatureBytes) {
-        return {false, {}};
-    }
-
-    HostIdentityBytesResult fingerprint = sha256(
+    return verify_android_typed_identity_signature(
         android_subject_public_key_info_der,
-        "hash_android_peer_handshake_identity_spki");
-    if (!fingerprint.succeeded() ||
-        fingerprint.bytes.size() != kSha256Bytes) {
-        return {false, fingerprint.error.has_error()
-            ? std::move(fingerprint.error)
-            : policy_error(
-                HostIdentityErrorCode::sha256_failed,
-                "validate_android_peer_handshake_identity_fingerprint")};
-    }
-    const auto& expected =
-        transcript.fields().android_identity_spki_sha256;
-    if (!std::equal(
-            fingerprint.bytes.begin(), fingerprint.bytes.end(),
-            expected.begin(),
-            [](const std::uint8_t left, const std::byte right) {
-                return left == std::to_integer<std::uint8_t>(right);
-            })) {
-        return {false, {}};
-    }
+        transcript.fields().android_identity_spki_sha256,
+        transcript.transcript_sha256(),
+        signature_der_low_s);
+}
 
-    std::array<std::uint8_t, kSha256Bytes> transcript_digest{};
-    std::transform(
-        transcript.transcript_sha256().begin(),
-        transcript.transcript_sha256().end(),
-        transcript_digest.begin(),
-        [](const std::byte value) {
-            return std::to_integer<std::uint8_t>(value);
-        });
-    HostIdentityError verification_error =
-        verify_canonical_p256_signature_for_digest(
-            android_subject_public_key_info_der,
-            transcript_digest,
-            signature_der_low_s);
-    if (!verification_error.has_error()) return {true, {}};
-
-    // Malformed peer keys/signatures and an ordinary signature mismatch are
-    // authentication failures, not local platform failures.  Preserve only
-    // genuine provider failures as diagnostics for the coordinator.
-    if (verification_error.code ==
-            HostIdentityErrorCode::public_key_format_rejected ||
-        verification_error.code ==
-            HostIdentityErrorCode::signature_format_rejected ||
-        (verification_error.code == HostIdentityErrorCode::signature_failed &&
-         (verification_error.native_domain ==
-              HostIdentityNativeStatusDomain::none ||
-          verification_error.operation ==
-              "import_peer_handshake_signature_verifier"))) {
-        return {false, {}};
-    }
-    return {false, std::move(verification_error)};
+HostIdentityVerificationResult
+verify_android_pair_generation_challenge_identity_signature_v1(
+    const std::span<const std::uint8_t>
+        android_subject_public_key_info_der,
+    const CanonicalPairGenerationChallengeRequestV1& challenge_request,
+    const std::span<const std::uint8_t> signature_der_low_s) {
+    return verify_android_typed_identity_signature(
+        android_subject_public_key_info_der,
+        challenge_request.fields().android_identity_spki_sha256,
+        challenge_request.payload_sha256(),
+        signature_der_low_s);
 }
 
 }  // namespace vfdual

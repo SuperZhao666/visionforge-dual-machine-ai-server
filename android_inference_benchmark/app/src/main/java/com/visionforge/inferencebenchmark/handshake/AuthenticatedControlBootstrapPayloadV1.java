@@ -59,6 +59,15 @@ public final class AuthenticatedControlBootstrapPayloadV1 {
         private ServerChallengeField() {}
     }
 
+    public static final class PairGenerationCredentialField {
+        public static final int GENERATION = 0;
+        public static final int CONNECTION_ID = 1;
+        public static final int TRANSCRIPT_PROPOSAL_SHA256 = 2;
+        public static final int COMPACT_CREDENTIAL = 3;
+
+        private PairGenerationCredentialField() {}
+    }
+
     public static final class AndroidHandshakeConfirmationField {
         public static final int TRANSCRIPT_SIGNATURE_DER = 0;
         public static final int ANDROID_FINISHED = 1;
@@ -319,6 +328,9 @@ public final class AuthenticatedControlBootstrapPayloadV1 {
             exact(32, Semantic.NONZERO_BYTES)
     };
     private static final FieldRule[] CREDENTIAL_SCHEMA = new FieldRule[] {
+            exact(8, Semantic.POSITIVE_U64),
+            exact(8, Semantic.POSITIVE_U64),
+            exact(32, Semantic.NONZERO_BYTES),
             bounded(1, MAXIMUM_CREDENTIAL_BYTES, Semantic.COMPACT_JWT)
     };
     private static final FieldRule[] ANDROID_HANDSHAKE_CONFIRMATION_SCHEMA =

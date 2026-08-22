@@ -120,7 +120,11 @@ using Status = vfdual::ControlBootstrapPayloadStatusV1;
                 ascii("11111111111111111111111111111111"),
                 u64(1'756'000'000U), filled(32U, 0xa5U)};
         case Message::pair_generation_credential:
-            return {ascii("eyJhbGciOiJSUzI1NiJ9.e30.c2ln")};
+            return {
+                u64(7U),
+                u64(0x0102'0304'0506'0708ULL),
+                filled(32U, 0x99U),
+                ascii("eyJhbGciOiJSUzI1NiJ9.e30.c2ln")};
         case Message::android_handshake_confirmation:
             return {signature(), filled(32U, 0x77U)};
         case Message::host_finished:
@@ -214,6 +218,31 @@ void test_server_challenge_fixed_cross_language_vector() {
         "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"));
 }
 
+void test_pair_generation_credential_fixed_cross_language_vector() {
+    const auto values = valid_values(Message::pair_generation_credential);
+    const auto encoded = vfdual::encode_control_bootstrap_payload_v1(
+        Message::pair_generation_credential, views(values));
+    CHECK(encoded.status == Status::encoded);
+    CHECK(encoded.payload == hex(
+        "00000000080000000000000007"
+        "01000000080102030405060708"
+        "0200000020"
+        "99999999999999999999999999999999"
+        "99999999999999999999999999999999"
+        "030000001d"
+        "65794a68624763694f694a53557a49314e694a392e6533302e63326c6e"));
+    const auto parsed = vfdual::parse_control_bootstrap_payload_v1(
+        Message::pair_generation_credential, encoded.payload);
+    CHECK(parsed.status == Status::parsed);
+    CHECK(vfdual::read_control_bootstrap_u64_be_v1(
+        parsed.payload.field(static_cast<std::uint8_t>(
+            vfdual::PairGenerationCredentialFieldTagV1::generation))) == 7U);
+    CHECK(vfdual::read_control_bootstrap_u64_be_v1(
+        parsed.payload.field(static_cast<std::uint8_t>(
+            vfdual::PairGenerationCredentialFieldTagV1::connection_id))) ==
+        0x0102'0304'0506'0708ULL);
+}
+
 void test_parser_rejects_tag_length_value_and_trailing_confusion() {
     const auto values = valid_values(Message::server_challenge);
     const auto encoded = vfdual::encode_control_bootstrap_payload_v1(
@@ -292,7 +321,8 @@ void test_credential_bound_is_exact_and_jwt_shaped() {
         vfdual::kControlBootstrapPayloadMaximumCredentialBytesV1 - 4U,
         'b');
     maximum.append(".c");
-    auto values = std::vector<std::vector<std::byte>>{ascii(maximum)};
+    auto values = valid_values(Message::pair_generation_credential);
+    values[3U] = ascii(maximum);
     const auto encoded = vfdual::encode_control_bootstrap_payload_v1(
         Message::pair_generation_credential, views(values));
     CHECK(encoded.status == Status::encoded);
@@ -300,14 +330,37 @@ void test_credential_bound_is_exact_and_jwt_shaped() {
         Message::pair_generation_credential, encoded.payload).status ==
         Status::parsed);
     maximum.insert(maximum.begin(), 'a');
-    values = {ascii(maximum)};
+    values = valid_values(Message::pair_generation_credential);
+    values[3U] = ascii(maximum);
     CHECK(vfdual::encode_control_bootstrap_payload_v1(
         Message::pair_generation_credential, views(values)).status ==
         Status::invalid_field_length);
-    values = {ascii("header.payload.")};
+    values = valid_values(Message::pair_generation_credential);
+    values[3U] = ascii("header.payload.");
     CHECK(vfdual::encode_control_bootstrap_payload_v1(
         Message::pair_generation_credential, views(values)).status ==
         Status::invalid_field_value);
+
+    values = valid_values(Message::pair_generation_credential);
+    values[0U] = u64(0U);
+    auto rejected = vfdual::encode_control_bootstrap_payload_v1(
+        Message::pair_generation_credential, views(values));
+    CHECK(rejected.status == Status::invalid_field_value);
+    CHECK(rejected.field_tag == 0U);
+
+    values = valid_values(Message::pair_generation_credential);
+    values[1U].front() = std::byte{0x80U};
+    rejected = vfdual::encode_control_bootstrap_payload_v1(
+        Message::pair_generation_credential, views(values));
+    CHECK(rejected.status == Status::invalid_field_value);
+    CHECK(rejected.field_tag == 1U);
+
+    values = valid_values(Message::pair_generation_credential);
+    values[2U] = filled(32U, 0U);
+    rejected = vfdual::encode_control_bootstrap_payload_v1(
+        Message::pair_generation_credential, views(values));
+    CHECK(rejected.status == Status::invalid_field_value);
+    CHECK(rejected.field_tag == 2U);
 }
 
 }  // namespace
@@ -315,6 +368,7 @@ void test_credential_bound_is_exact_and_jwt_shaped() {
 int main() {
     test_every_message_round_trips_with_exact_schema();
     test_server_challenge_fixed_cross_language_vector();
+    test_pair_generation_credential_fixed_cross_language_vector();
     test_parser_rejects_tag_length_value_and_trailing_confusion();
     test_encoder_rejects_noncanonical_and_cross_field_values();
     test_credential_bound_is_exact_and_jwt_shaped();

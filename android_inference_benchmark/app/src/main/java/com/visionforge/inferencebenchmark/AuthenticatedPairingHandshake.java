@@ -82,20 +82,41 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
     static final class AuthorizedGeneration {
         final long generation;
         final long connectionId;
+        private byte[] transcriptProposalSha256;
         final String credentialToken;
 
         AuthorizedGeneration(
                 long generation,
                 long connectionId,
+                byte[] transcriptProposalSha256,
                 String credentialToken) {
             if (generation <= 0L || connectionId <= 0L
+                    || transcriptProposalSha256 == null
+                    || transcriptProposalSha256.length != 32
+                    || allZero(transcriptProposalSha256)
                     || credentialToken == null || credentialToken.isEmpty()) {
                 throw new IllegalArgumentException(
                         "authorized pair generation is invalid");
             }
             this.generation = generation;
             this.connectionId = connectionId;
+            this.transcriptProposalSha256 = transcriptProposalSha256.clone();
             this.credentialToken = credentialToken;
+        }
+
+        byte[] takeTranscriptProposalSha256() {
+            if (transcriptProposalSha256 == null) {
+                throw new IllegalStateException(
+                        "authorized pair generation was already consumed");
+            }
+            byte[] result = transcriptProposalSha256;
+            transcriptProposalSha256 = null;
+            return result;
+        }
+
+        void close() {
+            clear(transcriptProposalSha256);
+            transcriptProposalSha256 = null;
         }
     }
 
@@ -397,6 +418,7 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
             throws PairingException {
         byte[] hostSignature = null;
         byte[] androidSignature = null;
+        byte[] transcriptProposalSha256 = null;
         try {
             ParsedPayload payload = parseInbound(
                     encodedRecord, MessageType.HOST_FINAL_PROOF);
@@ -450,8 +472,13 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
             if (authorizedGeneration.connectionId != connectionId) {
                 throw failure(Reason.SERVER_AUTHORIZATION_REJECTED);
             }
+            transcriptProposalSha256 =
+                    authorizedGeneration.takeTranscriptProposalSha256();
             byte[] payloadBytes = AuthenticatedControlBootstrapPayloadV1.encode(
                     MessageType.PAIR_GENERATION_CREDENTIAL,
+                    u64(authorizedGeneration.generation),
+                    u64(authorizedGeneration.connectionId),
+                    transcriptProposalSha256,
                     ascii(authorizedGeneration.credentialToken));
             return finishExchange(
                     MessageType.HOST_FINAL_PROOF,
@@ -462,6 +489,7 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
         } finally {
             clear(hostSignature);
             clear(androidSignature);
+            clear(transcriptProposalSha256);
         }
     }
 
@@ -496,6 +524,7 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
                     MessageType.ANDROID_HANDSHAKE_CONFIRMATION,
                     androidTranscriptSignature,
                     androidFinished);
+            authorizedGeneration.close();
             authorizedGeneration = null;
             return finishExchange(
                     MessageType.HOST_HANDSHAKE_SIGNATURE,
@@ -639,6 +668,7 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
         challengeRequest = null;
         serverChallenge = null;
         proposal = null;
+        if (authorizedGeneration != null) authorizedGeneration.close();
         authorizedGeneration = null;
         hostRuntimeVersion = null;
     }
@@ -767,6 +797,7 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
             return new AuthorizedGeneration(
                     verified.generation(),
                     verified.connectionId(),
+                    proposal.proposalSha256(),
                     response.credentialToken);
         }
     }

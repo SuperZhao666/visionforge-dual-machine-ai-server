@@ -85,6 +85,9 @@ constexpr std::array kServerChallengeRules{
 };
 
 constexpr std::array kCredentialRules{
+    exact(8U, FieldSemantic::positive_u64),
+    exact(8U, FieldSemantic::positive_u64),
+    exact(32U, FieldSemantic::nonzero_bytes),
     bounded(
         1U,
         kControlBootstrapPayloadMaximumCredentialBytesV1,
