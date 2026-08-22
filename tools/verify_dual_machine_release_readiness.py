@@ -2887,12 +2887,53 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
             ),
         ),
         SourceContract(
+            name="authenticated-control-bootstrap-payload-v1-cpp-schema",
+            path=(
+                root
+                / "dual_machine_runtime"
+                / "shared"
+                / "include"
+                / "vfdual"
+                / "authenticated_control_bootstrap_payload_v1.hpp"
+            ),
+            required=(
+                "kControlBootstrapPayloadMaximumFieldsV1 = 12U",
+                "kControlBootstrapPayloadMaximumCredentialBytesV1 = 8'192U",
+                "AndroidChallengeRequestFieldTagV1",
+                "android_challenge_signature_der",
+                "encode_control_bootstrap_payload_v1",
+                "parse_control_bootstrap_payload_v1",
+                "rebuild the existing pair-generation/transcript objects",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-payload-v1-cpp-regressions",
+            path=(
+                root
+                / "dual_machine_runtime"
+                / "tests"
+                / "authenticated_control_bootstrap_payload_v1_tests.cpp"
+            ),
+            required=(
+                "test_every_message_round_trips_with_exact_schema",
+                "test_server_challenge_fixed_cross_language_vector",
+                "test_parser_rejects_tag_length_value_and_trailing_confusion",
+                "test_credential_bound_is_exact_and_jwt_shaped",
+                "68aa6f00",
+                "Status::unexpected_field_tag",
+                "Status::trailing_data",
+            ),
+        ),
+        SourceContract(
             name="authenticated-control-bootstrap-v1-cmake-gate",
             path=root / "dual_machine_runtime" / "CMakeLists.txt",
             required=(
                 "shared/src/authenticated_control_bootstrap_record_v1.cpp",
+                "shared/src/authenticated_control_bootstrap_payload_v1.cpp",
                 "vfdual_authenticated_control_bootstrap_record_v1_tests",
                 "NAME vfdual_authenticated_control_bootstrap_record_v1_tests",
+                "vfdual_authenticated_control_bootstrap_payload_v1_tests",
+                "NAME vfdual_authenticated_control_bootstrap_payload_v1_tests",
             ),
         ),
         SourceContract(
@@ -2943,6 +2984,57 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
                 "DIRECTION_MISMATCH",
                 "PAYLOAD_TOO_LARGE",
                 "CLOSED",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-payload-v1-android-schema",
+            path=(
+                root
+                / "android_inference_benchmark"
+                / "app"
+                / "src"
+                / "main"
+                / "java"
+                / "com"
+                / "visionforge"
+                / "inferencebenchmark"
+                / "handshake"
+                / "AuthenticatedControlBootstrapPayloadV1.java"
+            ),
+            required=(
+                "public static final int MAXIMUM_FIELDS = 12",
+                "public static final int MAXIMUM_CREDENTIAL_BYTES = 8192",
+                "class AndroidChallengeRequestField",
+                "ANDROID_CHALLENGE_SIGNATURE_DER",
+                "public static byte[] encode",
+                "public static ParsedPayload parse",
+                "rebuild the existing typed cryptographic objects",
+            ),
+        ),
+        SourceContract(
+            name="authenticated-control-bootstrap-payload-v1-android-regressions",
+            path=(
+                root
+                / "android_inference_benchmark"
+                / "app"
+                / "src"
+                / "test"
+                / "java"
+                / "com"
+                / "visionforge"
+                / "inferencebenchmark"
+                / "handshake"
+                / "AuthenticatedControlBootstrapPayloadV1SelfTest.java"
+            ),
+            required=(
+                "AuthenticatedControlBootstrapPayloadV1SelfTest: PASS",
+                "everyMessageRoundTripsWithExactSchema",
+                "serverChallengeMatchesCppVectorAndOwnsCopies",
+                "rejectsTagLengthValueAndTrailingConfusion",
+                "credentialBoundIsExactAndJwtShaped",
+                "68aa6f00",
+                "UNEXPECTED_FIELD_TAG",
+                "TRAILING_DATA",
             ),
         ),
         SourceContract(
@@ -3001,6 +3093,7 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
             required=(
                 "compileAuthenticatedControlBootstrapV1SelfTest",
                 "verifyAuthenticatedControlBootstrapV1",
+                "verifyAuthenticatedControlBootstrapPayloadV1",
                 "verifyControlBootstrapSequenceV1",
                 "tasks.named('check')",
                 "preReleaseBuild",

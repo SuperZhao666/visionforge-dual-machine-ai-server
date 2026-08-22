@@ -1793,8 +1793,10 @@ def authenticatedControlBootstrapV1SelfTestClasses =
                 'authenticated-control-bootstrap-v1-self-test/classes')
 tasks.register('compileAuthenticatedControlBootstrapV1SelfTest', JavaCompile) {
     source = files(
+            'src/main/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapPayloadV1.java',
             'src/main/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1.java',
             'src/main/java/com/visionforge/inferencebenchmark/handshake/ControlBootstrapSequenceV1.java',
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapPayloadV1SelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1SelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/handshake/ControlBootstrapSequenceV1SelfTest.java')
     classpath = files()
@@ -1813,6 +1815,15 @@ tasks.register('verifyAuthenticatedControlBootstrapV1', JavaExec) {
     mainClass =
             'com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1SelfTest'
 }
+tasks.register('verifyAuthenticatedControlBootstrapPayloadV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs all strict VFB1 payload schemas, mutation bounds and C++ interop vectors.'
+    dependsOn(tasks.named('compileAuthenticatedControlBootstrapV1SelfTest'))
+    classpath = files(authenticatedControlBootstrapV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapPayloadV1SelfTest'
+}
 tasks.register('verifyControlBootstrapSequenceV1', JavaExec) {
     group = 'verification'
     description =
@@ -1825,12 +1836,14 @@ tasks.register('verifyControlBootstrapSequenceV1', JavaExec) {
 tasks.named('check').configure {
     dependsOn(
             tasks.named('verifyAuthenticatedControlBootstrapV1'),
+            tasks.named('verifyAuthenticatedControlBootstrapPayloadV1'),
             tasks.named('verifyControlBootstrapSequenceV1'))
 }
 tasks.configureEach { task ->
     if (task.name == 'preReleaseBuild') {
         task.dependsOn(
                 tasks.named('verifyAuthenticatedControlBootstrapV1'),
+                tasks.named('verifyAuthenticatedControlBootstrapPayloadV1'),
                 tasks.named('verifyControlBootstrapSequenceV1'))
     }
 }
