@@ -1669,6 +1669,18 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
             this.permanent = permanent;
         }
 
+        @Override
+        public PairGenerationChallengeResponse createPairGenerationChallenge(
+                PairGenerationChallengeRequest request) {
+            throw new AssertionError("unexpected pair-generation challenge");
+        }
+
+        @Override
+        public PairGenerationCredentialResponse issuePairGenerationCredential(
+                PairGenerationCredentialRequest request) {
+            throw new AssertionError("unexpected pair-generation credential");
+        }
+
         void resetCommittedStartGeneration(long remainingBeforeStart) {
             retiredCancellationRequest = committedCancellationRequest;
             retiredCancellationResponse = committedCancellationResponse;

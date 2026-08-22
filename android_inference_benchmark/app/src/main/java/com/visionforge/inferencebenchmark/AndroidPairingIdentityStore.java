@@ -17,6 +17,7 @@ import java.security.spec.ECGenParameterSpec;
 import java.util.Arrays;
 
 import com.visionforge.inferencebenchmark.handshake.HandshakeTranscriptV1;
+import com.visionforge.inferencebenchmark.handshake.PairGenerationPopV1;
 
 /**
  * AndroidKeyStore-backed P-256 ECDSA pairing identity for the dual-machine
@@ -183,6 +184,86 @@ public final class AndroidPairingIdentityStore {
                 clear(transcriptAndroidHash);
                 clear(transcriptHostHash);
                 clear(canonicalTranscript);
+            }
+        }
+    }
+
+    /** Signs only a validated, active-pair generation challenge request. */
+    byte[] signPairGenerationChallenge(
+            PairGenerationPopV1.ChallengeRequest request,
+            DualMachineEntitlementRecord expectedPair)
+            throws GeneralSecurityException {
+        if (request == null) {
+            throw new IllegalArgumentException(
+                    "pair-generation challenge request is required");
+        }
+        return signPairGenerationPayload(
+                request.canonicalBytes(), request.fields(), expectedPair);
+    }
+
+    /** Signs only a final proof derived from the same active pair context. */
+    byte[] signPairGenerationFinalProof(
+            PairGenerationPopV1.FinalCredentialProof proof,
+            DualMachineEntitlementRecord expectedPair)
+            throws GeneralSecurityException {
+        if (proof == null) {
+            throw new IllegalArgumentException(
+                    "pair-generation final proof is required");
+        }
+        return signPairGenerationPayload(
+                proof.canonicalBytes(),
+                proof.challengeRequest().fields(),
+                expectedPair);
+    }
+
+    private byte[] signPairGenerationPayload(
+            byte[] canonicalPayload,
+            PairGenerationPopV1.ChallengeFields fields,
+            DualMachineEntitlementRecord expectedPair)
+            throws GeneralSecurityException {
+        synchronized (KEY_STORE_LOCK) {
+            if (canonicalPayload == null || canonicalPayload.length == 0
+                    || fields == null || expectedPair == null
+                    || expectedPair.revoked
+                    || !expectedPair.hasActivePairSecurityBinding()
+                    || !alias.equals(expectedPair.androidIdentityAlias)
+                    || !expectedPair.entitlementId.equals(fields.entitlementId)
+                    || !expectedPair.pairId.equals(fields.pairId)
+                    || !expectedPair.bindingId.equals(fields.bindingId)
+                    || expectedPair.bindingRevision != fields.bindingRevision
+                    || expectedPair.revocationVersion != fields.revocationVersion
+                    || !expectedPair.hostKeySha256.equals(
+                    fields.hostIdentitySpkiSha256)
+                    || !expectedPair.androidKeySha256.equals(
+                    fields.androidIdentitySpkiSha256)) {
+                clear(canonicalPayload);
+                throw new GeneralSecurityException(
+                        "pair-generation proof is not bound to this identity");
+            }
+            byte[] publicKeySpki = null;
+            byte[] signature = null;
+            boolean transferred = false;
+            try {
+                publicKeySpki = publicKeySpkiDer();
+                String actualFingerprint =
+                        DualMachinePairingIdentityCodec.fingerprintHex(
+                                publicKeySpki);
+                if (!expectedPair.androidKeySha256.equals(actualFingerprint)) {
+                    throw new GeneralSecurityException(
+                            "pair-generation Android identity changed");
+                }
+                signature = sign(canonicalPayload);
+                if (!DualMachinePairingIdentityCodec.verify(
+                        publicKeySpki, canonicalPayload, signature)) {
+                    throw new GeneralSecurityException(
+                            "pair-generation signature self-check failed");
+                }
+                transferred = true;
+                return signature;
+            } finally {
+                if (!transferred) clear(signature);
+                clear(publicKeySpki);
+                clear(canonicalPayload);
             }
         }
     }

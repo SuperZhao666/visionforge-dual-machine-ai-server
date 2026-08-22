@@ -2068,6 +2068,35 @@ HostCngDeviceIdentity::create_peer_handshake_transcript_signature(
     return der_signature;
 }
 
+HostIdentityBytesResult
+HostCngDeviceIdentity::create_pair_generation_pop_signature(
+    const std::array<std::uint8_t, 32U>& payload_sha256) {
+    if (key_ == nullptr || !contains_nonzero(payload_sha256)) {
+        return {{}, policy_error(
+            HostIdentityErrorCode::signature_failed,
+            "validate_pair_generation_pop_digest")};
+    }
+
+    HostIdentityBytesResult raw_signature =
+        key_->sign_sha256_digest(payload_sha256);
+    if (!raw_signature.succeeded()) {
+        return {std::move(raw_signature.bytes), std::move(raw_signature.error)};
+    }
+    HostIdentityBytesResult der_signature =
+        p1363_to_canonical_der(raw_signature.bytes);
+    if (!der_signature.succeeded()) return der_signature;
+
+    HostIdentityError verification_error =
+        verify_canonical_p256_signature_for_digest(
+            public_identity_.subject_public_key_info_der,
+            payload_sha256,
+            der_signature.bytes);
+    if (verification_error.has_error()) {
+        return {{}, std::move(verification_error)};
+    }
+    return der_signature;
+}
+
 HostIdentityVerificationResult verify_host_identity_proof_of_possession(
     const HostPublicIdentity& public_identity,
     const HostIdentityChallenge& challenge,

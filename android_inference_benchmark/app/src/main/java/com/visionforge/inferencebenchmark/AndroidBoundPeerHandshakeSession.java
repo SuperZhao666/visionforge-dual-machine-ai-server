@@ -389,6 +389,7 @@ public final class AndroidBoundPeerHandshakeSession implements AutoCloseable {
             DualMachineEntitlementRecord expectedPair,
             HandshakeTranscriptV1 transcript) throws GeneralSecurityException {
         if (expectedPair.revoked
+                || !expectedPair.hasActivePairSecurityBinding()
                 || expectedPair.pairId == null
                 || expectedPair.pairId.isEmpty()
                 || transcript.pairId().isEmpty()

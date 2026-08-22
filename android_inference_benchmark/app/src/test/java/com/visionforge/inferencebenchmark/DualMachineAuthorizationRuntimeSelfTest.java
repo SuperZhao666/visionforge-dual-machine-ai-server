@@ -1387,6 +1387,9 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
             return new ActivationResponse(
                     ENTITLEMENT_ID,
                     activationRequest.pairId,
+                    "89aabbccddeeff001122334455667788",
+                    1L,
+                    "active",
                     1L,
                     86_400L,
                     86_400L,
@@ -1408,6 +1411,18 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
                     86_400L,
                     0L,
                     "");
+        }
+
+        @Override
+        public PairGenerationChallengeResponse createPairGenerationChallenge(
+                PairGenerationChallengeRequest request) {
+            throw new AssertionError("unexpected pair-generation challenge");
+        }
+
+        @Override
+        public PairGenerationCredentialResponse issuePairGenerationCredential(
+                PairGenerationCredentialRequest request) {
+            throw new AssertionError("unexpected pair-generation credential");
         }
 
         @Override

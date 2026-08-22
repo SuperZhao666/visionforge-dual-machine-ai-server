@@ -1,4 +1,5 @@
 #include "vfdual/host_peer_handshake_transcript_signer_v1.hpp"
+#include "vfdual/host_pair_generation_pop_signer_v1.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -63,6 +64,14 @@ static_assert(std::is_move_constructible_v<
     vfdual::HostPeerHandshakeSigningInputV1>);
 static_assert(std::is_nothrow_copy_constructible_v<
     vfdual::PeerHandshakeError>);
+static_assert(!std::is_copy_constructible_v<
+    vfdual::HostSignedPairGenerationChallengeV1>);
+static_assert(!std::is_move_constructible_v<
+    vfdual::HostSignedPairGenerationChallengeV1>);
+static_assert(!std::is_copy_constructible_v<
+    vfdual::HostSignedPairGenerationFinalProofV1>);
+static_assert(!std::is_move_constructible_v<
+    vfdual::HostSignedPairGenerationFinalProofV1>);
 
 namespace {
 
@@ -919,6 +928,166 @@ void test_provider_failures_and_invalid_provider_signatures_fail_closed() {
     }
 }
 
+[[nodiscard]] std::string repeated_hex(
+    const std::uint8_t value, const std::size_t count) {
+    constexpr std::string_view alphabet{"0123456789abcdef"};
+    std::string result;
+    result.reserve(count * 2U);
+    for (std::size_t index{}; index < count; ++index) {
+        result.push_back(alphabet[value >> 4U]);
+        result.push_back(alphabet[value & 0x0fU]);
+    }
+    return result;
+}
+
+[[nodiscard]] vfdual::HostPairGenerationChallengeSigningInputV1
+valid_pair_pop_input(const vfdual::PeerHandshakeSha256& android_identity) {
+    return {
+        .request_id = repeated_hex(0x01U, 16U),
+        .allocation_request_id = repeated_hex(0x02U, 16U),
+        .entitlement_id = repeated_hex(0x03U, 16U),
+        .pair_id = repeated_hex(0x04U, 16U),
+        .binding_id = repeated_hex(0x05U, 16U),
+        .binding_revision = 7U,
+        .revocation_version = 9U,
+        .android_identity_spki_sha256 = android_identity,
+    };
+}
+
+[[nodiscard]] vfdual::PairGenerationProposalResult build_pair_pop_proposal(
+    const vfdual::HostPublicIdentity& identity,
+    const vfdual::PeerHandshakeSha256& android_identity,
+    const vfdual::PeerHandshakeNonce& host_nonce,
+    const vfdual::PeerHandshakeNonce& android_nonce,
+    const std::uint64_t connection_id) {
+    vfdual::PairGenerationProposalFields fields;
+    fields.host_identity_spki_sha256 =
+        identity_hash_as_bytes(identity.public_key_sha256);
+    fields.android_identity_spki_sha256 = android_identity;
+    fields.host_ephemeral_public_key = fresh_public_key();
+    fields.android_ephemeral_public_key = fresh_public_key();
+    fields.host_nonce = host_nonce;
+    fields.android_nonce = android_nonce;
+    fields.connection_id = connection_id;
+    fields.transport_kind = vfdual::PeerHandshakeTransportKind::cat6;
+    fields.host_ipv4 = {
+        std::byte{192U}, std::byte{168U},
+        std::byte{55U}, std::byte{1U}};
+    fields.android_ipv4 = {
+        std::byte{192U}, std::byte{168U},
+        std::byte{55U}, std::byte{2U}};
+    fields.video_port = 45678U;
+    fields.control_port = 45679U;
+    fields.pair_id = repeated_hex(0x04U, 16U);
+    fields.host_runtime_version = "17.8.47";
+    fields.android_runtime_version = "17.8.47";
+    return vfdual::build_pair_generation_proposal_v1(fields);
+}
+
+void test_pair_generation_pop_signer_binds_authority_and_signs_only_typed_pop() {
+    FakeKeyStore adapter;
+    auto identity = open_development_identity(adapter);
+    vfdual::HostPairGenerationPopSignerV1 signer(*identity);
+    const vfdual::PeerHandshakeSha256 android_identity =
+        filled_bytes<32U>(0xa5U);
+
+    auto invalid_input = valid_pair_pop_input(android_identity);
+    invalid_input.request_id.assign(32U, '0');
+    auto invalid = signer.build_and_sign_challenge(
+        std::move(invalid_input));
+    CHECK(!invalid.succeeded());
+    CHECK(invalid.protocol_error.code ==
+        vfdual::PairGenerationPopErrorCode::identifier_invalid);
+    CHECK(adapter.stats->sign_calls == 0U);
+
+    auto challenge = signer.build_and_sign_challenge(
+        valid_pair_pop_input(android_identity));
+    CHECK(challenge.succeeded());
+    CHECK(adapter.stats->sign_calls == 1U);
+    CHECK(challenge.signed_challenge->request().fields().
+        host_identity_spki_sha256 ==
+        identity_hash_as_bytes(identity->public_identity().public_key_sha256));
+    CHECK(challenge.signed_challenge->request().fields().
+        android_identity_spki_sha256 == android_identity);
+    CHECK(verify_transcript_signature(
+        identity->public_identity(),
+        challenge.signed_challenge->request().payload_sha256(),
+        challenge.signed_challenge->signature_der_low_s()));
+
+    const vfdual::PeerHandshakeNonce host_nonce =
+        filled_bytes<32U>(0x31U);
+    const vfdual::PeerHandshakeNonce android_nonce =
+        filled_bytes<32U>(0x42U);
+    const std::array<std::byte, 32U> server_nonce =
+        filled_bytes<32U>(0x53U);
+    const std::string challenge_id = repeated_hex(0x06U, 16U);
+    const auto connection = vfdual::derive_pair_generation_connection_id_v1(
+        server_nonce,
+        challenge_id,
+        host_nonce,
+        android_nonce,
+        challenge.signed_challenge->request().fields().pair_id,
+        challenge.signed_challenge->request().fields().
+            host_identity_spki_sha256,
+        android_identity);
+    CHECK(connection.succeeded());
+
+    auto mismatched_proposal = build_pair_pop_proposal(
+        identity->public_identity(),
+        android_identity,
+        host_nonce,
+        android_nonce,
+        connection.connection_id + 1U);
+    CHECK(mismatched_proposal.succeeded());
+    auto mismatch = signer.build_and_sign_final_credential_proof(
+        *challenge.signed_challenge,
+        challenge_id,
+        0x1234'5678ULL,
+        server_nonce,
+        *mismatched_proposal.proposal);
+    CHECK(!mismatch.succeeded());
+    CHECK(mismatch.protocol_error.code ==
+        vfdual::PairGenerationPopErrorCode::connection_id_mismatch);
+    CHECK(adapter.stats->sign_calls == 1U);
+
+    auto proposal = build_pair_pop_proposal(
+        identity->public_identity(),
+        android_identity,
+        host_nonce,
+        android_nonce,
+        connection.connection_id);
+    CHECK(proposal.succeeded());
+    auto final_proof = signer.build_and_sign_final_credential_proof(
+        *challenge.signed_challenge,
+        challenge_id,
+        0x1234'5678ULL,
+        server_nonce,
+        *proposal.proposal);
+    CHECK(final_proof.succeeded());
+    CHECK(adapter.stats->sign_calls == 2U);
+    CHECK(final_proof.signed_proof->proof().connection_id() ==
+        connection.connection_id);
+    CHECK(final_proof.signed_proof->proof().transcript_proposal_sha256() ==
+        proposal.proposal->proposal_sha256());
+    CHECK(verify_transcript_signature(
+        identity->public_identity(),
+        final_proof.signed_proof->proof().payload_sha256(),
+        final_proof.signed_proof->signature_der_low_s()));
+}
+
+void test_pair_generation_pop_signer_rejects_corrupt_provider_signature() {
+    FakeKeyStore adapter(FakeSignBehavior::corrupt_signature);
+    auto identity = open_development_identity(adapter);
+    vfdual::HostPairGenerationPopSignerV1 signer(*identity);
+    const auto result = signer.build_and_sign_challenge(
+        valid_pair_pop_input(filled_bytes<32U>(0xa5U)));
+    CHECK(!result.succeeded());
+    CHECK(result.signed_challenge == nullptr);
+    CHECK(result.identity_error.code ==
+        vfdual::HostIdentityErrorCode::signature_failed);
+    CHECK(adapter.stats->sign_calls == 1U);
+}
+
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     CHECK(input.good());
@@ -953,6 +1122,21 @@ void test_public_api_and_cmake_remain_restricted_foundations() {
     CHECK(header.find("#include <mutex>") != std::string::npos);
     CHECK(header.find("std::mutex host_ephemeral_mutex_") !=
         std::string::npos);
+
+    const std::string pair_pop_header = read_text(
+        root /
+        "host/windows/security/include/vfdual/host_pair_generation_pop_signer_v1.hpp");
+    for (const std::string_view forbidden : {
+            "sign_bytes",
+            "sign_digest",
+            "sign_sha256_digest",
+            "host_identity_spki_sha256{}"}) {
+        CHECK(pair_pop_header.find(forbidden) == std::string::npos);
+    }
+    CHECK(pair_pop_header.find("build_and_sign_challenge") !=
+        std::string::npos);
+    CHECK(pair_pop_header.find(
+        "build_and_sign_final_credential_proof") != std::string::npos);
 
     const std::string source = read_text(
         root /
@@ -991,6 +1175,9 @@ void test_public_api_and_cmake_remain_restricted_foundations() {
     const std::string cmake = read_text(root / "CMakeLists.txt");
     CHECK(cmake.find(
         "add_library(vfdual_host_peer_handshake_transcript_signer_v1 STATIC") !=
+        std::string::npos);
+    CHECK(cmake.find(
+        "add_library(vfdual_host_pair_generation_pop_signer_v1 STATIC") !=
         std::string::npos);
     CHECK(cmake.find("formal_security_loader.cmake") !=
         std::string::npos);
@@ -1035,6 +1222,8 @@ int main() {
     test_concurrent_derivation_releases_ephemeral_owner_exactly_once();
     test_invalid_typed_inputs_fail_before_identity_signing();
     test_provider_failures_and_invalid_provider_signatures_fail_closed();
+    test_pair_generation_pop_signer_binds_authority_and_signs_only_typed_pop();
+    test_pair_generation_pop_signer_rejects_corrupt_provider_signature();
     test_public_api_and_cmake_remain_restricted_foundations();
     std::cout << "host peer handshake transcript signer v1 tests passed\n";
     return EXIT_SUCCESS;

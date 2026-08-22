@@ -454,6 +454,9 @@ final class AndroidBoundPeerHandshakeSessionInstrumentationProbe {
             return new DualMachineEntitlementRecord(
                     ENTITLEMENT_ID,
                     PAIR_ID,
+                    "89aabbccddeeff001122334455667788",
+                    3L,
+                    "active",
                     DualMachineEntitlementRecord.PROTOCOL_VERSION,
                     1L,
                     DualMachinePairingIdentityCodec.fingerprintHex(

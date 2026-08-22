@@ -754,6 +754,9 @@ public final class DualMachineCardAuthorizationCoordinatorSelfTest {
             return new ActivationResponse(
                     responseEntitlementId,
                     activationRequest.pairId,
+                    "89aabbccddeeff001122334455667788",
+                    1L,
+                    "active",
                     1L,
                     permanent || DualMachineUsageAuthorizationContract
                     .ACTIVATION_MODE_BIND_DEVICE.equals(mode)
@@ -827,6 +830,18 @@ public final class DualMachineCardAuthorizationCoordinatorSelfTest {
                     permanent ? "permanent" : authorizationKind,
                     permanent ? "permanent" : authorizationKind,
                     permanent);
+        }
+
+        @Override
+        public PairGenerationChallengeResponse createPairGenerationChallenge(
+                PairGenerationChallengeRequest request) {
+            throw new AssertionError("unexpected pair-generation challenge");
+        }
+
+        @Override
+        public PairGenerationCredentialResponse issuePairGenerationCredential(
+                PairGenerationCredentialRequest request) {
+            throw new AssertionError("unexpected pair-generation credential");
         }
 
         @Override

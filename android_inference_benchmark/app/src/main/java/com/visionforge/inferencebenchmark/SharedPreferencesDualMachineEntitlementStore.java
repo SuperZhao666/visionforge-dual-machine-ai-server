@@ -14,13 +14,18 @@ public final class SharedPreferencesDualMachineEntitlementStore
         implements DualMachineEntitlementStore {
     private static final String STORE =
             "visionforge_dual_machine_entitlement_v2";
-    private static final int SCHEMA_VERSION = 4;
+    private static final int SCHEMA_VERSION = 5;
     private static final int LEGACY_SCHEMA_VERSION = 2;
     private static final int REVOKED_SCHEMA_VERSION = 3;
+    private static final int AUTHORIZATION_SCHEMA_VERSION = 4;
     private static final String LEGACY_AUTHORIZATION_KIND = "legacy_balance";
     private static final String KEY_SCHEMA_VERSION = "schema_version";
     private static final String KEY_ENTITLEMENT_ID = "entitlement_id";
     private static final String KEY_PAIR_ID = "pair_id";
+    private static final String KEY_BINDING_ID = "binding_id";
+    private static final String KEY_BINDING_REVISION = "binding_revision";
+    private static final String KEY_PAIR_ASSURANCE_STATE =
+            "pair_assurance_state";
     private static final String KEY_PROTOCOL_VERSION = "protocol_version";
     private static final String KEY_REVOCATION_VERSION = "revocation_version";
     private static final String KEY_HOST_KEY_SHA256 = "host_key_sha256";
@@ -64,7 +69,8 @@ public final class SharedPreferencesDualMachineEntitlementStore
             int schemaVersion = preferences.getInt(KEY_SCHEMA_VERSION, -1);
             if (schemaVersion != SCHEMA_VERSION
                     && schemaVersion != LEGACY_SCHEMA_VERSION
-                    && schemaVersion != REVOKED_SCHEMA_VERSION) {
+                    && schemaVersion != REVOKED_SCHEMA_VERSION
+                    && schemaVersion != AUTHORIZATION_SCHEMA_VERSION) {
                 throw new SecurityException(
                         "dual-machine entitlement schema is unsupported");
             }
@@ -74,9 +80,13 @@ public final class SharedPreferencesDualMachineEntitlementStore
                         "dual-machine entitlement revocation marker is missing");
             }
             StoredAuthorization authorization = readAuthorization(schemaVersion);
+            StoredPairAuthority pairAuthority = readPairAuthority(schemaVersion);
             DualMachineEntitlementRecord record = new DualMachineEntitlementRecord(
                     preferences.getString(KEY_ENTITLEMENT_ID, ""),
                     preferences.getString(KEY_PAIR_ID, ""),
+                    pairAuthority.bindingId,
+                    pairAuthority.bindingRevision,
+                    pairAuthority.assuranceState,
                     preferences.getInt(KEY_PROTOCOL_VERSION, -1),
                     preferences.getLong(KEY_REVOCATION_VERSION, -1L),
                     preferences.getString(KEY_HOST_KEY_SHA256, ""),
@@ -107,6 +117,11 @@ public final class SharedPreferencesDualMachineEntitlementStore
                 .putInt(KEY_SCHEMA_VERSION, SCHEMA_VERSION)
                 .putString(KEY_ENTITLEMENT_ID, record.entitlementId)
                 .putString(KEY_PAIR_ID, record.pairId)
+                .putString(KEY_BINDING_ID, record.bindingId)
+                .putLong(KEY_BINDING_REVISION, record.bindingRevision)
+                .putString(
+                        KEY_PAIR_ASSURANCE_STATE,
+                        record.pairAssuranceState)
                 .putInt(KEY_PROTOCOL_VERSION, record.protocolVersion)
                 .putLong(KEY_REVOCATION_VERSION, record.revocationVersion)
                 .putString(KEY_HOST_KEY_SHA256, record.hostKeySha256)
@@ -169,6 +184,35 @@ public final class SharedPreferencesDualMachineEntitlementStore
                 authorizationKind, productKey, permanent);
     }
 
+    private StoredPairAuthority readPairAuthority(int schemaVersion) {
+        if (schemaVersion != SCHEMA_VERSION) {
+            return new StoredPairAuthority("", 0L, "legacy_blocked");
+        }
+        if (!preferences.contains(KEY_BINDING_ID)
+                || !preferences.contains(KEY_BINDING_REVISION)
+                || !preferences.contains(KEY_PAIR_ASSURANCE_STATE)) {
+            throw new SecurityException(
+                    "dual-machine pair authority is incomplete");
+        }
+        String bindingId = preferences.getString(KEY_BINDING_ID, "");
+        long bindingRevision = preferences.getLong(
+                KEY_BINDING_REVISION, 0L);
+        String assuranceState = preferences.getString(
+                KEY_PAIR_ASSURANCE_STATE, "");
+        boolean active = "active".equals(assuranceState);
+        boolean legacyBlocked = "legacy_blocked".equals(assuranceState);
+        if ((!active && !legacyBlocked)
+                || (active && (bindingId == null || bindingId.isEmpty()
+                || bindingRevision <= 0L))
+                || (legacyBlocked && ((bindingId != null
+                && !bindingId.isEmpty()) || bindingRevision != 0L))) {
+            throw new SecurityException(
+                    "dual-machine pair authority is invalid");
+        }
+        return new StoredPairAuthority(
+                bindingId, bindingRevision, assuranceState);
+    }
+
     private static final class StoredAuthorization {
         final String kind;
         final String productKey;
@@ -178,6 +222,21 @@ public final class SharedPreferencesDualMachineEntitlementStore
             this.kind = kind;
             this.productKey = productKey;
             this.permanent = permanent;
+        }
+    }
+
+    private static final class StoredPairAuthority {
+        final String bindingId;
+        final long bindingRevision;
+        final String assuranceState;
+
+        StoredPairAuthority(
+                String bindingId,
+                long bindingRevision,
+                String assuranceState) {
+            this.bindingId = bindingId;
+            this.bindingRevision = bindingRevision;
+            this.assuranceState = assuranceState;
         }
     }
 }
