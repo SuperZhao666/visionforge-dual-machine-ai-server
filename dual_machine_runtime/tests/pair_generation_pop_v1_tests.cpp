@@ -94,6 +94,7 @@ template <std::size_t Size>
     return nonce;
 }
 
+#if defined(_WIN32)
 [[nodiscard]] vfdual::PairGenerationProposalFields vector_proposal_fields(
     const std::uint64_t connection_id) {
     constexpr std::string_view host_public_hex{
@@ -263,14 +264,46 @@ void final_proof_rejects_caller_selected_connection_id() {
             vfdual::PairGenerationPopErrorCode::connection_id_mismatch,
         "caller-selected connection ID was accepted");
 }
+#else
+void unsupported_platform_fails_closed() {
+    const vfdual::PairGenerationChallengeFieldsV1 fields = vector_fields();
+    const vfdual::PairGenerationChallengeResultV1 request =
+        vfdual::build_pair_generation_challenge_request_v1(fields);
+    require(!request.succeeded(), "unsupported platform built a challenge");
+    require(
+        request.error.code ==
+            vfdual::PairGenerationPopErrorCode::crypto_unavailable,
+        "challenge did not report unavailable platform crypto");
+
+    std::array<std::byte, 32U> server_nonce{};
+    server_nonce.fill(std::byte{0x53U});
+    const vfdual::PairGenerationConnectionIdResultV1 connection =
+        vfdual::derive_pair_generation_connection_id_v1(
+            server_nonce,
+            repeated_hex(0x06U, 16U),
+            host_nonce(),
+            android_nonce(),
+            fields.pair_id,
+            fields.host_identity_spki_sha256,
+            fields.android_identity_spki_sha256);
+    require(
+        connection.error.code ==
+            vfdual::PairGenerationPopErrorCode::crypto_unavailable,
+        "connection ID did not fail closed without platform crypto");
+}
+#endif
 
 }  // namespace
 
 int main() {
     try {
+#if defined(_WIN32)
         frozen_cross_language_vectors_match();
         invalid_authority_and_role_inputs_fail_closed();
         final_proof_rejects_caller_selected_connection_id();
+#else
+        unsupported_platform_fails_closed();
+#endif
         std::cout << "PAIR_GENERATION_POP_V1_OK\n";
         return 0;
     } catch (const std::exception& error) {
