@@ -341,6 +341,7 @@ if(WIN32)
         NOMINMAX
     )
     target_link_libraries(vfdual_host_cng_device_identity PUBLIC
+        vfdual_authenticated_peer_handshake_v1
         advapi32
         bcrypt
         ncrypt

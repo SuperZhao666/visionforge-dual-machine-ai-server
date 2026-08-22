@@ -80,6 +80,11 @@ constexpr std::array<std::uint8_t, 32U> kP256HalfOrder{
     0x7fU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU,
     0xdeU, 0x73U, 0x7dU, 0x56U, 0xd3U, 0x8bU, 0xcfU, 0x42U,
     0x79U, 0xdcU, 0xe5U, 0x61U, 0x7eU, 0x31U, 0x92U, 0xa8U};
+constexpr std::array<std::uint8_t, 32U> kP256Order{
+    0xffU, 0xffU, 0xffU, 0xffU, 0x00U, 0x00U, 0x00U, 0x00U,
+    0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU,
+    0xbcU, 0xe6U, 0xfaU, 0xadU, 0xa7U, 0x17U, 0x9eU, 0x84U,
+    0xf3U, 0xb9U, 0xcaU, 0xc2U, 0xfcU, 0x63U, 0x25U, 0x51U};
 
 struct FakeKeyStats final {
     std::size_t export_calls{};
@@ -287,6 +292,7 @@ public:
         auto key = EphemeralBcryptSigningKey::create(
             development_metadata(), stats, behavior_, error);
         if (key == nullptr) return {nullptr, std::move(error)};
+        last_key = key.get();
         return {std::move(key), {}};
     }
 
@@ -307,6 +313,7 @@ public:
     }
 
     std::shared_ptr<FakeKeyStats> stats;
+    EphemeralBcryptSigningKey* last_key{};
 
 private:
     FakeSignBehavior behavior_;
@@ -504,6 +511,72 @@ fresh_ephemeral() {
     std::copy(r.begin(), r.end(), p1363.begin());
     std::copy(s.begin(), s.end(), p1363.begin() + 32U);
     return true;
+}
+
+[[nodiscard]] std::array<std::uint8_t, 32U> subtract_scalar_for_test(
+    const std::array<std::uint8_t, 32U>& minuend,
+    const std::array<std::uint8_t, 32U>& subtrahend) {
+    std::array<std::uint8_t, 32U> result{};
+    unsigned borrow{};
+    for (std::size_t offset = 0U; offset < result.size(); ++offset) {
+        const std::size_t index = result.size() - 1U - offset;
+        const unsigned left = minuend[index];
+        const unsigned right =
+            static_cast<unsigned>(subtrahend[index]) + borrow;
+        if (left >= right) {
+            result[index] = static_cast<std::uint8_t>(left - right);
+            borrow = 0U;
+        } else {
+            result[index] = static_cast<std::uint8_t>(
+                0x100U + left - right);
+            borrow = 1U;
+        }
+    }
+    CHECK(borrow == 0U);
+    return result;
+}
+
+void append_der_integer_for_test(
+    std::vector<std::uint8_t>& output,
+    const std::array<std::uint8_t, 32U>& scalar) {
+    const auto first_nonzero = std::find_if(
+        scalar.begin(), scalar.end(),
+        [](const std::uint8_t value) { return value != 0U; });
+    CHECK(first_nonzero != scalar.end());
+    const bool needs_positive_prefix = (*first_nonzero & 0x80U) != 0U;
+    output.push_back(0x02U);
+    output.push_back(static_cast<std::uint8_t>(
+        scalar.end() - first_nonzero +
+        (needs_positive_prefix ? 1U : 0U)));
+    if (needs_positive_prefix) output.push_back(0x00U);
+    output.insert(output.end(), first_nonzero, scalar.end());
+}
+
+[[nodiscard]] std::vector<std::uint8_t> der_for_test_scalars(
+    const std::array<std::uint8_t, 32U>& r,
+    const std::array<std::uint8_t, 32U>& s) {
+    std::vector<std::uint8_t> payload;
+    append_der_integer_for_test(payload, r);
+    append_der_integer_for_test(payload, s);
+    std::vector<std::uint8_t> der{0x30U,
+        static_cast<std::uint8_t>(payload.size())};
+    der.insert(der.end(), payload.begin(), payload.end());
+    return der;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> canonical_der_for_test(
+    const std::span<const std::uint8_t> p1363) {
+    CHECK(p1363.size() == 64U);
+    std::array<std::uint8_t, 32U> r{};
+    std::array<std::uint8_t, 32U> s{};
+    std::copy_n(p1363.begin(), r.size(), r.begin());
+    std::copy_n(p1363.begin() + 32, s.size(), s.begin());
+    if (std::lexicographical_compare(
+            kP256HalfOrder.begin(), kP256HalfOrder.end(),
+            s.begin(), s.end())) {
+        s = subtract_scalar_for_test(kP256Order, s);
+    }
+    return der_for_test_scalars(r, s);
 }
 
 [[nodiscard]] bool verify_transcript_signature(
@@ -709,6 +782,107 @@ void test_valid_signature_binds_every_typed_field_and_derives_once() {
     CHECK(derive_error.code ==
         vfdual::PeerHandshakeErrorCode::
             ephemeral_private_key_already_consumed);
+}
+
+void test_android_identity_signature_is_typed_and_fingerprint_bound() {
+    FakeKeyStore host_adapter;
+    auto host_identity = open_development_identity(host_adapter);
+    FakeKeyStore android_adapter;
+    auto android_identity = open_development_identity(android_adapter);
+    CHECK(android_adapter.last_key != nullptr);
+
+    auto input = valid_input();
+    input.android_identity_spki_sha256 = identity_hash_as_bytes(
+        android_identity->public_identity().public_key_sha256);
+    vfdual::HostPeerHandshakeTranscriptSignerV1 signer(*host_identity);
+    auto signed_context = signer.build_and_sign_bound_transcript(
+        std::move(input));
+    CHECK(signed_context.succeeded());
+
+    std::array<std::uint8_t, 32U> digest{};
+    std::transform(
+        signed_context.context->transcript().transcript_sha256().begin(),
+        signed_context.context->transcript().transcript_sha256().end(),
+        digest.begin(),
+        [](const std::byte value) {
+            return std::to_integer<std::uint8_t>(value);
+        });
+    const auto raw_signature =
+        android_adapter.last_key->sign_sha256_digest(digest);
+    CHECK(raw_signature.succeeded());
+    const auto signature = canonical_der_for_test(raw_signature.bytes);
+
+    const auto accepted =
+        vfdual::verify_android_peer_handshake_identity_signature_v1(
+            android_identity->public_identity().
+                subject_public_key_info_der,
+            signed_context.context->transcript(),
+            signature);
+    CHECK(accepted.completed());
+    CHECK(accepted.proof_of_possession_valid);
+
+    auto changed_fields = signed_context.context->transcript().fields();
+    ++changed_fields.connection_id;
+    const auto changed_transcript =
+        vfdual::build_canonical_peer_handshake_transcript_v1(
+            changed_fields,
+            vfdual::PeerHandshakePairIdRequirement::require_bound_pair);
+    CHECK(changed_transcript.succeeded());
+    const auto changed =
+        vfdual::verify_android_peer_handshake_identity_signature_v1(
+            android_identity->public_identity().
+                subject_public_key_info_der,
+            *changed_transcript.transcript,
+            signature);
+    CHECK(changed.completed());
+    CHECK(!changed.proof_of_possession_valid);
+
+    const auto wrong_identity =
+        vfdual::verify_android_peer_handshake_identity_signature_v1(
+            host_identity->public_identity().subject_public_key_info_der,
+            signed_context.context->transcript(),
+            signature);
+    CHECK(wrong_identity.completed());
+    CHECK(!wrong_identity.proof_of_possession_valid);
+
+    auto corrupted_signature = signature;
+    corrupted_signature.back() ^= 0x01U;
+    const auto corrupted =
+        vfdual::verify_android_peer_handshake_identity_signature_v1(
+            android_identity->public_identity().
+                subject_public_key_info_der,
+            signed_context.context->transcript(),
+            corrupted_signature);
+    CHECK(corrupted.completed());
+    CHECK(!corrupted.proof_of_possession_valid);
+
+    std::array<std::uint8_t, 64U> normalized{};
+    CHECK(canonical_low_s_der_to_p1363(signature, normalized));
+    std::array<std::uint8_t, 32U> r{};
+    std::array<std::uint8_t, 32U> low_s{};
+    std::copy_n(normalized.begin(), r.size(), r.begin());
+    std::copy_n(normalized.begin() + 32, low_s.size(), low_s.begin());
+    const auto high_s = subtract_scalar_for_test(kP256Order, low_s);
+    const auto high_s_signature = der_for_test_scalars(r, high_s);
+    const auto noncanonical =
+        vfdual::verify_android_peer_handshake_identity_signature_v1(
+            android_identity->public_identity().
+                subject_public_key_info_der,
+            signed_context.context->transcript(),
+            high_s_signature);
+    CHECK(noncanonical.completed());
+    CHECK(!noncanonical.proof_of_possession_valid);
+
+    const std::array<std::uint8_t, 8U> malformed_signature{
+        0x30U, 0x06U, 0x02U, 0x01U, 0x01U, 0x02U, 0x01U, 0x00U};
+    const auto malformed =
+        vfdual::verify_android_peer_handshake_identity_signature_v1(
+            android_identity->public_identity().
+                subject_public_key_info_der,
+            signed_context.context->transcript(),
+            malformed_signature);
+    CHECK(malformed.completed());
+    CHECK(!malformed.proof_of_possession_valid);
 }
 
 void test_concurrent_derivation_releases_ephemeral_owner_exactly_once() {
@@ -1219,6 +1393,7 @@ void test_public_api_and_cmake_remain_restricted_foundations() {
 
 int main() {
     test_valid_signature_binds_every_typed_field_and_derives_once();
+    test_android_identity_signature_is_typed_and_fingerprint_bound();
     test_concurrent_derivation_releases_ephemeral_owner_exactly_once();
     test_invalid_typed_inputs_fail_before_identity_signing();
     test_provider_failures_and_invalid_provider_signatures_fail_closed();
