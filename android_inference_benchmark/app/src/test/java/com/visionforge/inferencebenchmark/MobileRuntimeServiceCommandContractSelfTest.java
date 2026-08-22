@@ -553,8 +553,8 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "private void refreshAuthorizationStatusAfterRestore(");
         String authorizationAttachmentMethod = methodSlice(
                 source,
-                "private DualMachineAuthorizationRuntime.Attachment",
-                "private long trustedEpochSeconds()");
+                "void attachAuthenticatedHost(",
+                "/** Synchronous local fail-close entry");
         String hostProgressMethod = methodSlice(
                 source,
                 "private long readHostProgress()",
@@ -1046,10 +1046,17 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "fatal_pending_start_transport_failure")
                 < recoverPendingStartMethod.indexOf(
                 "pending_start_io_requires_cancellation"));
+        require(!source.contains(
+                "VisionForge.Android.LocalAuthorizationHost.v1"));
+        require(!source.contains(
+                "localAndroidAuthorizationAttachment("));
+        require(!source.contains("androidOnlyChannelBinding("));
         String formalBoundary = methodSlice(
                 source,
-                "private final class AndroidOnlyFormalRuntimeBoundary",
+                "private final class AuthenticatedHostFormalRuntimeBoundary",
                 "private void scheduleAuthorizationMaintenance()");
+        require(formalBoundary.contains(
+                "requiredAuthenticatedHostChannelBinding()"));
         int wirelessLockBeforeDiscoveryIndex = formalBoundary.indexOf(
                 "acquireRuntimeLocks(transportCandidate);");
         int awaitTransportIndex = formalBoundary.indexOf(

@@ -33,9 +33,7 @@ import com.visionforge.inferencebenchmark.ui.DualMachineAuthorizationUiState;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
-import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.List;
 import java.util.Locale;
@@ -100,8 +98,6 @@ public final class MobileRuntimeService extends Service {
     // the fail-closed, pre-billing video-presence decision.
     static final long HOST_VIDEO_PREFLIGHT_TIMEOUT_MILLIS = 8_000L;
     static final long HOST_VIDEO_REVALIDATION_TIMEOUT_MILLIS = 2_000L;
-    private static final String LOCAL_AUTHORIZATION_HOST_ALIAS =
-            "VisionForge.Android.LocalAuthorizationHost.v1";
     private static final String AUTOMATIC_USAGE_GUARD_PREFERENCES =
             "visionforge_automatic_usage_guard_v1";
     private static final String AUTOMATIC_USAGE_GUARD_BLOCKED =
@@ -544,9 +540,6 @@ public final class MobileRuntimeService extends Service {
                                     getApplicationContext());
                     AndroidPairingIdentityStore identityStore =
                             new AndroidPairingIdentityStore();
-                    AndroidPairingIdentityStore localAuthorizationHost =
-                            new AndroidPairingIdentityStore(
-                                    LOCAL_AUTHORIZATION_HOST_ALIAS);
                     String fingerprint = identityStore.fingerprintHex();
                     String deviceCode = "ANDROID-"
                             + fingerprint.substring(0, 32)
@@ -562,20 +555,6 @@ public final class MobileRuntimeService extends Service {
                                     AndroidDeviceProfileCollector.collect(
                                             getApplicationContext()),
                                     identityStore::sign);
-                    String localHostFingerprint =
-                            localAuthorizationHost.fingerprintHex();
-                    DualMachineCardAuthorizationCoordinator.IdentityBinding
-                            localHostIdentity =
-                            new DualMachineCardAuthorizationCoordinator
-                                    .IdentityBinding(
-                                    "ANDROID-AUTH-"
-                                            + localHostFingerprint
-                                            .substring(0, 32)
-                                            .toUpperCase(Locale.ROOT),
-                                    BuildConfig
-                                            .DUAL_MACHINE_PROTOCOL_CLIENT_VERSION,
-                                    localAuthorizationHost.publicKeyBase64(),
-                                    localAuthorizationHost::sign);
                     deadlines =
                             new DualMachineMonotonicDeadlineScheduler();
                     created = new DualMachineAuthorizationRuntime(
@@ -592,11 +571,6 @@ public final class MobileRuntimeService extends Service {
                                     System::nanoTime,
                                     deadlines,
                                     this::readAndroidProgress);
-                    created.attachAuthenticatedHost(
-                            localAndroidAuthorizationAttachment(
-                                    localHostIdentity,
-                                    localHostFingerprint,
-                                    fingerprint));
                     if (!installAuthorizationRuntimeIfCurrent(
                             initializationGeneration, created, deadlines)) {
                         created.close();
@@ -610,6 +584,7 @@ public final class MobileRuntimeService extends Service {
                             "dual_machine_authorization_runtime_ready",
                             "card_secret_persisted=false "
                                     + "host_session_persisted=false "
+                                    + "authenticated_host_attached=false "
                                     + "formal_lease_restored=false");
                     publishMappedAuthorizationState("");
                     refreshAuthorizationStatusAfterRestore(created);
@@ -2450,33 +2425,22 @@ public final class MobileRuntimeService extends Service {
         return getString(R.string.authorization_operation_failed);
     }
 
-    private DualMachineAuthorizationRuntime.Attachment
-            localAndroidAuthorizationAttachment(
-            DualMachineCardAuthorizationCoordinator.IdentityBinding
-                    localHostIdentity,
-            String localHostFingerprint,
-            String androidFingerprint)
-            throws GeneralSecurityException {
-        String channelBinding = sha256Hex(
-                ("visionforge.android-only-authorization.v1\n"
-                        + localHostFingerprint + "\n"
-                        + androidFingerprint).getBytes(
-                        StandardCharsets.UTF_8));
-        return new DualMachineAuthorizationRuntime.Attachment(
-                localHostIdentity,
-                channelBinding,
-                new AndroidOnlyFormalRuntimeBoundary(),
-                () -> !destroying && !authorizationSecurityFatal,
-                this::readHostProgress,
-                this::trustedEpochSeconds);
-    }
-
     private long trustedEpochSeconds() {
         long millis = System.currentTimeMillis();
         if (millis <= 0L) {
             throw new SecurityException("trusted epoch is unavailable");
         }
         return TimeUnit.MILLISECONDS.toSeconds(millis);
+    }
+
+    private String requiredAuthenticatedHostChannelBinding()
+            throws GeneralSecurityException {
+        DualMachineAuthorizationRuntime runtime = authorizationRuntime;
+        if (runtime == null) {
+            throw new GeneralSecurityException(
+                    "authenticated Host runtime is unavailable");
+        }
+        return runtime.authenticatedHostChannelBindingSha256();
     }
 
     private void closeFormalDataPlaneLocally(String reason) {
@@ -2879,7 +2843,7 @@ public final class MobileRuntimeService extends Service {
         formalModelPreparationInProgress = false;
     }
 
-    private final class AndroidOnlyFormalRuntimeBoundary
+    private final class AuthenticatedHostFormalRuntimeBoundary
             implements DualMachineFormalUsageCoordinator.RuntimeBoundary {
         private volatile String reservedStartRequestId = "";
         private volatile String reservedChannelBindingSha256 = "";
@@ -2930,7 +2894,7 @@ public final class MobileRuntimeService extends Service {
                             "required transport changed during Host video preflight");
                 }
                 updateStatus(MobileRuntimePhase.STARTING,
-                        "formal_usage_preparing host_authorization=false");
+                        "formal_usage_preparing host_authorization=true");
                 updateNotification(R.string.runtime_notification_starting);
                 String nativeDirectory = lastNativeDirectory == null
                         ? defaultNativeDirectory()
@@ -3018,8 +2982,8 @@ public final class MobileRuntimeService extends Service {
                     throw new IOException(
                             "formal session transport pin changed the data-plane route");
                 }
-                String channelBinding = androidOnlyChannelBinding(
-                        pinnedEndpoint);
+                String channelBinding =
+                        requiredAuthenticatedHostChannelBinding();
                 synchronized (pipelineCommandLock) {
                     if (destroying
                             || preparationGeneration
@@ -3088,6 +3052,8 @@ public final class MobileRuntimeService extends Service {
                 requireFormalStartNotCancelled(cancellationRequested);
                 MobileTransportEndpoint currentEndpoint =
                         requiredTransportEndpoint();
+                String currentAuthenticatedBinding =
+                        requiredAuthenticatedHostChannelBinding();
                 synchronized (pipelineCommandLock) {
                     if (destroying
                             || expectedGeneration
@@ -3100,7 +3066,7 @@ public final class MobileRuntimeService extends Service {
                             || !expectedChannelBindingSha256.equals(
                             formalSessionChannelBinding)
                             || !expectedChannelBindingSha256.equals(
-                            androidOnlyChannelBinding(currentEndpoint))) {
+                            currentAuthenticatedBinding)) {
                         throw new IOException(
                                     "formal usage Host video proof was superseded");
                     }
@@ -3181,7 +3147,7 @@ public final class MobileRuntimeService extends Service {
                         && pipelineNetworkHandle == networkHandle
                         && nativeVideoReceiverRunningSafely()) {
                     updateStatus(MobileRuntimePhase.RUNNING,
-                            "formal_usage_lease_continued host_authorization=false");
+                            "formal_usage_lease_continued host_authorization=true");
                     updateNotification(R.string.runtime_notification_running);
                     continued = true;
                     hotReloadOwnsReopen = false;
@@ -3218,7 +3184,7 @@ public final class MobileRuntimeService extends Service {
                         pipelineStarted = true;
                         pipelineNetworkHandle = networkHandle;
                         updateStatus(MobileRuntimePhase.RUNNING,
-                                "formal_usage_running host_authorization=false");
+                                "formal_usage_running host_authorization=true");
                         updateNotification(R.string.runtime_notification_running);
                     }
                 }
@@ -3253,7 +3219,7 @@ public final class MobileRuntimeService extends Service {
                             ? "dual_machine_formal_data_plane_continued"
                             : "dual_machine_formal_data_plane_opened",
                     "network_handle=" + networkHandle
-                            + " host_authorization=false "
+                            + " host_authorization=true "
                             + "video_encrypted=false "
                             + "data_plane_open="
                             + !hotReloadOwnsReopen + " "
@@ -3314,16 +3280,6 @@ public final class MobileRuntimeService extends Service {
                     "formal_generation_terminal");
         }
 
-        private String androidOnlyChannelBinding(
-                MobileTransportEndpoint endpoint)
-                throws GeneralSecurityException {
-            String material = "visionforge.android-only-runtime.v2\n"
-                    + endpoint.kind.token + "\n"
-                    + endpoint.networkHandle + "\n"
-                    + endpoint.localIpv4 + "\n"
-                    + endpoint.hostIpv4;
-            return sha256Hex(material.getBytes(StandardCharsets.UTF_8));
-        }
     }
 
     private void scheduleAuthorizationMaintenance() {
@@ -4399,9 +4355,24 @@ public final class MobileRuntimeService extends Service {
                 && message.toLowerCase(Locale.ROOT).contains("tls");
     }
 
-    /** Internal handoff for local authorization bootstrap, never for Binder UI. */
+    /**
+     * Internal handoff for a mutually authenticated control-session owner,
+     * never for Binder UI. The service owns the formal runtime boundary so a
+     * peer adapter cannot substitute a route-derived channel binding.
+     */
     void attachAuthenticatedHost(
-            DualMachineAuthorizationRuntime.Attachment attachment) {
+            DualMachineCardAuthorizationCoordinator.IdentityBinding
+                    hostIdentity,
+            String channelBindingSha256,
+            BooleanSupplier authenticatedSource) {
+        DualMachineAuthorizationRuntime.Attachment attachment =
+                new DualMachineAuthorizationRuntime.Attachment(
+                        hostIdentity,
+                        channelBindingSha256,
+                        new AuthenticatedHostFormalRuntimeBoundary(),
+                        authenticatedSource,
+                        this::readHostProgress,
+                        this::trustedEpochSeconds);
         FormalPipelineOwnerReceipt schedulingOwner =
                 captureFormalPipelineOwner();
         try {
@@ -4451,8 +4422,36 @@ public final class MobileRuntimeService extends Service {
         FormalOwnerStopResult stopResult =
                 stopFormalUsageIfCurrentOwner(
                         owner, () -> true, reason);
-        if (owner == null && authorizationRuntime == null) {
-            closeFormalDataPlaneLocally(reason);
+        closeFormalDataPlaneLocally(reason);
+        DualMachineAuthorizationRuntime runtime = authorizationRuntime;
+        if (runtime != null) {
+            try {
+                authorizationExecutor.execute(() -> {
+                    if (authorizationRuntime != runtime) return;
+                    try {
+                        runtime.detachAuthenticatedHost();
+                        events.write(
+                                "dual_machine_authenticated_host_detached",
+                                "reason=" + safeToken(reason)
+                                        + " authority_revoked=true");
+                    } catch (RuntimeException | LinkageError failure) {
+                        runtime.requestImmediateLocalStop();
+                        events.write(
+                                "dual_machine_authenticated_host_detach_failed",
+                                "reason=" + safeToken(reason)
+                                        + " local_stop=true failure_type="
+                                        + failure.getClass().getSimpleName());
+                    }
+                    publishMappedAuthorizationState("");
+                });
+            } catch (RuntimeException schedulingFailure) {
+                runtime.requestImmediateLocalStop();
+                events.write(
+                        "dual_machine_authenticated_host_detach_deferred",
+                        "reason=" + safeToken(reason)
+                                + " local_stop=true failure_type="
+                                + schedulingFailure.getClass().getSimpleName());
+            }
         }
         events.write(
                 "dual_machine_video_transport_detached",
@@ -6334,19 +6333,6 @@ public final class MobileRuntimeService extends Service {
                             + " ethernet={" + latestEthernetDiagnostics + "}");
         }
         return true;
-    }
-
-    private static String sha256Hex(byte[] value)
-            throws GeneralSecurityException {
-        byte[] digest = MessageDigest.getInstance("SHA-256").digest(value);
-        char[] encoded = new char[digest.length * 2];
-        char[] alphabet = "0123456789abcdef".toCharArray();
-        for (int index = 0; index < digest.length; index++) {
-            int item = digest[index] & 0xff;
-            encoded[index * 2] = alphabet[item >>> 4];
-            encoded[index * 2 + 1] = alphabet[item & 0x0f];
-        }
-        return new String(encoded);
     }
 
     private static String safeToken(String value) {

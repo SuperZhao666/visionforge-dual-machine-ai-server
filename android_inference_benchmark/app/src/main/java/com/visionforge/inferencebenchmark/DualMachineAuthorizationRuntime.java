@@ -401,6 +401,36 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
                 && current.isAuthenticated();
     }
 
+    /**
+     * Returns the exact channel binding owned by the currently authenticated
+     * Host generation. The value is never reconstructed from route metadata.
+     */
+    public String authenticatedHostChannelBindingSha256()
+            throws GeneralSecurityException {
+        final Attachment current;
+        synchronized (attachmentLock) {
+            if (closed || retiringFormalCoordinator != null
+                    || attachmentMutationInProgress || attachment == null) {
+                throw new GeneralSecurityException(
+                        "authenticated Host generation is unavailable");
+            }
+            current = attachment;
+        }
+        if (!current.isAuthenticated()) {
+            throw new GeneralSecurityException(
+                    "authenticated Host session was lost");
+        }
+        synchronized (attachmentLock) {
+            if (closed || retiringFormalCoordinator != null
+                    || attachmentMutationInProgress
+                    || attachment != current) {
+                throw new GeneralSecurityException(
+                        "authenticated Host generation was superseded");
+            }
+        }
+        return current.channelBindingSha256;
+    }
+
     public DualMachineFormalUsageStateMachine.Snapshot snapshot() {
         return stateMachine.snapshot();
     }
@@ -1208,6 +1238,12 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
                 throw new GeneralSecurityException(
                         "runtime readiness is unavailable");
             }
+            if (!attachment.channelBindingSha256.equals(
+                    readiness.channelBindingSha256)) {
+                closeDataPlane();
+                throw new GeneralSecurityException(
+                        "runtime readiness channel binding is invalid");
+            }
             return readiness;
         }
 
@@ -1218,12 +1254,14 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
                 BooleanSupplier cancellationRequested)
                 throws IOException, GeneralSecurityException {
             requireAuthenticated();
+            requireChannelBinding(expectedChannelBindingSha256);
             attachment.runtimeBoundary
                     .verifyFreshHostVideoBeforePotentialDebit(
                             expectedChannelBindingSha256,
                             expectedStartRequestId,
                             cancellationRequested);
             requireAuthenticated();
+            requireChannelBinding(expectedChannelBindingSha256);
         }
 
         @Override
@@ -1232,6 +1270,8 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
                 throws IOException {
             try {
                 requireAuthenticated();
+                requireChannelBinding(permit == null
+                        ? null : permit.channelBindingSha256);
             } catch (GeneralSecurityException failure) {
                 throw new IOException(failure);
             }
@@ -1247,10 +1287,13 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
         public void stageFutureLease(
                 DualMachineFormalUsageCoordinator.DataPlanePermit permit)
                 throws IOException {
-            if (!attachment.isAuthenticated()) {
+            if (!attachment.isAuthenticated()
+                    || permit == null
+                    || !attachment.channelBindingSha256.equals(
+                    permit.channelBindingSha256)) {
                 closeDataPlane();
                 throw new IOException(
-                        "authenticated Host session was lost");
+                        "authenticated Host session or channel binding was lost");
             }
             attachment.runtimeBoundary.stageFutureLease(permit);
         }
@@ -1276,6 +1319,11 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
                 String expectedStartRequestId,
                 String expectedChannelBindingSha256,
                 DualMachineFormalUsageCoordinator.StopOutcome outcome) {
+            if (!attachment.channelBindingSha256.equals(
+                    expectedChannelBindingSha256)) {
+                closeDataPlane();
+                return;
+            }
             attachment.runtimeBoundary.finalizeFormalGeneration(
                     expectedStartRequestId,
                     expectedChannelBindingSha256,
@@ -1288,6 +1336,15 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
                 closeDataPlane();
                 throw new GeneralSecurityException(
                         "authenticated Host session was lost");
+            }
+        }
+
+        private void requireChannelBinding(String candidate)
+                throws GeneralSecurityException {
+            if (!attachment.channelBindingSha256.equals(candidate)) {
+                closeDataPlane();
+                throw new GeneralSecurityException(
+                        "authenticated Host channel binding changed");
             }
         }
     }
