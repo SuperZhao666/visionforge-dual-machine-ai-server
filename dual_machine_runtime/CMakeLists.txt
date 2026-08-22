@@ -85,6 +85,7 @@ add_library(vfdual_protocol STATIC
     shared/src/authenticated_control_bootstrap_record_v1.cpp
     shared/src/authenticated_control_record_v1.cpp
     shared/src/authenticated_data_plane_v2.cpp
+    shared/src/authenticated_mouse_button_v2.cpp
     shared/src/h264_annex_b_access_units.cpp
     shared/src/host_data_plane_authorization_gate.cpp
     shared/src/image_preprocessor.cpp

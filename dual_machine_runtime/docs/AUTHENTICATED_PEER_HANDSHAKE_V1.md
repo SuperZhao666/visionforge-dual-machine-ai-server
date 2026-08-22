@@ -165,6 +165,13 @@ replay window。v1 暂不支持 session 内 rekey，初始 `key_epoch` 固定为
 `2^23` 包上限、provider/counter 状态不确定或需要 rekey 时，必须关闭并完成全新握手，不能递增一个
 尚未定义的 epoch 继续使用。
 
+`mouse_host_to_android` 只能安装到 `VFA2` 的 `(connection_id, key_epoch=1,
+HOST_TO_ANDROID, MOUSE_BUTTON)` 域。认证明文固定为一个字节的完整按钮状态快照，有效位为
+`0x1f`；长度不等于 1 或包含其他位必须丢弃。旧 `VFMB` 数据报中的 `session_id` 和 `sequence`
+不进入新载荷：连接身份由认证头中的 `connection_id` 绑定，顺序和重放由同一密钥域的单一发送
+counter 与接收 replay window 负责。在 Host 发布器与 Android 输入端都由同一个已确认会话安装
+密钥并完成生命周期接线前，不得把本契约视为生产路径已启用，也不得回退接受明文 `VFMB`。
+
 ECDH private handle、raw shared secret、PRK、HKDF 临时缓冲和所有 session key 必须在各自生命周期
 结束后立即销毁/尽力清零，且不得进入日志、bug report、crash metadata 或异常文本。
 
