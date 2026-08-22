@@ -1,5 +1,6 @@
 #include "vfdual/host_device_identity_runtime.hpp"
 
+#include "vfdual/host_pair_generation_pop_signer_v1.hpp"
 #include "vfdual/host_peer_handshake_transcript_signer_v1.hpp"
 
 #include <utility>
@@ -10,7 +11,9 @@ HostDeviceIdentityRuntime::HostDeviceIdentityRuntime(
     std::unique_ptr<HostCngDeviceIdentity> identity)
     : identity_(std::move(identity)),
       handshake_signer_(
-          std::make_unique<HostPeerHandshakeTranscriptSignerV1>(*identity_)) {}
+          std::make_unique<HostPeerHandshakeTranscriptSignerV1>(*identity_)),
+      pair_pop_signer_(
+          std::make_unique<HostPairGenerationPopSignerV1>(*identity_)) {}
 
 HostDeviceIdentityRuntime::~HostDeviceIdentityRuntime() = default;
 
@@ -40,6 +43,11 @@ HostDeviceIdentityRuntime::public_identity() const noexcept {
 HostPeerHandshakeTranscriptSignerV1&
 HostDeviceIdentityRuntime::peer_handshake_signer() noexcept {
     return *handshake_signer_;
+}
+
+HostPairGenerationPopSignerV1&
+HostDeviceIdentityRuntime::pair_generation_pop_signer() noexcept {
+    return *pair_pop_signer_;
 }
 
 }  // namespace vfdual

@@ -1621,6 +1621,43 @@ tasks.configureEach { task ->
     }
 }
 
+// The pair-generation PoP payloads are signed by both long-term identities.
+// Freeze their Python/Java canonical JSON, connection-ID derivation and final
+// proposal binding before the network coordinator is allowed to consume them.
+def pairGenerationPopV1SelfTestClasses =
+        layout.buildDirectory.dir(
+                'pair-generation-pop-v1-self-test/classes')
+tasks.register('compilePairGenerationPopV1SelfTest', JavaCompile) {
+    source = files(
+            fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
+                include '*.java'
+            },
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/PairGenerationPopV1SelfTest.java')
+    classpath = files()
+    destinationDirectory = pairGenerationPopV1SelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_1_8.toString()
+    targetCompatibility = JavaVersion.VERSION_1_8.toString()
+    options.release.set(8)
+    options.compilerArgs.addAll(['-Xlint:all,-options', '-Werror'])
+}
+tasks.register('verifyPairGenerationPopV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs canonical dual-PoP, connection-ID and final proposal-binding vectors.'
+    dependsOn(tasks.named('compilePairGenerationPopV1SelfTest'))
+    classpath = files(pairGenerationPopV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.PairGenerationPopV1SelfTest'
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyPairGenerationPopV1'))
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn(tasks.named('verifyPairGenerationPopV1'))
+    }
+}
+
 // The server-authoritative generation credential is a separate JCA boundary.
 // Keep the verifier independent from Android framework state and exercise its
 // strict RS256/keyring/canonical-JWT contract on the build JVM. This gate does
@@ -1856,6 +1893,9 @@ def cardAuthorizationCoordinatorSelfTestClasses =
         layout.buildDirectory.dir('card-authorization-coordinator-self-test/classes')
 tasks.register('compileDualMachineCardAuthorizationCoordinatorSelfTests', JavaCompile) {
     source = files(
+            fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
+                include '*.java'
+            },
             'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineDeviceProofs.java',
@@ -1956,6 +1996,9 @@ def sidecarHttpClientSelfTestClasses =
         layout.buildDirectory.dir('sidecar-http-client-self-test/classes')
 tasks.register('compileDualMachineSidecarHttpClientSelfTest', JavaCompile) {
     source = files(
+            fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
+                include '*.java'
+            },
             'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineTlsPinPolicy.java',
@@ -2415,6 +2458,7 @@ def verifyMobilePublicContractsTask = tasks.register('verifyMobilePublicContract
             tasks.named('verifyAuthenticatedDataPlaneV2'),
             tasks.named('verifyAuthenticatedPeerHandshakeV1'),
             tasks.named('verifyPairGenerationProposalV1'),
+            tasks.named('verifyPairGenerationPopV1'),
             tasks.named('verifyPairGenerationCredentialV1'),
             tasks.named('verifyAndroidBoundPeerHandshakeSession'),
             tasks.named('verifyDualMachineUsageAuthorizationContract'),

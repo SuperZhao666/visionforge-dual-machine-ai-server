@@ -8,6 +8,7 @@
 namespace vfdual {
 
 class HostAuthenticatedControlCoordinatorV1;
+class HostPairGenerationPopSignerV1;
 class HostPeerHandshakeTranscriptSignerV1;
 
 inline constexpr std::wstring_view kHostDeviceIdentityProbeArgument{
@@ -44,11 +45,14 @@ private:
 
     [[nodiscard]] HostPeerHandshakeTranscriptSignerV1&
     peer_handshake_signer() noexcept;
+    [[nodiscard]] HostPairGenerationPopSignerV1&
+    pair_generation_pop_signer() noexcept;
 
     friend class HostAuthenticatedControlCoordinatorV1;
 
     std::unique_ptr<HostCngDeviceIdentity> identity_;
     std::unique_ptr<HostPeerHandshakeTranscriptSignerV1> handshake_signer_;
+    std::unique_ptr<HostPairGenerationPopSignerV1> pair_pop_signer_;
 };
 
 }  // namespace vfdual

@@ -336,6 +336,9 @@ public final class DualMachineCardAuthorizationCoordinator {
                 new DualMachineEntitlementRecord(
                         response.entitlementId,
                         response.pairId,
+                        response.bindingId,
+                        response.bindingRevision,
+                        response.pairAssuranceState,
                         DualMachineEntitlementRecord.PROTOCOL_VERSION,
                         response.revocationVersion,
                         hostIdentity.keyFingerprintSha256,
@@ -448,6 +451,9 @@ public final class DualMachineCardAuthorizationCoordinator {
                 ? new DualMachineEntitlementRecord(
                 entitlement.entitlementId,
                 entitlement.pairId,
+                entitlement.bindingId,
+                entitlement.bindingRevision,
+                entitlement.pairAssuranceState,
                 entitlement.protocolVersion,
                 entitlement.revocationVersion,
                 entitlement.hostKeySha256,
@@ -670,6 +676,10 @@ public final class DualMachineCardAuthorizationCoordinator {
         if (response == null
                 || response.billingStarted
                 || !pending.pairId.equals(response.pairId)
+                || !"active".equals(response.pairAssuranceState)
+                || response.bindingId == null
+                || response.bindingId.isEmpty()
+                || response.bindingRevision <= 0L
                 || response.revocationVersion <= 0L
                 || !activationModeValid
                 || !entitlementTargetValid

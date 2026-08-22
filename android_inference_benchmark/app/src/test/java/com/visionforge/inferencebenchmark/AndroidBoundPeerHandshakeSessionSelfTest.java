@@ -890,6 +890,9 @@ public final class AndroidBoundPeerHandshakeSessionSelfTest {
                         new DualMachineEntitlementRecord(
                                 ENTITLEMENT_ID,
                                 PAIR_ID,
+                                "89aabbccddeeff001122334455667788",
+                                3L,
+                                "active",
                                 DualMachineEntitlementRecord.PROTOCOL_VERSION,
                                 7L,
                                 DualMachinePairingIdentityCodec.fingerprintHex(
@@ -947,6 +950,9 @@ public final class AndroidBoundPeerHandshakeSessionSelfTest {
             return new DualMachineEntitlementRecord(
                     ENTITLEMENT_ID,
                     PAIR_ID,
+                    "89aabbccddeeff001122334455667788",
+                    3L,
+                    "active",
                     DualMachineEntitlementRecord.PROTOCOL_VERSION,
                     7L,
                     DualMachinePairingIdentityCodec.fingerprintHex(

@@ -25,6 +25,10 @@ public final class DualMachineSidecarHttpClient
             API_PREFIX + "license-activations/challenges";
     private static final String ACTIVATION_CONFIRM_PATH =
             API_PREFIX + "license-activations/confirm";
+    private static final String PAIR_GENERATION_CHALLENGE_PATH =
+            API_PREFIX + "pair-generations/challenges";
+    private static final String PAIR_GENERATION_CREDENTIAL_PATH =
+            API_PREFIX + "pair-generations/credentials";
     private static final String START_CHALLENGE_PATH =
             API_PREFIX + "usage-sessions/start-challenges";
     private static final String START_PATH =
@@ -80,6 +84,30 @@ public final class DualMachineSidecarHttpClient
                 + request.proof.entitlementId + "/status";
         return parseEntitlementStatus(
                 post(path, entitlementStatusJson(request)), request);
+    }
+
+    @Override
+    public PairGenerationChallengeResponse createPairGenerationChallenge(
+            PairGenerationChallengeRequest request) throws IOException {
+        if (request == null) {
+            throw new IllegalArgumentException("request is required");
+        }
+        return parsePairGenerationChallenge(
+                post(PAIR_GENERATION_CHALLENGE_PATH,
+                        pairGenerationChallengeJson(request)),
+                request);
+    }
+
+    @Override
+    public PairGenerationCredentialResponse issuePairGenerationCredential(
+            PairGenerationCredentialRequest request) throws IOException {
+        if (request == null) {
+            throw new IllegalArgumentException("request is required");
+        }
+        return parsePairGenerationCredential(
+                post(PAIR_GENERATION_CREDENTIAL_PATH,
+                        pairGenerationCredentialJson(request)),
+                request);
     }
 
     @Override
@@ -250,6 +278,9 @@ public final class DualMachineSidecarHttpClient
                 "activation_id",
                 "entitlement_id",
                 "pair_id",
+                "binding_id",
+                "binding_revision",
+                "pair_assurance_state",
                 "status",
                 "revocation_version",
                 "credited_seconds",
@@ -268,6 +299,13 @@ public final class DualMachineSidecarHttpClient
                 fields.string("entitlement_id", 32, 32));
         String pairId = responseHex128(
                 fields.string("pair_id", 32, 32));
+        String bindingId = responseHex128(
+                fields.string("binding_id", 32, 32));
+        long bindingRevision = fields.integer(
+                "binding_revision", 1L, Long.MAX_VALUE);
+        String pairAssuranceState = fields.string(
+                "pair_assurance_state", 6, 32);
+        requireLiteral(pairAssuranceState, "active");
         requireLiteral(fields.string("status", 1, 16), "active");
         long revocationVersion = fields.integer(
                 "revocation_version", 1L, Long.MAX_VALUE);
@@ -308,6 +346,9 @@ public final class DualMachineSidecarHttpClient
         return new ActivationResponse(
                 entitlementId,
                 pairId,
+                bindingId,
+                bindingRevision,
+                pairAssuranceState,
                 revocationVersion,
                 credited,
                 remaining,
@@ -396,6 +437,135 @@ public final class DualMachineSidecarHttpClient
                 authorizationKind,
                 productKey,
                 permanent);
+    }
+
+    private static PairGenerationChallengeResponse
+            parsePairGenerationChallenge(
+            byte[] encoded,
+            PairGenerationChallengeRequest request) throws IOException {
+        DualMachineStrictJson.Fields fields =
+                DualMachineStrictJson.parseObject(encoded);
+        fields.requireExactly(
+                "ok",
+                "request_id",
+                "allocation_request_id",
+                "challenge_id",
+                "pair_id",
+                "binding_revision",
+                "server_nonce",
+                "challenge_expires_at_epoch");
+        requireOk(fields);
+        com.visionforge.inferencebenchmark.handshake.PairGenerationPopV1
+                .ChallengeFields expected = request.proof.fields();
+        String requestId = responseHex128(
+                fields.string("request_id", 32, 32));
+        String allocationRequestId = responseHex128(
+                fields.string("allocation_request_id", 32, 32));
+        String challengeId = responseHex128(
+                fields.string("challenge_id", 32, 32));
+        String pairId = responseHex128(
+                fields.string("pair_id", 32, 32));
+        long bindingRevision = fields.integer(
+                "binding_revision", 1L, Long.MAX_VALUE);
+        byte[] serverNonce = responseLowerHexBytes(
+                fields.string("server_nonce", 64, 64), 32);
+        long expiresAtEpoch = fields.integer(
+                "challenge_expires_at_epoch", 1L, Long.MAX_VALUE);
+        if (!expected.requestId.equals(requestId)
+                || !expected.allocationRequestId.equals(allocationRequestId)
+                || !expected.pairId.equals(pairId)
+                || expected.bindingRevision != bindingRevision) {
+            throw DualMachineStrictJson.contractError();
+        }
+        try {
+            return new PairGenerationChallengeResponse(
+                    requestId,
+                    allocationRequestId,
+                    challengeId,
+                    pairId,
+                    bindingRevision,
+                    serverNonce,
+                    expiresAtEpoch);
+        } catch (IllegalArgumentException rejected) {
+            throw DualMachineStrictJson.contractError();
+        } finally {
+            java.util.Arrays.fill(serverNonce, (byte) 0);
+        }
+    }
+
+    private static PairGenerationCredentialResponse
+            parsePairGenerationCredential(
+            byte[] encoded,
+            PairGenerationCredentialRequest request) throws IOException {
+        DualMachineStrictJson.Fields fields =
+                DualMachineStrictJson.parseObject(encoded);
+        fields.requireExactly(
+                "ok",
+                "allocation_request_id",
+                "pair_id",
+                "binding_revision",
+                "generation",
+                "connection_id",
+                "transcript_proposal_sha256",
+                "credential_token",
+                "credential_sha256",
+                "key_id",
+                "credential_issued_at_epoch",
+                "credential_not_before_epoch",
+                "credential_expires_at_epoch");
+        requireOk(fields);
+        String allocationRequestId = responseHex128(
+                fields.string("allocation_request_id", 32, 32));
+        String pairId = responseHex128(
+                fields.string("pair_id", 32, 32));
+        long bindingRevision = fields.integer(
+                "binding_revision", 1L, Long.MAX_VALUE);
+        long generation = fields.integer(
+                "generation", 1L, Long.MAX_VALUE);
+        long connectionId = fields.integer(
+                "connection_id", 1L, Long.MAX_VALUE);
+        String proposalSha256 = responseSha256(fields.string(
+                "transcript_proposal_sha256", 64, 64));
+        String credentialToken = fields.string(
+                "credential_token", 64, 8192);
+        String credentialSha256 = responseSha256(fields.string(
+                "credential_sha256", 64, 64));
+        String keyId = responseLowerHex(
+                fields.string("key_id", 16, 16), 16);
+        long issuedAtEpoch = fields.integer(
+                "credential_issued_at_epoch", 1L, Long.MAX_VALUE);
+        long notBeforeEpoch = fields.integer(
+                "credential_not_before_epoch", 1L, Long.MAX_VALUE);
+        long expiresAtEpoch = fields.integer(
+                "credential_expires_at_epoch", 1L, Long.MAX_VALUE);
+        com.visionforge.inferencebenchmark.handshake.PairGenerationPopV1
+                .ChallengeFields expected =
+                request.proof.challengeRequest().fields();
+        if (!expected.allocationRequestId.equals(allocationRequestId)
+                || !expected.pairId.equals(pairId)
+                || expected.bindingRevision != bindingRevision
+                || request.proof.connectionId() != connectionId
+                || !request.proof.transcriptProposalSha256().equals(
+                proposalSha256)) {
+            throw DualMachineStrictJson.contractError();
+        }
+        try {
+            return new PairGenerationCredentialResponse(
+                    allocationRequestId,
+                    pairId,
+                    bindingRevision,
+                    generation,
+                    connectionId,
+                    proposalSha256,
+                    credentialToken,
+                    credentialSha256,
+                    keyId,
+                    issuedAtEpoch,
+                    notBeforeEpoch,
+                    expiresAtEpoch);
+        } catch (IllegalArgumentException rejected) {
+            throw DualMachineStrictJson.contractError();
+        }
     }
 
     private static StartChallengeResponse parseStartChallenge(byte[] encoded)
@@ -695,6 +865,53 @@ public final class DualMachineSidecarHttpClient
         return writer.finish();
     }
 
+    private static byte[] pairGenerationChallengeJson(
+            PairGenerationChallengeRequest request) {
+        com.visionforge.inferencebenchmark.handshake.PairGenerationPopV1
+                .ChallengeFields fields = request.proof.fields();
+        JsonWriter writer = new JsonWriter();
+        writer.string("allocation_request_id", fields.allocationRequestId);
+        writer.string(
+                "android_signature_b64", request.androidSignatureBase64);
+        writer.string("binding_id", fields.bindingId);
+        writer.number("binding_revision", fields.bindingRevision);
+        writer.string("entitlement_id", fields.entitlementId);
+        writer.string("host_signature_b64", request.hostSignatureBase64);
+        writer.string("pair_id", fields.pairId);
+        writer.number("protocol_version", DualMachineSidecarPort.PROTOCOL_VERSION);
+        writer.string("request_id", fields.requestId);
+        writer.number("revocation_version", fields.revocationVersion);
+        return writer.finish();
+    }
+
+    private static byte[] pairGenerationCredentialJson(
+            PairGenerationCredentialRequest request) {
+        com.visionforge.inferencebenchmark.handshake.PairGenerationPopV1
+                .ChallengeFields fields =
+                request.proof.challengeRequest().fields();
+        JsonWriter writer = new JsonWriter();
+        writer.string("allocation_request_id", fields.allocationRequestId);
+        writer.string(
+                "android_signature_b64", request.androidSignatureBase64);
+        writer.string("binding_id", fields.bindingId);
+        writer.number("binding_revision", fields.bindingRevision);
+        writer.string("challenge_id", request.challenge.challengeId);
+        writer.string("entitlement_id", fields.entitlementId);
+        writer.string("host_signature_b64", request.hostSignatureBase64);
+        writer.string("pair_id", fields.pairId);
+        writer.string(
+                "proposal_b64",
+                Base64.getEncoder().encodeToString(
+                        request.proposal.canonicalEncoding()));
+        writer.number("protocol_version", DualMachineSidecarPort.PROTOCOL_VERSION);
+        writer.number("revocation_version", fields.revocationVersion);
+        writer.string(
+                "server_nonce",
+                DualMachineSidecarValues.hex(
+                        request.challenge.serverNonce()));
+        return writer.finish();
+    }
+
     private static byte[] startChallengeJson(
             StartChallengeRequest request) {
         JsonWriter writer = new JsonWriter();
@@ -870,6 +1087,29 @@ public final class DualMachineSidecarHttpClient
         } catch (IllegalArgumentException exception) {
             throw DualMachineStrictJson.contractError();
         }
+    }
+
+    private static String responseLowerHex(String value, int length)
+            throws IOException {
+        try {
+            return DualMachineSidecarValues.lowerHex(
+                    value, length, "responseHex");
+        } catch (IllegalArgumentException exception) {
+            throw DualMachineStrictJson.contractError();
+        }
+    }
+
+    private static byte[] responseLowerHexBytes(String value, int bytes)
+            throws IOException {
+        String checked = responseLowerHex(value, bytes * 2);
+        byte[] decoded = new byte[bytes];
+        for (int index = 0; index < bytes; index++) {
+            decoded[index] = (byte) ((Character.digit(
+                    checked.charAt(index * 2), 16) << 4)
+                    | Character.digit(
+                    checked.charAt(index * 2 + 1), 16));
+        }
+        return decoded;
     }
 
     private static String responseChallengeToken(String value)

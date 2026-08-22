@@ -17,6 +17,9 @@ public final class DualMachineEntitlementRecordSelfTest {
         DualMachineEntitlementRecord record = new DualMachineEntitlementRecord(
                 repeated('a', 32),
                 repeated('b', 32),
+                repeated('c', 32),
+                3L,
+                "active",
                 2,
                 7L,
                 HOST_KEY_SHA256,
@@ -34,6 +37,8 @@ public final class DualMachineEntitlementRecordSelfTest {
                 "replacement-alias",
                 repeated('d', 64)));
         check(!record.revoked);
+        check(record.hasActivePairSecurityBinding());
+        check(record.bindingRevision == 3L);
         DualMachineEntitlementRecord legacyBalance =
                 new DualMachineEntitlementRecord(
                         repeated('c', 32), repeated('d', 32), 2, 7L,
@@ -42,11 +47,23 @@ public final class DualMachineEntitlementRecordSelfTest {
                         "legacy_balance", "legacy_balance", false, false);
         check(legacyBalance.authorizationKind.equals("legacy_balance"));
         check(!legacyBalance.permanent);
+        check(!legacyBalance.hasActivePairSecurityBinding());
         DualMachineEntitlementRecord revoked =
                 record.withRevocationVersion(8L);
         check(revoked.revoked);
         check(revoked.revocationVersion == 8L);
         expectRejected(() -> record.withRevocationVersion(6L));
+        expectRejected(() -> new DualMachineEntitlementRecord(
+                repeated('a', 32), repeated('b', 32), "", 1L, "active",
+                2, 7L, HOST_KEY_SHA256, HOST_PUBLIC_KEY_BASE64,
+                repeated('d', 64), "valid-alias",
+                "day", "day", false, false));
+        expectRejected(() -> new DualMachineEntitlementRecord(
+                repeated('a', 32), repeated('b', 32),
+                repeated('c', 32), 0L, "active",
+                2, 7L, HOST_KEY_SHA256, HOST_PUBLIC_KEY_BASE64,
+                repeated('d', 64), "valid-alias",
+                "day", "day", false, false));
         expectRejected(() -> new DualMachineEntitlementRecord(
                 repeated('a', 32), repeated('b', 32), 1, 7L,
                 HOST_KEY_SHA256, HOST_PUBLIC_KEY_BASE64,

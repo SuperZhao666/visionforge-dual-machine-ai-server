@@ -9,6 +9,10 @@ import java.security.spec.ECGenParameterSpec;
 import java.util.Base64;
 import java.util.List;
 
+import com.visionforge.inferencebenchmark.handshake.AuthenticatedPeerHandshakeV1;
+import com.visionforge.inferencebenchmark.handshake.PairGenerationPopV1;
+import com.visionforge.inferencebenchmark.handshake.PairGenerationProposalV1;
+
 /** Contract, billing-boundary and hostile-response checks for the sidecar client. */
 public final class DualMachineSidecarHttpClientSelfTest {
     private static final String REQUEST_ID =
@@ -17,6 +21,8 @@ public final class DualMachineSidecarHttpClientSelfTest {
             "112233445566778899aabbccddeeff00";
     private static final String ENTITLEMENT_ID =
             "2233445566778899aabbccddeeff0011";
+    private static final String BINDING_ID =
+            "89aabbccddeeff001122334455667788";
     private static final String SESSION_ID =
             "33445566778899aabbccddeeff001122";
     private static final String CHALLENGE_ID =
@@ -55,7 +61,131 @@ public final class DualMachineSidecarHttpClientSelfTest {
         safeServerErrorCodesArePreserved();
         revocationVersionCompatibility();
         acceptsPermanentWireContract();
+        pairGenerationEndpointsAreStrictAndBound();
         System.out.println("ANDROID_DUAL_MACHINE_SIDECAR_CLIENT_OK");
+    }
+
+    private static void pairGenerationEndpointsAreStrictAndBound()
+            throws Exception {
+        Fixtures fixtures = fixtures();
+        String hostHash = DualMachinePairingIdentityCodec
+                .fingerprintHexFromBase64(
+                        fixtures.host.identityPublicKeyBase64);
+        String androidHash = DualMachinePairingIdentityCodec
+                .fingerprintHexFromBase64(
+                        fixtures.android.identityPublicKeyBase64);
+        PairGenerationPopV1.ChallengeRequest proof =
+                PairGenerationPopV1.buildChallengeRequest(
+                        new PairGenerationPopV1.ChallengeFields(
+                                REQUEST_ID,
+                                CANCEL_REQUEST_ID,
+                                ENTITLEMENT_ID,
+                                PAIR_ID,
+                                BINDING_ID,
+                                3L,
+                                1L,
+                                hostHash,
+                                androidHash));
+        DualMachineSidecarPort.PairGenerationChallengeRequest request =
+                new DualMachineSidecarPort.PairGenerationChallengeRequest(
+                        proof, SIGNATURE, SIGNATURE);
+        byte[] serverNonce = decodeHex(repeat("ab", 32));
+        FakeTransport transport = new FakeTransport();
+        DualMachineSidecarHttpClient client =
+                new DualMachineSidecarHttpClient(transport);
+        transport.response = bytes("{\"ok\":true,"
+                + "\"request_id\":\"" + REQUEST_ID + "\","
+                + "\"allocation_request_id\":\""
+                + CANCEL_REQUEST_ID + "\","
+                + "\"challenge_id\":\"" + CHALLENGE_ID + "\","
+                + "\"pair_id\":\"" + PAIR_ID + "\","
+                + "\"binding_revision\":3,"
+                + "\"server_nonce\":\"" + hex(serverNonce) + "\","
+                + "\"challenge_expires_at_epoch\":1700000120}");
+        DualMachineSidecarPort.PairGenerationChallengeResponse challenge =
+                client.createPairGenerationChallenge(request);
+        check(transport.path.equals(
+                "/api/dual-machine/v1/pair-generations/challenges"));
+        check(transport.requestText().contains(
+                "\"binding_id\":\"" + BINDING_ID + "\""));
+        check(!transport.requestText().contains(hostHash));
+        check(challenge.bindingRevision == 3L);
+
+        byte[] hostNonce = decodeHex(repeat("41", 32));
+        byte[] androidNonce = decodeHex(repeat("62", 32));
+        long connectionId = PairGenerationPopV1.deriveConnectionId(
+                serverNonce,
+                CHALLENGE_ID,
+                hostNonce,
+                androidNonce,
+                PAIR_ID,
+                hostHash,
+                androidHash);
+        PairGenerationProposalV1 proposal = PairGenerationProposalV1
+                .newBuilder()
+                .hostIdentitySpkiSha256(decodeHex(hostHash))
+                .androidIdentitySpkiSha256(decodeHex(androidHash))
+                .hostEphemeralPublicKey(decodeHex(
+                        "046b17d1f2e12c4247f8bce6e563a440"
+                                + "f277037d812deb33a0f4a13945d898c296"
+                                + "4fe342e2fe1a7f9b8ee7eb4a7c0f9e"
+                                + "162bce33576b315ececbb6406837bf51f5"))
+                .androidEphemeralPublicKey(decodeHex(
+                        "047cf27b188d034f7e8a52380304b51a"
+                                + "c3c08969e277f21b35a60b48fc47669978"
+                                + "07775510db8ed040293d9ac69f7430d"
+                                + "bba7dade63ce982299e04b79d227873d1"))
+                .hostNonce(hostNonce)
+                .androidNonce(androidNonce)
+                .connectionId(connectionId)
+                .transportKind(AuthenticatedPeerHandshakeV1.TransportKind.CAT6)
+                .hostIpv4(decodeHex("c0a83701"))
+                .androidIpv4(decodeHex("c0a83702"))
+                .videoPort(5000)
+                .controlPort(5001)
+                .pairId(PAIR_ID)
+                .hostRuntimeVersion("17.8.47")
+                .androidRuntimeVersion("17.8.47")
+                .build();
+        PairGenerationPopV1.FinalCredentialProof finalProof =
+                PairGenerationPopV1.buildFinalCredentialProof(
+                        proof,
+                        CHALLENGE_ID,
+                        challenge.expiresAtEpoch,
+                        serverNonce,
+                        proposal);
+        DualMachineSidecarPort.PairGenerationCredentialRequest
+                credentialRequest =
+                new DualMachineSidecarPort.PairGenerationCredentialRequest(
+                        finalProof,
+                        challenge,
+                        proposal,
+                        SIGNATURE,
+                        SIGNATURE);
+        String credentialSha256 = sha256Hex(USAGE_LEASE);
+        transport.response = bytes("{\"ok\":true,"
+                + "\"allocation_request_id\":\""
+                + CANCEL_REQUEST_ID + "\","
+                + "\"pair_id\":\"" + PAIR_ID + "\","
+                + "\"binding_revision\":3,\"generation\":9,"
+                + "\"connection_id\":" + connectionId + ","
+                + "\"transcript_proposal_sha256\":\""
+                + hex(proposal.proposalSha256()) + "\","
+                + "\"credential_token\":\"" + USAGE_LEASE + "\","
+                + "\"credential_sha256\":\"" + credentialSha256 + "\","
+                + "\"key_id\":\"abcdef0123456789\","
+                + "\"credential_issued_at_epoch\":1700000000,"
+                + "\"credential_not_before_epoch\":1700000000,"
+                + "\"credential_expires_at_epoch\":1700000015}");
+        DualMachineSidecarPort.PairGenerationCredentialResponse credential =
+                client.issuePairGenerationCredential(credentialRequest);
+        check(transport.path.equals(
+                "/api/dual-machine/v1/pair-generations/credentials"));
+        check(transport.requestText().contains(
+                "\"proposal_b64\":\""));
+        check(credential.generation == 9L);
+        check(credential.connectionId == connectionId);
+        check(credential.credentialSha256.equals(credentialSha256));
     }
 
     private static void acceptsPermanentWireContract() throws Exception {
@@ -671,7 +801,10 @@ public final class DualMachineSidecarHttpClientSelfTest {
         return bytes("{\"ok\":true,\"activation_id\":\"" + CHALLENGE_ID
                 + "\",\"entitlement_id\":\"" + ENTITLEMENT_ID
                 + "\",\"pair_id\":\"" + PAIR_ID
-                + "\",\"status\":\"active\",\"revocation_version\":1,"
+                + "\",\"binding_id\":\"" + BINDING_ID
+                + "\",\"binding_revision\":1,"
+                + "\"pair_assurance_state\":\"active\""
+                + ",\"status\":\"active\",\"revocation_version\":1,"
                 + "\"activation_mode\":\"" + activationMode + "\","
                 + "\"binding_updated\":" + bindingUpdated + ","
                 + "\"authorization_kind\":\"day\","
@@ -686,7 +819,10 @@ public final class DualMachineSidecarHttpClientSelfTest {
         return bytes("{\"ok\":true,\"activation_id\":\"" + CHALLENGE_ID
                 + "\",\"entitlement_id\":\"" + ENTITLEMENT_ID
                 + "\",\"pair_id\":\"" + PAIR_ID
-                + "\",\"status\":\"active\",\"revocation_version\":1,"
+                + "\",\"binding_id\":\"" + BINDING_ID
+                + "\",\"binding_revision\":1,"
+                + "\"pair_assurance_state\":\"active\""
+                + ",\"status\":\"active\",\"revocation_version\":1,"
                 + "\"activation_mode\":\"activate\","
                 + "\"binding_updated\":false,"
                 + "\"authorization_kind\":\"permanent\","
@@ -911,6 +1047,24 @@ public final class DualMachineSidecarHttpClientSelfTest {
         for (byte octet : digest) {
             result.append(Character.forDigit((octet >>> 4) & 0x0f, 16));
             result.append(Character.forDigit(octet & 0x0f, 16));
+        }
+        return result.toString();
+    }
+
+    private static byte[] decodeHex(String value) {
+        byte[] result = new byte[value.length() / 2];
+        for (int index = 0; index < result.length; index++) {
+            result[index] = (byte) Integer.parseInt(
+                    value.substring(index * 2, index * 2 + 2), 16);
+        }
+        return result;
+    }
+
+    private static String hex(byte[] value) {
+        StringBuilder result = new StringBuilder(value.length * 2);
+        for (byte current : value) {
+            result.append(Character.forDigit((current >>> 4) & 0x0f, 16));
+            result.append(Character.forDigit(current & 0x0f, 16));
         }
         return result.toString();
     }

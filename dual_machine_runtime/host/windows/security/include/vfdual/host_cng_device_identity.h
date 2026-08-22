@@ -12,6 +12,7 @@
 namespace vfdual {
 
 class HostPeerHandshakeTranscriptSignerV1;
+class HostPairGenerationPopSignerV1;
 
 /**
  * Host device identity protocol boundary.
@@ -357,7 +358,13 @@ private:
     create_peer_handshake_transcript_signature(
         const std::array<std::uint8_t, 32U>& transcript_sha256);
 
+    /** Dedicated bridge for the two typed pair-generation PoP payloads. */
+    [[nodiscard]] HostIdentityBytesResult
+    create_pair_generation_pop_signature(
+        const std::array<std::uint8_t, 32U>& payload_sha256);
+
     friend class HostPeerHandshakeTranscriptSignerV1;
+    friend class HostPairGenerationPopSignerV1;
 
     std::unique_ptr<CngSigningKey> key_;
     HostPublicIdentity public_identity_;

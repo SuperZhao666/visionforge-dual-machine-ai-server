@@ -174,6 +174,29 @@ if(WIN32)
     )
 endif()
 
+# Cross-language dual proof-of-possession contract for server-authoritative
+# pair-generation challenges and final credentials.  It owns canonical JSON,
+# challenge/proposal digest recomputation, and server-nonce-bound connection-ID
+# derivation; it does not expose a signing key or perform network I/O.
+add_library(vfdual_pair_generation_pop_v1 STATIC
+    shared/src/pair_generation_pop_v1.cpp
+)
+target_include_directories(vfdual_pair_generation_pop_v1 PUBLIC
+    shared/include
+)
+target_compile_definitions(vfdual_pair_generation_pop_v1 PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+target_link_libraries(vfdual_pair_generation_pop_v1 PUBLIC
+    vfdual_pair_generation_proposal_v1
+)
+if(WIN32)
+    target_link_libraries(vfdual_pair_generation_pop_v1 PRIVATE
+        bcrypt
+    )
+endif()
+
 if(WIN32)
     set(VFDUAL_GENERATED_SECURITY_DIRECTORY
         "${CMAKE_CURRENT_BINARY_DIR}/generated/host-security")
@@ -335,6 +358,24 @@ if(WIN32)
         vfdual_authenticated_peer_handshake_v1
     )
 
+    add_library(vfdual_host_pair_generation_pop_signer_v1 STATIC
+        host/windows/security/src/host_pair_generation_pop_signer_v1.cpp
+    )
+    target_include_directories(
+        vfdual_host_pair_generation_pop_signer_v1 PUBLIC
+        host/windows/security/include
+    )
+    target_compile_definitions(
+        vfdual_host_pair_generation_pop_signer_v1 PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    target_link_libraries(
+        vfdual_host_pair_generation_pop_signer_v1 PUBLIC
+        vfdual_host_cng_device_identity
+        vfdual_pair_generation_pop_v1
+    )
+
     add_library(vfdual_host_device_identity_runtime STATIC
         host/windows/security/src/host_device_identity_runtime.cpp
     )
@@ -346,6 +387,7 @@ if(WIN32)
     )
     target_link_libraries(vfdual_host_device_identity_runtime PUBLIC
         vfdual_host_peer_handshake_transcript_signer_v1
+        vfdual_host_pair_generation_pop_signer_v1
     )
 
     set(VFDUAL_GENERATED_RESOURCE_DIRECTORY
@@ -776,6 +818,17 @@ add_test(
     COMMAND vfdual_pair_generation_proposal_v1_tests
 )
 
+add_executable(vfdual_pair_generation_pop_v1_tests
+    tests/pair_generation_pop_v1_tests.cpp
+)
+target_link_libraries(vfdual_pair_generation_pop_v1_tests PRIVATE
+    vfdual_pair_generation_pop_v1
+)
+add_test(
+    NAME vfdual_pair_generation_pop_v1_tests
+    COMMAND vfdual_pair_generation_pop_v1_tests
+)
+
 if(WIN32)
     add_executable(vfdual_host_cng_device_identity_tests
         host/windows/security/tests/host_cng_device_identity_tests.cpp
@@ -802,6 +855,7 @@ if(WIN32)
     target_link_libraries(
         vfdual_host_peer_signer_v1_tests PRIVATE
         vfdual_host_peer_handshake_transcript_signer_v1
+        vfdual_host_pair_generation_pop_signer_v1
     )
     add_test(
         NAME vfdual_host_peer_handshake_transcript_signer_v1_tests

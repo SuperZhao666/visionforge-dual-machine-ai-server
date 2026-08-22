@@ -18,6 +18,9 @@ public final class DualMachineEntitlementRecord {
 
     public final String entitlementId;
     public final String pairId;
+    public final String bindingId;
+    public final long bindingRevision;
+    public final String pairAssuranceState;
     public final int protocolVersion;
     public final long revocationVersion;
     public final String hostKeySha256;
@@ -32,6 +35,9 @@ public final class DualMachineEntitlementRecord {
     public DualMachineEntitlementRecord(
             String entitlementId,
             String pairId,
+            String bindingId,
+            long bindingRevision,
+            String pairAssuranceState,
             int protocolVersion,
             long revocationVersion,
             String hostKeySha256,
@@ -41,6 +47,36 @@ public final class DualMachineEntitlementRecord {
         this(
                 entitlementId,
                 pairId,
+                bindingId,
+                bindingRevision,
+                pairAssuranceState,
+                protocolVersion,
+                revocationVersion,
+                hostKeySha256,
+                hostIdentityPublicKeyBase64,
+                androidKeySha256,
+                androidIdentityAlias,
+                "day",
+                "day",
+                false,
+                false);
+    }
+
+    public DualMachineEntitlementRecord(
+            String entitlementId,
+            String pairId,
+            int protocolVersion,
+            long revocationVersion,
+            String hostKeySha256,
+            String hostIdentityPublicKeyBase64,
+            String androidKeySha256,
+            String androidIdentityAlias) {
+        this(
+                entitlementId,
+                pairId,
+                "",
+                0L,
+                "legacy_blocked",
                 protocolVersion,
                 revocationVersion,
                 hostKeySha256,
@@ -66,6 +102,9 @@ public final class DualMachineEntitlementRecord {
         this(
                 entitlementId,
                 pairId,
+                "",
+                0L,
+                "legacy_blocked",
                 protocolVersion,
                 revocationVersion,
                 hostKeySha256,
@@ -91,8 +130,60 @@ public final class DualMachineEntitlementRecord {
             String productKey,
             boolean permanent,
             boolean revoked) {
+        this(
+                entitlementId,
+                pairId,
+                "",
+                0L,
+                "legacy_blocked",
+                protocolVersion,
+                revocationVersion,
+                hostKeySha256,
+                hostIdentityPublicKeyBase64,
+                androidKeySha256,
+                androidIdentityAlias,
+                authorizationKind,
+                productKey,
+                permanent,
+                revoked);
+    }
+
+    public DualMachineEntitlementRecord(
+            String entitlementId,
+            String pairId,
+            String bindingId,
+            long bindingRevision,
+            String pairAssuranceState,
+            int protocolVersion,
+            long revocationVersion,
+            String hostKeySha256,
+            String hostIdentityPublicKeyBase64,
+            String androidKeySha256,
+            String androidIdentityAlias,
+            String authorizationKind,
+            String productKey,
+            boolean permanent,
+            boolean revoked) {
         this.entitlementId = requireLowerHex(entitlementId, 32, "entitlementId");
         this.pairId = requireLowerHex(pairId, 32, "pairId");
+        this.pairAssuranceState = requirePairAssuranceState(
+                pairAssuranceState);
+        if ("active".equals(this.pairAssuranceState)) {
+            this.bindingId = requireLowerHex(bindingId, 32, "bindingId");
+            if (bindingRevision <= 0L) {
+                throw new IllegalArgumentException(
+                        "bindingRevision must be positive");
+            }
+            this.bindingRevision = bindingRevision;
+        } else {
+            if ((bindingId != null && !bindingId.isEmpty())
+                    || bindingRevision != 0L) {
+                throw new IllegalArgumentException(
+                        "legacy-blocked binding authority must be absent");
+            }
+            this.bindingId = "";
+            this.bindingRevision = 0L;
+        }
         if (protocolVersion != PROTOCOL_VERSION) {
             throw new IllegalArgumentException("unsupported protocolVersion");
         }
@@ -128,6 +219,12 @@ public final class DualMachineEntitlementRecord {
                 && androidKeySha256.equals(fingerprintSha256);
     }
 
+    public boolean hasActivePairSecurityBinding() {
+        return "active".equals(pairAssuranceState)
+                && !bindingId.isEmpty()
+                && bindingRevision > 0L;
+    }
+
     public byte[] hostIdentityPublicKeyDer() {
         return Base64.getDecoder().decode(hostIdentityPublicKeyBase64);
     }
@@ -141,6 +238,9 @@ public final class DualMachineEntitlementRecord {
         return new DualMachineEntitlementRecord(
                 entitlementId,
                 pairId,
+                bindingId,
+                bindingRevision,
+                pairAssuranceState,
                 protocolVersion,
                 confirmedRevocationVersion,
                 hostKeySha256,
@@ -163,8 +263,11 @@ public final class DualMachineEntitlementRecord {
                 && revocationVersion == other.revocationVersion
                 && permanent == other.permanent
                 && revoked == other.revoked
+                && bindingRevision == other.bindingRevision
                 && entitlementId.equals(other.entitlementId)
                 && pairId.equals(other.pairId)
+                && bindingId.equals(other.bindingId)
+                && pairAssuranceState.equals(other.pairAssuranceState)
                 && hostKeySha256.equals(other.hostKeySha256)
                 && hostIdentityPublicKeyBase64.equals(
                         other.hostIdentityPublicKeyBase64)
@@ -179,6 +282,9 @@ public final class DualMachineEntitlementRecord {
         return Objects.hash(
                 entitlementId,
                 pairId,
+                bindingId,
+                bindingRevision,
+                pairAssuranceState,
                 protocolVersion,
                 revocationVersion,
                 hostKeySha256,
@@ -195,6 +301,14 @@ public final class DualMachineEntitlementRecord {
         if (!isSupportedAuthorizationKind(value)) {
             throw new IllegalArgumentException(
                     "authorizationKind is invalid");
+        }
+        return value;
+    }
+
+    private static String requirePairAssuranceState(String value) {
+        if (!"active".equals(value) && !"legacy_blocked".equals(value)) {
+            throw new IllegalArgumentException(
+                    "pairAssuranceState is invalid");
         }
         return value;
     }

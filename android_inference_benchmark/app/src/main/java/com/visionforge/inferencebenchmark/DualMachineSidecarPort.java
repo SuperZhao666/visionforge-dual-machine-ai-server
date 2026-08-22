@@ -1,8 +1,14 @@
 package com.visionforge.inferencebenchmark;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+
+import com.visionforge.inferencebenchmark.handshake.PairGenerationPopV1;
+import com.visionforge.inferencebenchmark.handshake.PairGenerationProposalV1;
 
 /**
  * Explicit, account-free card and metered-usage boundary for the independent
@@ -43,6 +49,12 @@ public interface DualMachineSidecarPort {
 
     EntitlementStatusResponse fetchEntitlementStatus(
             EntitlementStatusRequest request) throws IOException;
+
+    PairGenerationChallengeResponse createPairGenerationChallenge(
+            PairGenerationChallengeRequest request) throws IOException;
+
+    PairGenerationCredentialResponse issuePairGenerationCredential(
+            PairGenerationCredentialRequest request) throws IOException;
 
     StartChallengeResponse createStartChallenge(
             StartChallengeRequest request) throws IOException;
@@ -164,6 +176,70 @@ public interface DualMachineSidecarPort {
                         "revocationVersion must be positive");
             }
             this.revocationVersion = revocationVersion;
+            this.hostSignatureBase64 = DualMachineSidecarValues.signature(
+                    hostSignatureBase64, "hostSignatureBase64");
+            this.androidSignatureBase64 = DualMachineSidecarValues.signature(
+                    androidSignatureBase64, "androidSignatureBase64");
+        }
+    }
+
+    final class PairGenerationChallengeRequest {
+        public final PairGenerationPopV1.ChallengeRequest proof;
+        public final String hostSignatureBase64;
+        public final String androidSignatureBase64;
+
+        public PairGenerationChallengeRequest(
+                PairGenerationPopV1.ChallengeRequest proof,
+                String hostSignatureBase64,
+                String androidSignatureBase64) {
+            if (proof == null) {
+                throw new IllegalArgumentException(
+                        "pair-generation challenge proof is required");
+            }
+            this.proof = proof;
+            this.hostSignatureBase64 = DualMachineSidecarValues.signature(
+                    hostSignatureBase64, "hostSignatureBase64");
+            this.androidSignatureBase64 = DualMachineSidecarValues.signature(
+                    androidSignatureBase64, "androidSignatureBase64");
+        }
+    }
+
+    final class PairGenerationCredentialRequest {
+        public final PairGenerationPopV1.FinalCredentialProof proof;
+        public final PairGenerationChallengeResponse challenge;
+        public final PairGenerationProposalV1 proposal;
+        public final String hostSignatureBase64;
+        public final String androidSignatureBase64;
+
+        public PairGenerationCredentialRequest(
+                PairGenerationPopV1.FinalCredentialProof proof,
+                PairGenerationChallengeResponse challenge,
+                PairGenerationProposalV1 proposal,
+                String hostSignatureBase64,
+                String androidSignatureBase64) {
+            if (proof == null || challenge == null || proposal == null) {
+                throw new IllegalArgumentException(
+                        "complete pair-generation credential proof is required");
+            }
+            PairGenerationPopV1.ChallengeFields fields =
+                    proof.challengeRequest().fields();
+            if (!fields.requestId.equals(challenge.requestId)
+                    || !fields.allocationRequestId.equals(
+                    challenge.allocationRequestId)
+                    || !fields.pairId.equals(challenge.pairId)
+                    || fields.bindingRevision != challenge.bindingRevision
+                    || !proof.challengeId().equals(challenge.challengeId)
+                    || proof.challengeExpiresAtEpoch()
+                    != challenge.expiresAtEpoch
+                    || proof.connectionId() != proposal.connectionId()
+                    || !proof.transcriptProposalSha256().equals(
+                    DualMachineSidecarValues.hex(proposal.proposalSha256()))) {
+                throw new IllegalArgumentException(
+                        "pair-generation credential proof is inconsistent");
+            }
+            this.proof = proof;
+            this.challenge = challenge;
+            this.proposal = proposal;
             this.hostSignatureBase64 = DualMachineSidecarValues.signature(
                     hostSignatureBase64, "hostSignatureBase64");
             this.androidSignatureBase64 = DualMachineSidecarValues.signature(
@@ -413,6 +489,9 @@ public interface DualMachineSidecarPort {
     final class ActivationResponse {
         public final String entitlementId;
         public final String pairId;
+        public final String bindingId;
+        public final long bindingRevision;
+        public final String pairAssuranceState;
         public final long revocationVersion;
         public final long creditedSeconds;
         public final long remainingSeconds;
@@ -428,6 +507,9 @@ public interface DualMachineSidecarPort {
         ActivationResponse(
                 String entitlementId,
                 String pairId,
+                String bindingId,
+                long bindingRevision,
+                String pairAssuranceState,
                 long revocationVersion,
                 long creditedSeconds,
                 long remainingSeconds,
@@ -437,6 +519,38 @@ public interface DualMachineSidecarPort {
             this(
                     entitlementId,
                     pairId,
+                    bindingId,
+                    bindingRevision,
+                    pairAssuranceState,
+                    revocationVersion,
+                    creditedSeconds,
+                    remainingSeconds,
+                    totalCreditedSeconds,
+                    totalConsumedSeconds,
+                    billingStarted,
+                    DualMachineUsageAuthorizationContract
+                            .ACTIVATION_MODE_ACTIVATE,
+                    false,
+                    "day",
+                    "day",
+                    false);
+        }
+
+        ActivationResponse(
+                String entitlementId,
+                String pairId,
+                long revocationVersion,
+                long creditedSeconds,
+                long remainingSeconds,
+                long totalCreditedSeconds,
+                long totalConsumedSeconds,
+                boolean billingStarted) {
+            this(
+                    entitlementId,
+                    pairId,
+                    "",
+                    0L,
+                    "legacy_blocked",
                     revocationVersion,
                     creditedSeconds,
                     remainingSeconds,
@@ -465,8 +579,62 @@ public interface DualMachineSidecarPort {
                 String authorizationKind,
                 String productKey,
                 boolean permanent) {
+            this(
+                    entitlementId,
+                    pairId,
+                    "",
+                    0L,
+                    "legacy_blocked",
+                    revocationVersion,
+                    creditedSeconds,
+                    remainingSeconds,
+                    totalCreditedSeconds,
+                    totalConsumedSeconds,
+                    billingStarted,
+                    activationMode,
+                    bindingUpdated,
+                    authorizationKind,
+                    productKey,
+                    permanent);
+        }
+
+        ActivationResponse(
+                String entitlementId,
+                String pairId,
+                String bindingId,
+                long bindingRevision,
+                String pairAssuranceState,
+                long revocationVersion,
+                long creditedSeconds,
+                long remainingSeconds,
+                long totalCreditedSeconds,
+                long totalConsumedSeconds,
+                boolean billingStarted,
+                String activationMode,
+                boolean bindingUpdated,
+                String authorizationKind,
+                String productKey,
+                boolean permanent) {
             this.entitlementId = entitlementId;
             this.pairId = pairId;
+            if ("active".equals(pairAssuranceState)) {
+                this.bindingId = DualMachineSidecarValues.hex128(
+                        bindingId, "bindingId");
+                if (bindingRevision <= 0L) {
+                    throw new IllegalArgumentException(
+                            "bindingRevision must be positive");
+                }
+                this.bindingRevision = bindingRevision;
+            } else if ("legacy_blocked".equals(pairAssuranceState)
+                    && (bindingId == null || bindingId.isEmpty())
+                    && bindingRevision == 0L) {
+                this.bindingId = "";
+                this.bindingRevision = 0L;
+            } else {
+                throw new IllegalArgumentException(
+                        "pair authority response is invalid");
+            }
+            this.pairAssuranceState = pairAssuranceState;
             this.revocationVersion = revocationVersion;
             this.creditedSeconds = creditedSeconds;
             this.remainingSeconds = remainingSeconds;
@@ -478,6 +646,107 @@ public interface DualMachineSidecarPort {
             this.authorizationKind = authorizationKind;
             this.productKey = productKey;
             this.permanent = permanent;
+        }
+    }
+
+    final class PairGenerationChallengeResponse {
+        public final String requestId;
+        public final String allocationRequestId;
+        public final String challengeId;
+        public final String pairId;
+        public final long bindingRevision;
+        public final long expiresAtEpoch;
+        private final byte[] serverNonce;
+
+        PairGenerationChallengeResponse(
+                String requestId,
+                String allocationRequestId,
+                String challengeId,
+                String pairId,
+                long bindingRevision,
+                byte[] serverNonce,
+                long expiresAtEpoch) {
+            this.requestId = DualMachineSidecarValues.hex128(
+                    requestId, "requestId");
+            this.allocationRequestId = DualMachineSidecarValues.hex128(
+                    allocationRequestId, "allocationRequestId");
+            this.challengeId = DualMachineSidecarValues.hex128(
+                    challengeId, "challengeId");
+            this.pairId = DualMachineSidecarValues.hex128(pairId, "pairId");
+            if (bindingRevision <= 0L || expiresAtEpoch <= 0L) {
+                throw new IllegalArgumentException(
+                        "pair-generation challenge counters are invalid");
+            }
+            this.bindingRevision = bindingRevision;
+            this.serverNonce = DualMachineSidecarValues.fixedNonzero(
+                    serverNonce, 32, "serverNonce");
+            this.expiresAtEpoch = expiresAtEpoch;
+        }
+
+        public byte[] serverNonce() {
+            return serverNonce.clone();
+        }
+    }
+
+    final class PairGenerationCredentialResponse {
+        public final String allocationRequestId;
+        public final String pairId;
+        public final long bindingRevision;
+        public final long generation;
+        public final long connectionId;
+        public final String transcriptProposalSha256;
+        public final String credentialToken;
+        public final String credentialSha256;
+        public final String keyId;
+        public final long issuedAtEpoch;
+        public final long notBeforeEpoch;
+        public final long expiresAtEpoch;
+
+        PairGenerationCredentialResponse(
+                String allocationRequestId,
+                String pairId,
+                long bindingRevision,
+                long generation,
+                long connectionId,
+                String transcriptProposalSha256,
+                String credentialToken,
+                String credentialSha256,
+                String keyId,
+                long issuedAtEpoch,
+                long notBeforeEpoch,
+                long expiresAtEpoch) {
+            this.allocationRequestId = DualMachineSidecarValues.hex128(
+                    allocationRequestId, "allocationRequestId");
+            this.pairId = DualMachineSidecarValues.hex128(pairId, "pairId");
+            if (bindingRevision <= 0L || generation <= 0L
+                    || connectionId <= 0L || issuedAtEpoch <= 0L
+                    || notBeforeEpoch != issuedAtEpoch
+                    || expiresAtEpoch <= notBeforeEpoch) {
+                throw new IllegalArgumentException(
+                        "pair-generation credential counters are invalid");
+            }
+            this.bindingRevision = bindingRevision;
+            this.generation = generation;
+            this.connectionId = connectionId;
+            this.transcriptProposalSha256 =
+                    DualMachineSidecarValues.sha256(
+                            transcriptProposalSha256,
+                            "transcriptProposalSha256");
+            this.credentialToken = DualMachineSidecarValues.compactJwt(
+                    credentialToken, "credentialToken");
+            this.credentialSha256 = DualMachineSidecarValues.sha256(
+                    credentialSha256, "credentialSha256");
+            if (!this.credentialSha256.equals(
+                    DualMachineSidecarValues.sha256Ascii(
+                            this.credentialToken))) {
+                throw new IllegalArgumentException(
+                        "pair-generation credential digest mismatch");
+            }
+            this.keyId = DualMachineSidecarValues.lowerHex(
+                    keyId, 16, "keyId");
+            this.issuedAtEpoch = issuedAtEpoch;
+            this.notBeforeEpoch = notBeforeEpoch;
+            this.expiresAtEpoch = expiresAtEpoch;
         }
     }
 
@@ -737,6 +1006,31 @@ final class DualMachineSidecarValues {
         return lowerHex(value, 64, name);
     }
 
+    static String hex(byte[] value) {
+        if (value == null) {
+            throw new IllegalArgumentException("bytes are required");
+        }
+        StringBuilder result = new StringBuilder(value.length * 2);
+        for (byte current : value) {
+            result.append(Character.forDigit((current >>> 4) & 0x0f, 16));
+            result.append(Character.forDigit(current & 0x0f, 16));
+        }
+        return result.toString();
+    }
+
+    static byte[] fixedNonzero(byte[] value, int length, String name) {
+        if (value == null || value.length != length) {
+            throw new IllegalArgumentException(name + " has invalid length");
+        }
+        byte[] copy = value.clone();
+        boolean nonzero = false;
+        for (byte current : copy) nonzero |= current != 0;
+        if (!nonzero) {
+            throw new IllegalArgumentException(name + " must not be all zero");
+        }
+        return copy;
+    }
+
     static String lowerHex(String value, int length, String name) {
         if (value == null || value.length() != length) {
             throw new IllegalArgumentException(name + " has invalid length");
@@ -899,6 +1193,13 @@ final class DualMachineSidecarValues {
         if (value == null || value.length() < 256 || value.length() > 8192) {
             throw new IllegalArgumentException(name + " has invalid length");
         }
+        return compactJwt(value, name);
+    }
+
+    static String compactJwt(String value, String name) {
+        if (value == null || value.length() < 64 || value.length() > 8192) {
+            throw new IllegalArgumentException(name + " has invalid length");
+        }
         int firstDot = value.indexOf('.');
         int secondDot = firstDot < 0 ? -1 : value.indexOf('.', firstDot + 1);
         if (firstDot <= 0 || secondDot <= firstDot + 1
@@ -922,6 +1223,15 @@ final class DualMachineSidecarValues {
                 value.substring(firstDot + 1, secondDot), name);
         requireBase64UrlSegment(value.substring(secondDot + 1), name);
         return value;
+    }
+
+    static String sha256Ascii(String value) {
+        try {
+            return hex(MessageDigest.getInstance("SHA-256").digest(
+                    value.getBytes(StandardCharsets.US_ASCII)));
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is unavailable");
+        }
     }
 
     private static void requireBase64UrlSegment(String value, String name) {

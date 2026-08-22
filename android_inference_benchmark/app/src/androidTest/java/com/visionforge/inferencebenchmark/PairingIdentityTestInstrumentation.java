@@ -298,6 +298,9 @@ public final class PairingIdentityTestInstrumentation extends Instrumentation {
                 new DualMachineEntitlementRecord(
                         repeated('a', 32),
                         repeated('b', 32),
+                        repeated('c', 32),
+                        3L,
+                        "active",
                         2,
                         7L,
                         HOST_KEY_SHA256,
@@ -328,7 +331,7 @@ public final class PairingIdentityTestInstrumentation extends Instrumentation {
                 preferences, legacyBalance, 2, false, false);
         require(legacyBalance.equals(store.load()),
                 "schema-2 balance entitlement must survive migration");
-        require(preferences.getInt("schema_version", -1) == 4,
+        require(preferences.getInt("schema_version", -1) == 5,
                 "schema-2 entitlement migration must commit the current schema");
 
         DualMachineEntitlementRecord revokedLegacyBalance =
@@ -349,7 +352,7 @@ public final class PairingIdentityTestInstrumentation extends Instrumentation {
                 preferences, revokedLegacyBalance, 3, false, true);
         require(revokedLegacyBalance.equals(store.load()),
                 "schema-3 revoked balance entitlement must survive migration");
-        require(preferences.getInt("schema_version", -1) == 4,
+        require(preferences.getInt("schema_version", -1) == 5,
                 "schema-3 entitlement migration must commit the current schema");
 
         writeLegacyEntitlementFixture(
@@ -387,7 +390,7 @@ public final class PairingIdentityTestInstrumentation extends Instrumentation {
                     schemaVersion >= 3);
             require(legacyPermanent.equals(store.load()),
                     "legacy permanent entitlement must survive migration");
-            require(preferences.getInt("schema_version", -1) == 4,
+            require(preferences.getInt("schema_version", -1) == 5,
                     "legacy permanent migration must commit current schema");
         }
 
