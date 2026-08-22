@@ -36,9 +36,11 @@ option(VFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS
 option(VFDUAL_FORMAL_SECURE_DATA_PLANE_ONLY
     "Build only the authenticated formal v2 data plane without plaintext fallback" OFF)
 option(VFDUAL_ENFORCE_HOST_RELEASE_SECURITY_INPUTS
-    "Require and validate the Host public usage-ticket verification keyring" OFF)
+    "Require and validate disjoint Host usage-ticket and pair-credential public keyrings" OFF)
 set(VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64 "" CACHE STRING
     "Semicolon-separated canonical Base64 encodings of public PEM files")
+set(VFDUAL_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEYS_BASE64 "" CACHE STRING
+    "Semicolon-separated canonical Base64 encodings of pair-credential public PEM files")
 include("${CMAKE_CURRENT_SOURCE_DIR}/formal_security_loader.cmake")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -240,6 +242,44 @@ if(WIN32)
         "${VFDUAL_GENERATED_SECURITY_DIRECTORY}/vfdual/host_usage_ticket_keyring_build.hpp"
         @ONLY)
 
+    set(VFDUAL_PAIR_CREDENTIAL_KEY_ENTRIES "")
+    set(VFDUAL_PAIR_CREDENTIAL_KEY_COUNT 0)
+    if(NOT "${VFDUAL_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEYS_BASE64}" STREQUAL "")
+        set(VFDUAL_PAIR_CREDENTIAL_KEY_LIST
+            ${VFDUAL_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEYS_BASE64})
+        list(LENGTH VFDUAL_PAIR_CREDENTIAL_KEY_LIST
+            VFDUAL_PAIR_CREDENTIAL_KEY_COUNT)
+        if(VFDUAL_PAIR_CREDENTIAL_KEY_COUNT LESS 1 OR
+                VFDUAL_PAIR_CREDENTIAL_KEY_COUNT GREATER 3)
+            message(FATAL_ERROR
+                "Host release requires 1-3 public pair-credential keys")
+        endif()
+        foreach(VFDUAL_PAIR_CREDENTIAL_KEY_BASE64 IN LISTS
+                VFDUAL_PAIR_CREDENTIAL_KEY_LIST)
+            string(LENGTH "${VFDUAL_PAIR_CREDENTIAL_KEY_BASE64}"
+                VFDUAL_PAIR_CREDENTIAL_KEY_BASE64_LENGTH)
+            math(EXPR VFDUAL_PAIR_CREDENTIAL_KEY_BASE64_REMAINDER
+                "${VFDUAL_PAIR_CREDENTIAL_KEY_BASE64_LENGTH} % 4")
+            if(VFDUAL_PAIR_CREDENTIAL_KEY_BASE64_LENGTH LESS 256 OR
+                    VFDUAL_PAIR_CREDENTIAL_KEY_BASE64_LENGTH GREATER 32768 OR
+                    NOT VFDUAL_PAIR_CREDENTIAL_KEY_BASE64_REMAINDER EQUAL 0 OR
+                    NOT "${VFDUAL_PAIR_CREDENTIAL_KEY_BASE64}" MATCHES
+                        "^[A-Za-z0-9+/=]+$")
+                message(FATAL_ERROR
+                    "Host pair-credential public-key input is not canonical Base64")
+            endif()
+            string(APPEND VFDUAL_PAIR_CREDENTIAL_KEY_ENTRIES
+                "        \"${VFDUAL_PAIR_CREDENTIAL_KEY_BASE64}\",\n")
+        endforeach()
+    elseif(VFDUAL_ENFORCE_HOST_RELEASE_SECURITY_INPUTS)
+        message(FATAL_ERROR
+            "VFDUAL_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEYS_BASE64 is required for a formal Host release")
+    endif()
+    configure_file(
+        host/windows/security/host_pair_generation_credential_keyring_build.hpp.in
+        "${VFDUAL_GENERATED_SECURITY_DIRECTORY}/vfdual/host_pair_generation_credential_keyring_build.hpp"
+        @ONLY)
+
     add_library(vfdual_host_usage_lease_verifier_v1 STATIC
         host/windows/security/src/host_usage_lease_verifier_v1.cpp
     )
@@ -265,13 +305,6 @@ if(WIN32)
     target_link_libraries(vfdual_host_release_security_input_probe PRIVATE
         vfdual_host_usage_lease_verifier_v1
     )
-    add_custom_target(verify_host_release_security_inputs
-        COMMAND $<TARGET_FILE:vfdual_host_release_security_input_probe>
-        DEPENDS vfdual_host_release_security_input_probe
-        COMMENT "Validating public-only Host release security inputs (HOST_AUTHORIZATION_GATE=required)"
-        VERBATIM
-    )
-
     # Compile the verifier again with its fixture-only factory. This target does
     # not link the production verifier object, so test key material and seams
     # cannot enter VisionForgeHost.
@@ -313,17 +346,20 @@ if(WIN32)
         ncrypt
     )
 
-    # Strict RS256 pair-generation credential verifier foundation only. Its
-    # production factory accepts no runtime key source and currently fails
-    # closed because formal build-pinned public material is not yet composed.
-    # Keep it unlinked from VisionForgeHost until both peer consumers and the
-    # authenticated generation coordinator are complete.
+    # Strict RS256 pair-generation credential verifier. Its production factory
+    # accepts only generated build-pinned public material and checks every
+    # usage-ticket key as an explicitly disjoint other-purpose keyring. Keep it
+    # unlinked from VisionForgeHost until the authenticated coordinator owns it.
     add_library(vfdual_host_pair_generation_credential_verifier_v1 STATIC
         host/windows/security/src/host_pair_generation_credential_verifier_v1.cpp
     )
     target_include_directories(
         vfdual_host_pair_generation_credential_verifier_v1 PUBLIC
         host/windows/security/include
+    )
+    target_include_directories(
+        vfdual_host_pair_generation_credential_verifier_v1 PRIVATE
+        "${VFDUAL_GENERATED_SECURITY_DIRECTORY}"
     )
     target_compile_definitions(
         vfdual_host_pair_generation_credential_verifier_v1 PRIVATE
@@ -334,6 +370,23 @@ if(WIN32)
         vfdual_host_pair_generation_credential_verifier_v1 PRIVATE
         bcrypt
         crypt32
+    )
+
+    add_executable(vfdual_host_pair_credential_release_input_probe
+        host/windows/security/tests/host_pair_generation_credential_release_input_probe.cpp
+    )
+    target_link_libraries(
+        vfdual_host_pair_credential_release_input_probe PRIVATE
+        vfdual_host_pair_generation_credential_verifier_v1
+    )
+    add_custom_target(verify_host_release_security_inputs
+        COMMAND $<TARGET_FILE:vfdual_host_release_security_input_probe>
+        COMMAND $<TARGET_FILE:vfdual_host_pair_credential_release_input_probe>
+        DEPENDS
+            vfdual_host_release_security_input_probe
+            vfdual_host_pair_credential_release_input_probe
+        COMMENT "Validating disjoint public-only Host release security inputs (HOST_AUTHORIZATION_GATE=required)"
+        VERBATIM
     )
 
     # Restricted typed-transcript signing foundation only. It owns the Host
@@ -886,6 +939,7 @@ if(WIN32)
         target_include_directories(
             vfdual_host_pair_credential_v1_tests PRIVATE
             host/windows/security/include
+            "${VFDUAL_GENERATED_SECURITY_DIRECTORY}"
         )
         target_compile_definitions(
             vfdual_host_pair_credential_v1_tests PRIVATE

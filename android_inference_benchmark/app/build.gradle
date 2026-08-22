@@ -66,8 +66,18 @@ def dualMachinePreviousTicketPublicKeyFiles = providers
         .gradleProperty('visionforgeDualMachinePreviousTicketPublicKeyFiles')
         .getOrElse(System.getenv(
                 'VISIONFORGE_DUAL_MACHINE_PREVIOUS_TICKET_PUBLIC_KEY_FILES') ?: '')
+def dualMachinePairCredentialPublicKeyFile = providers
+        .gradleProperty('visionforgeDualMachinePairCredentialPublicKeyFile')
+        .getOrElse(System.getenv(
+                'VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE') ?: '')
+def dualMachinePreviousPairCredentialPublicKeyFiles = providers
+        .gradleProperty('visionforgeDualMachinePreviousPairCredentialPublicKeyFiles')
+        .getOrElse(System.getenv(
+                'VISIONFORGE_DUAL_MACHINE_PREVIOUS_PAIR_CREDENTIAL_PUBLIC_KEY_FILES') ?: '')
 def deployedDualMachineTicketPublicKeyFile = rootProject.file(
         '../dual_machine_runtime/production_usage_ticket_v1_public.pem')
+def deployedDualMachinePairCredentialPublicKeyFile = rootProject.file(
+        '../dual_machine_runtime/production_pair_generation_credential_v1_public.pem')
 def canonicalDualMachineApiBaseUrl = 'https://www.visionforge.cloud'
 def androidDebugCertSha256 = '179faf0492d0b49d66bdefcc66bc51541602525a25b8af8c4e42345a770c7155'
 def productionVersionCode = (dualMachineAndroidRelease.version_code as Number).intValue()
@@ -188,6 +198,68 @@ def encodedTicketPublicKeys = {
             .findAll { !it.isEmpty() }
             .each { paths.add(it) }
     return paths.collect(encodedPublicKeyFile).findAll { !it.isEmpty() }.join(';')
+}
+def requireDualMachinePairCredentialPublicKeyId = { File keyFile ->
+    if (!keyFile.isFile()) {
+        throw new GradleException(
+                "Dual-machine pair-credential public key is missing: ${keyFile}")
+    }
+    byte[] contents = keyFile.bytes
+    if (contents.length < 256 || contents.length > 16 * 1024) {
+        throw new GradleException(
+                "Dual-machine pair-credential public key PEM size is invalid: ${keyFile}")
+    }
+    String text = new String(contents, java.nio.charset.StandardCharsets.US_ASCII).trim()
+    String begin = '-----BEGIN PUBLIC KEY-----'
+    String end = '-----END PUBLIC KEY-----'
+    if (!text.startsWith(begin)
+            || !text.endsWith(end)
+            || text.contains('PRIVATE KEY')
+            || text.indexOf(begin, 1) >= 0) {
+        throw new GradleException(
+                "Dual-machine pair-credential key must be exactly one public PEM: ${keyFile}")
+    }
+    byte[] der
+    try {
+        der = Base64.decoder.decode(
+                text.substring(begin.length(), text.length() - end.length())
+                        .replaceAll('\\s', ''))
+    } catch (IllegalArgumentException invalid) {
+        throw new GradleException(
+                "Dual-machine pair-credential public key PEM body is invalid: ${keyFile}",
+                invalid)
+    }
+    def publicKey = KeyFactory.getInstance('RSA')
+            .generatePublic(new X509EncodedKeySpec(der))
+    if (!(publicKey instanceof RSAPublicKey)
+            || publicKey.modulus.bitLength() < 3072
+            || !MessageDigest.isEqual(publicKey.encoded, der)) {
+        throw new GradleException(
+                "Dual-machine pair-credential key must be canonical RSA-3072+ SPKI: ${keyFile}")
+    }
+    return dualMachineSha256Hex(der).substring(0, 16)
+}
+def encodedPairCredentialPublicKeyFile = { String path ->
+    if (path == null || path.isBlank()) return ''
+    File keyFile = file(path)
+    if (!keyFile.isFile()) return ''
+    byte[] contents = keyFile.bytes
+    requireDualMachinePairCredentialPublicKeyId(keyFile)
+    return java.util.Base64.encoder.encodeToString(contents)
+}
+def encodedPairCredentialPublicKeys = {
+    List<String> paths = []
+    if (!dualMachinePairCredentialPublicKeyFile.isBlank()) {
+        paths.add(dualMachinePairCredentialPublicKeyFile)
+    }
+    dualMachinePreviousPairCredentialPublicKeyFiles
+            .split(';')
+            .collect { it.trim() }
+            .findAll { !it.isEmpty() }
+            .each { paths.add(it) }
+    return paths.collect(encodedPairCredentialPublicKeyFile)
+            .findAll { !it.isEmpty() }
+            .join(';')
 }
 def loadReleaseKeyStore = { File store ->
     List<String> storeTypes = store.name.toLowerCase(Locale.ROOT).endsWith('.jks')
@@ -347,6 +419,10 @@ android {
                 'DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64',
                 buildConfigString(encodedTicketPublicKeys()))
         buildConfigField(
+                'String',
+                'DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEYS_BASE64',
+                buildConfigString(encodedPairCredentialPublicKeys()))
+        buildConfigField(
                 'boolean',
                 'APP_SIGNING_INTEGRITY_REQUIRED',
                 'false')
@@ -391,7 +467,7 @@ android {
 
 tasks.register('verifyDualMachineReleaseSecurityInputs') {
     group = 'verification'
-    description = 'Rejects release builds without rotated TLS pins and pinned public lease keys.'
+    description = 'Rejects release builds without rotated TLS pins and disjoint pinned public lease/pair keys.'
     doLast {
         requireDualMachineTlsPins(dualMachineTlsSpkiPins)
         List<String> keyPaths = []
@@ -420,6 +496,43 @@ tasks.register('verifyDualMachineReleaseSecurityInputs') {
             if (!keyIds.add(keyId)) {
                 throw new GradleException(
                         "Dual-machine ticket public key is duplicated: ${keyPath}")
+            }
+        }
+
+        List<String> pairKeyPaths = []
+        if (!dualMachinePairCredentialPublicKeyFile.isBlank()) {
+            pairKeyPaths.add(dualMachinePairCredentialPublicKeyFile)
+        }
+        pairKeyPaths.addAll(
+                dualMachinePreviousPairCredentialPublicKeyFiles
+                        .split(';')
+                        .collect { it.trim() }
+                        .findAll { !it.isEmpty() })
+        if (pairKeyPaths.isEmpty() || pairKeyPaths.size() > 3) {
+            throw new GradleException(
+                    'Release requires 1-3 pinned RS256 public pair-credential keys.')
+        }
+        String deployedPairKeyId =
+                requireDualMachinePairCredentialPublicKeyId(
+                        deployedDualMachinePairCredentialPublicKeyFile)
+        String primaryPairKeyId =
+                requireDualMachinePairCredentialPublicKeyId(
+                        file(pairKeyPaths.first()))
+        if (primaryPairKeyId != deployedPairKeyId) {
+            throw new GradleException(
+                    "Primary dual-machine pair-credential key ${primaryPairKeyId} does not match the deployed production Sidecar key ${deployedPairKeyId}.")
+        }
+        Set<String> pairKeyIds = new LinkedHashSet<>()
+        pairKeyPaths.each { String keyPath ->
+            String keyId = requireDualMachinePairCredentialPublicKeyId(
+                    file(keyPath))
+            if (!pairKeyIds.add(keyId)) {
+                throw new GradleException(
+                        "Dual-machine pair-credential public key is duplicated: ${keyPath}")
+            }
+            if (keyIds.contains(keyId)) {
+                throw new GradleException(
+                        "Dual-machine public key ${keyId} is reused for usage tickets and pair credentials.")
             }
         }
     }
