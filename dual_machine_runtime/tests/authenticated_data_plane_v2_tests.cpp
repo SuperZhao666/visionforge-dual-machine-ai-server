@@ -1,4 +1,5 @@
 #include "vfdual/authenticated_data_plane_v2.hpp"
+#include "vfdual/authenticated_mouse_button_v2.hpp"
 
 #include <algorithm>
 #include <array>
@@ -392,6 +393,92 @@ void verify_java_cpp_interop_vector() {
     CHECK(opened.status == vfdual::PacketOpenStatus::opened);
     CHECK(opened.authenticated_counter == counter);
     CHECK(opened.plaintext == bytes("interop-v2"));
+#endif
+}
+
+void verify_authenticated_mouse_button_v2_foundation() {
+    constexpr std::uint64_t connection_id = 0x1020'3040'5060'7080ULL;
+    constexpr std::uint64_t counter = 0x0012'3456ULL;
+    constexpr std::uint8_t button_mask = 0x13U;
+    std::array<std::byte, vfdual::kAuthenticatedMouseButtonTrafficMaterialBytes>
+        traffic_material{};
+    for (std::size_t index{}; index < vfdual::kAes256KeyBytes; ++index) {
+        traffic_material[index] = std::byte{static_cast<std::uint8_t>(index)};
+    }
+    traffic_material[vfdual::kAes256KeyBytes] = std::byte{0xa1U};
+    traffic_material[vfdual::kAes256KeyBytes + 1U] = std::byte{0xb2U};
+    traffic_material[vfdual::kAes256KeyBytes + 2U] = std::byte{0xc3U};
+    traffic_material[vfdual::kAes256KeyBytes + 3U] = std::byte{0xd4U};
+
+    const auto tuple =
+        vfdual::make_authenticated_mouse_button_host_to_android_tuple(
+            connection_id);
+    CHECK(tuple.connection_id == connection_id);
+    CHECK(tuple.key_epoch == vfdual::kAuthenticatedMouseButtonKeyEpochV1);
+    CHECK(tuple.direction == vfdual::DataPlaneDirection::host_to_android);
+    CHECK(tuple.packet_type == vfdual::AuthenticatedPacketType::mouse_button);
+
+    auto key = vfdual::make_authenticated_mouse_button_host_to_android_key(
+        connection_id, traffic_material);
+    CHECK(key.tuple == tuple);
+    CHECK(std::equal(
+        key.aes_256_key.begin(),
+        key.aes_256_key.end(),
+        traffic_material.begin()));
+    CHECK(std::equal(
+        key.nonce_prefix.begin(),
+        key.nonce_prefix.end(),
+        traffic_material.begin() +
+            static_cast<std::ptrdiff_t>(vfdual::kAes256KeyBytes)));
+
+    std::array<std::byte, vfdual::kAuthenticatedMouseButtonPayloadBytes>
+        payload{};
+    CHECK(vfdual::encode_authenticated_mouse_button_payload(
+        button_mask, payload));
+    CHECK(payload[0] == std::byte{button_mask});
+    std::uint8_t decoded_mask{};
+    CHECK(vfdual::decode_authenticated_mouse_button_payload(
+        payload, decoded_mask));
+    CHECK(decoded_mask == button_mask);
+    CHECK(!vfdual::encode_authenticated_mouse_button_payload(0x20U, payload));
+    CHECK(payload[0] == std::byte{0U});
+    CHECK(!vfdual::decode_authenticated_mouse_button_payload({}, decoded_mask));
+    CHECK(decoded_mask == 0U);
+    const std::array malformed_payload{std::byte{0x20U}};
+    CHECK(!vfdual::decode_authenticated_mouse_button_payload(
+        malformed_payload, decoded_mask));
+    CHECK(decoded_mask == 0U);
+
+    const auto expected_wire = bytes_from_hex(
+        "5646413202200401102030405060708000000001000000000012345600000001"
+        "e538c212489c5714a9ab8b22096d01bc92");
+    const auto parsed = vfdual::parse_authenticated_packet_v2(expected_wire);
+    CHECK(parsed.status == vfdual::PacketParseStatus::parsed);
+    CHECK(parsed.packet.tuple == tuple);
+    CHECK(parsed.packet.counter == counter);
+    CHECK(parsed.packet.ciphertext.size() ==
+        vfdual::kAuthenticatedMouseButtonPayloadBytes);
+
+#if defined(_WIN32)
+    auto provider = make_test_provider();
+    auto sealer = vfdual::AuthenticatedDataPlaneV2TestAccess::make_sealer(
+        std::move(key), *provider, counter);
+    const auto sealed = sealer->seal(std::array{std::byte{button_mask}});
+    CHECK(sealed.status == vfdual::PacketSealStatus::sealed);
+    CHECK(sealed.datagram == expected_wire);
+
+    vfdual::AuthenticatedPacketOpener opener(
+        vfdual::make_authenticated_mouse_button_host_to_android_key(
+            connection_id, traffic_material),
+        *provider);
+    const auto opened = opener.open(expected_wire);
+    CHECK(opened.status == vfdual::PacketOpenStatus::opened);
+    CHECK(opened.authenticated_counter == counter);
+    CHECK(vfdual::decode_authenticated_mouse_button_payload(
+        opened.plaintext, decoded_mask));
+    CHECK(decoded_mask == button_mask);
+    CHECK(opener.open(expected_wire).status ==
+        vfdual::PacketOpenStatus::duplicate);
 #endif
 }
 
@@ -790,6 +877,7 @@ void verify_windows_provider_matches_aes_256_gcm_vector() {
 int main() {
     verify_nonce_layout_and_round_trip();
     verify_java_cpp_interop_vector();
+    verify_authenticated_mouse_button_v2_foundation();
     verify_tag_aad_and_ciphertext_fail_closed();
     verify_encryption_failure_burns_nonce_counter();
     verify_malformed_lengths_fail_closed();

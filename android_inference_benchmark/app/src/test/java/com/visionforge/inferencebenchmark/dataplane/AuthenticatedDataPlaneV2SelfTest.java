@@ -27,9 +27,13 @@ public final class AuthenticatedDataPlaneV2SelfTest {
     private static final String VECTOR_WIRE_HEX =
             VECTOR_HEADER_HEX
                     + "9f6f11ab7a5393b4deda150df8b50ba9769f359e4cb09f4eddaf";
+    private static final String MOUSE_VECTOR_WIRE_HEX =
+            "5646413202200401102030405060708000000001000000000012345600000001"
+                    + "e538c212489c5714a9ab8b22096d01bc92";
 
     public static void main(String[] arguments) throws Exception {
         verifiesFixedCrossLanguageVectorAndDefensiveCopies();
+        verifiesAuthenticatedMouseButtonV2Foundation();
         verifiesMutationsDoNotAdvanceReplayState();
         verifiesWrongConnectionEpochDirectionTypeKeyAndPrefix();
         verifiesLimitedOutOfOrderAndReplayRejection();
@@ -40,6 +44,88 @@ public final class AuthenticatedDataPlaneV2SelfTest {
         verifiesUnsignedDomainBitPatterns();
         verifiesStrictEnvelopeParsingAndUdpBudget();
         verifiesClosedEndpointsAndInvalidInputsFailClosed();
+    }
+
+    private static void verifiesAuthenticatedMouseButtonV2Foundation()
+            throws Exception {
+        byte[] material = hex(TEST_KEY_HEX + TEST_PREFIX_HEX);
+        byte[] key = hex(TEST_KEY_HEX);
+        byte[] prefix = hex(TEST_PREFIX_HEX);
+        byte[] payload = AuthenticatedMouseButtonV2.encodeButtonMask(0x13);
+        byte[] expectedWire = hex(MOUSE_VECTOR_WIRE_HEX);
+        AuthenticatedDataPlaneV2.Domain domain =
+                AuthenticatedMouseButtonV2.createHostToAndroidDomain(CONNECTION_ID);
+        require(domain.connectionId() == CONNECTION_ID, "mouse connection id");
+        require(domain.keyEpoch() == AuthenticatedMouseButtonV2.KEY_EPOCH_V1,
+                "peer-handshake v1 mouse key epoch");
+        require(domain.direction() == AuthenticatedDataPlaneV2.Direction.HOST_TO_ANDROID,
+                "mouse direction");
+        require(domain.messageType() == AuthenticatedDataPlaneV2.MessageType.MOUSE_BUTTON,
+                "mouse packet type");
+
+        try (AuthenticatedDataPlaneV2Sender sender =
+                        AuthenticatedDataPlaneV2.newSender(
+                                key,
+                                prefix,
+                                domain,
+                                AuthenticatedMouseButtonV2.PAYLOAD_BYTES,
+                                VECTOR_COUNTER);
+                AuthenticatedDataPlaneV2Receiver receiver =
+                        AuthenticatedMouseButtonV2.newReceiver(
+                                material, CONNECTION_ID)) {
+            Arrays.fill(material, (byte) 0x5a);
+            byte[] envelope = sender.seal(payload);
+            require(Arrays.equals(envelope, expectedWire),
+                    "Java mouse envelope must match the cross-language fixture");
+            byte[] opened = receiver.open(expectedWire);
+            try {
+                require(AuthenticatedMouseButtonV2.decodeButtonMask(opened) == 0x13,
+                        "authenticated mouse payload round-trip");
+            } finally {
+                Arrays.fill(opened, (byte) 0);
+            }
+            expectReason(UNAUTHENTICATED_PACKET, () -> receiver.open(envelope));
+            clearAll(envelope);
+        }
+
+        require(AuthenticatedMouseButtonV2.decodeButtonMask(new byte[] {0x00}) == 0,
+                "released button mask");
+        require(AuthenticatedMouseButtonV2.decodeButtonMask(new byte[] {0x1f}) == 0x1f,
+                "all supported buttons");
+        require(AuthenticatedMouseButtonV2.decodeButtonMask(new byte[] {0x20}) == -1,
+                "unsupported button bit rejected");
+        require(AuthenticatedMouseButtonV2.decodeButtonMask(new byte[0]) == -1,
+                "empty mouse payload rejected");
+        require(AuthenticatedMouseButtonV2.decodeButtonMask(new byte[] {1, 2}) == -1,
+                "oversized mouse payload rejected");
+        byte[] freshMaterial = hex(TEST_KEY_HEX + TEST_PREFIX_HEX);
+        byte[] oversizedEnvelope = sealAtCounter(
+                key, prefix, domain, VECTOR_COUNTER, new byte[] {1, 2});
+        try (AuthenticatedDataPlaneV2Receiver receiver =
+                AuthenticatedMouseButtonV2.newReceiver(
+                        freshMaterial, CONNECTION_ID)) {
+            expectReason(
+                    UNAUTHENTICATED_PACKET,
+                    () -> receiver.open(oversizedEnvelope));
+            byte[] opened = receiver.open(expectedWire);
+            try {
+                require(AuthenticatedMouseButtonV2.decodeButtonMask(opened) == 0x13,
+                        "oversized rejection must not poison replay state");
+            } finally {
+                Arrays.fill(opened, (byte) 0);
+            }
+        }
+        expectIllegalArgument(() -> AuthenticatedMouseButtonV2.encodeButtonMask(0x20));
+        expectIllegalArgument(() -> AuthenticatedMouseButtonV2.newReceiver(
+                new byte[35], CONNECTION_ID));
+        clearAll(
+                material,
+                freshMaterial,
+                key,
+                prefix,
+                payload,
+                expectedWire,
+                oversizedEnvelope);
     }
 
     private static void verifiesFixedCrossLanguageVectorAndDefensiveCopies()
