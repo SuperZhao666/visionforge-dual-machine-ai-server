@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <bcrypt.h>
+#include <sddl.h>
 
 #include <algorithm>
 #include <array>
@@ -259,7 +260,38 @@ vfdual::CngKeyMetadata formal_metadata() {
         .export_policy = 0U,
         .implementation_type = vfdual::kCngImplementationHardwareFlag,
         .key_type = vfdual::kCngMachineKeyFlag,
+        .formal_machine_key_dacl_verified = true,
     };
+}
+
+std::vector<std::uint8_t> sid_from_string(const wchar_t* value) {
+    PSID native_sid{};
+    CHECK(ConvertStringSidToSidW(value, &native_sid) != FALSE);
+    CHECK(native_sid != nullptr);
+    CHECK(IsValidSid(native_sid) != FALSE);
+    const DWORD size = GetLengthSid(native_sid);
+    CHECK(size != 0U);
+    std::vector<std::uint8_t> sid(size, 0U);
+    CHECK(CopySid(size, sid.data(), native_sid) != FALSE);
+    CHECK(LocalFree(native_sid) == nullptr);
+    return sid;
+}
+
+std::vector<std::uint8_t> descriptor_from_sddl(const wchar_t* value) {
+    PSECURITY_DESCRIPTOR native_descriptor{};
+    ULONG size{};
+    CHECK(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        value,
+        SDDL_REVISION_1,
+        &native_descriptor,
+        &size) != FALSE);
+    CHECK(native_descriptor != nullptr);
+    CHECK(size >= sizeof(SECURITY_DESCRIPTOR_RELATIVE));
+    const auto* bytes =
+        static_cast<const std::uint8_t*>(native_descriptor);
+    std::vector<std::uint8_t> descriptor(bytes, bytes + size);
+    CHECK(LocalFree(native_descriptor) == nullptr);
+    return descriptor;
 }
 
 template <std::size_t Size>
@@ -442,12 +474,82 @@ void test_formal_descriptor_requires_hardware() {
         vfdual::HostIdentityPolicy::formal_platform_tpm(),
         formal_metadata(), error));
 
+    auto missing_verified_dacl = formal_metadata();
+    missing_verified_dacl.formal_machine_key_dacl_verified = false;
+    CHECK(!vfdual::validate_cng_key_metadata_for_policy(
+        vfdual::HostIdentityPolicy::formal_platform_tpm(),
+        missing_verified_dacl, error));
+    CHECK(error.operation == "validate_formal_machine_key_dacl");
+
     auto no_hardware = formal_metadata();
     no_hardware.implementation_type = 0U;
     CHECK(!vfdual::validate_cng_key_metadata_for_policy(
         vfdual::HostIdentityPolicy::formal_platform_tpm(),
         no_hardware, error));
     CHECK(error.operation == "validate_formal_hardware_provider");
+}
+
+void test_formal_machine_key_dacl_is_exact_and_fail_closed() {
+    const auto authorized_user = sid_from_string(
+        L"S-1-5-21-111111111-222222222-333333333-1001");
+    vfdual::HostIdentityError error;
+
+    const auto valid = descriptor_from_sddl(
+        L"D:P"
+        L"(A;;GA;;;SY)"
+        L"(A;;GA;;;BA)"
+        L"(A;;GA;;;S-1-5-21-111111111-222222222-333333333-1001)");
+    CHECK(vfdual::validate_formal_machine_key_security_descriptor(
+        valid, authorized_user, error));
+    CHECK(!error.has_error());
+
+    const auto broad_everyone = descriptor_from_sddl(
+        L"D:P"
+        L"(A;;GA;;;SY)"
+        L"(A;;GA;;;BA)"
+        L"(A;;GA;;;S-1-5-21-111111111-222222222-333333333-1001)"
+        L"(A;;GA;;;WD)");
+    CHECK(!vfdual::validate_formal_machine_key_security_descriptor(
+        broad_everyone, authorized_user, error));
+    CHECK(error.code ==
+        vfdual::HostIdentityErrorCode::key_access_control_failed);
+
+    const auto unprotected = descriptor_from_sddl(
+        L"D:"
+        L"(A;;GA;;;SY)"
+        L"(A;;GA;;;BA)"
+        L"(A;;GA;;;S-1-5-21-111111111-222222222-333333333-1001)");
+    CHECK(!vfdual::validate_formal_machine_key_security_descriptor(
+        unprotected, authorized_user, error));
+    CHECK(error.operation == "validate_formal_protected_dacl_header");
+
+    const auto missing_user = descriptor_from_sddl(
+        L"D:P(A;;GA;;;SY)(A;;GA;;;BA)");
+    CHECK(!vfdual::validate_formal_machine_key_security_descriptor(
+        missing_user, authorized_user, error));
+
+    const auto read_only_user = descriptor_from_sddl(
+        L"D:P"
+        L"(A;;GA;;;SY)"
+        L"(A;;GA;;;BA)"
+        L"(A;;GR;;;S-1-5-21-111111111-222222222-333333333-1001)");
+    CHECK(!vfdual::validate_formal_machine_key_security_descriptor(
+        read_only_user, authorized_user, error));
+    CHECK(error.operation == "validate_formal_ace_access_mask");
+
+    std::vector<std::uint8_t> truncated = valid;
+    truncated.resize(sizeof(SECURITY_DESCRIPTOR_RELATIVE));
+    CHECK(!vfdual::validate_formal_machine_key_security_descriptor(
+        truncated, authorized_user, error));
+
+    auto development_with_false_formal_claim = development_metadata();
+    development_with_false_formal_claim.formal_machine_key_dacl_verified = true;
+    CHECK(!vfdual::validate_cng_key_metadata_for_policy(
+        vfdual::HostIdentityPolicy::development_named_software_provider(
+            std::wstring(vfdual::kMicrosoftSoftwareKeyStorageProvider)),
+        development_with_false_formal_claim,
+        error));
+    CHECK(error.operation == "validate_development_dacl_assurance_claim");
 }
 
 void test_native_status_is_preserved_without_sensitive_context() {
@@ -588,6 +690,7 @@ int main() {
     test_formal_policy_rejects_software_fallback();
     test_private_export_contract_is_rejected();
     test_formal_descriptor_requires_hardware();
+    test_formal_machine_key_dacl_is_exact_and_fail_closed();
     test_native_status_is_preserved_without_sensitive_context();
     test_cleanup_failure_does_not_replace_causal_failure();
     test_new_invalid_key_is_discarded_but_existing_key_is_preserved();

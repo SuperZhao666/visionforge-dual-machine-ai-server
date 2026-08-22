@@ -1,5 +1,6 @@
 #include "vfdual/host/application/host_runtime_facade.hpp"
 
+#include "vfdual/host_device_identity_runtime.hpp"
 #include "vfdual/host_runtime_service.hpp"
 
 #include <utility>
@@ -7,8 +8,14 @@
 namespace vfdual::host::application {
 
 struct HostRuntimeFacade::State final {
-    explicit State(vfdual::IsolatedDhcpServer* owner) : runtime(owner) {}
+    explicit State(vfdual::IsolatedDhcpServer* owner)
+        : runtime(owner),
+          device_identity(
+              vfdual::HostDeviceIdentityRuntime::open_for_current_build(
+                  identity_error)) {}
     vfdual::HostRuntimeService runtime;
+    vfdual::HostIdentityError identity_error;
+    std::unique_ptr<vfdual::HostDeviceIdentityRuntime> device_identity;
 };
 
 HostRuntimeFacade::HostRuntimeFacade(vfdual::IsolatedDhcpServer* owner)
@@ -16,6 +23,11 @@ HostRuntimeFacade::HostRuntimeFacade(vfdual::IsolatedDhcpServer* owner)
 HostRuntimeFacade::~HostRuntimeFacade() = default;
 
 bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& error) {
+    if (state_->device_identity == nullptr) {
+        error = "Host device identity initialization failed: " +
+            vfdual::format_host_identity_error(state_->identity_error);
+        return false;
+    }
     if (!request.capture_region.has_value()) {
         error = "Host capture region is invalid.";
         return false;

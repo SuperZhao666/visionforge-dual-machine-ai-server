@@ -3,10 +3,11 @@
 ## Formal security status
 
 The current Host runtime is a development transport and is not formally
-release-eligible. Two startup/recovery paths still inject an always-true video
-data-plane permit, the UDP video/control formats are not authenticated, and the
-Android application can simulate the Host authorization identity locally.
-Those facts are release blockers, not accepted compatibility behavior.
+release-eligible. The video publisher has a fail-closed lease gate, but no
+production control coordinator can yet install a confirmed peer and the same
+raw verified lease. The UDP video/control formats are not fully authenticated,
+and the Android application can still simulate the Host authorization identity
+locally. Those facts are release blockers, not accepted compatibility behavior.
 
 Every formal Host candidate must additionally satisfy all of the following:
 
@@ -15,8 +16,8 @@ Every formal Host candidate must additionally satisfy all of the following:
 - The Host owns an independent, non-exportable CNG/TPM P-256 identity and the
   server has registered/verified that identity; Android cannot generate or
   substitute the Host private key.
-- Host and Android mutually authenticate a fresh TLS 1.3/ECDHE control
-  channel, derive channel binding from the handshake exporter/transcript, and
+- Host and Android mutually authenticate the frozen fresh signed P-256 ECDHE
+  control channel, derive channel binding from its transcript/exporter, and
   independently verify the same raw short lease.
 - Video, presence probes, IDR requests and mouse-button packets share an AEAD
   v2 session with direction/type/epoch-separated keys, unique nonces and a
@@ -32,6 +33,18 @@ Every formal Host candidate must additionally satisfy all of the following:
 
 Until these conditions are met, use `--mode diagnostic` only and
 do not describe the Host as reverse-resistant or secure against a hostile LAN.
+
+The checked-in Host identity implementation now selects the Microsoft Platform
+Crypto Provider in formal builds, requires a machine-scoped signing-only P-256
+key, rejects software/exportable metadata, persists a protected DACL containing
+only `LOCAL_SYSTEM`, Builtin Administrators and the current interactive user,
+and validates every ACE after reading the descriptor back from CNG. Existing
+formal keys are re-applied and re-audited on open; any unsupported provider,
+write failure, broad/extra ACE or read-back mismatch fails closed. Development
+builds retain their separately named current-user software key and cannot claim
+formal ACL assurance. `VFHost.exe --host-device-identity-probe` exercises the
+same production composition without opening the GUI or emitting key material.
+A passing development probe does not replace the final real-TPM formal probe.
 
 ## Supported operating-system boundary
 
