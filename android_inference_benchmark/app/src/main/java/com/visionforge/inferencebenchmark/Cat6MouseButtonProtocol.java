@@ -54,14 +54,17 @@ final class Cat6MouseButtonProtocol implements AutoCloseable {
         AuthenticatedDataPlaneV2Receiver previous = receiver;
         receiver = next;
         activeConnectionId = connectionId;
-        sessionRevision++;
-        if (sessionRevision == 0L) sessionRevision = 1L;
+        advanceSessionRevision();
         if (previous != null) previous.close();
         return true;
     }
 
     synchronized boolean sessionReady() {
         return receiver != null;
+    }
+
+    synchronized boolean isCurrentSessionRevision(long candidateRevision) {
+        return receiver != null && sessionRevision == candidateRevision;
     }
 
     synchronized Packet decode(byte[] datagram, int length) {
@@ -96,9 +99,15 @@ final class Cat6MouseButtonProtocol implements AutoCloseable {
         AuthenticatedDataPlaneV2Receiver previous = receiver;
         receiver = null;
         activeConnectionId = 0L;
+        advanceSessionRevision();
         if (previous == null) return false;
         previous.close();
         return true;
+    }
+
+    private void advanceSessionRevision() {
+        sessionRevision++;
+        if (sessionRevision == 0L) sessionRevision = 1L;
     }
 
     @Override

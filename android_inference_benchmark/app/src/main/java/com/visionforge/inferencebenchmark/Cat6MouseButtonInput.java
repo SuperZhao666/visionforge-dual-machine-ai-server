@@ -319,15 +319,20 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
             activeSessionRevision = packet.sessionRevision;
             sessionKnown = true;
             acceptPacket(
-                    packet.buttonMask, newSession, workerGeneration);
+                    packet.buttonMask,
+                    packet.sessionRevision,
+                    newSession,
+                    workerGeneration);
         }
     }
 
     private synchronized void acceptPacket(
             int buttonMask,
+            long packetSessionRevision,
             boolean newSession,
             long workerGeneration) {
-        if (generation.get() != workerGeneration) {
+        if (generation.get() != workerGeneration
+                || !protocol.isCurrentSessionRevision(packetSessionRevision)) {
             rejectedPackets++;
             return;
         }
