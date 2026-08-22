@@ -331,6 +331,24 @@ void append_u32_be(
             std::to_integer<std::uint8_t>(value[3U]));
 }
 
+[[nodiscard]] ControlBootstrapPayloadEncodeResultV1 encode_failure(
+    const ControlBootstrapPayloadStatusV1 status,
+    const std::uint8_t field_tag = 0xffU) noexcept {
+    ControlBootstrapPayloadEncodeResultV1 result{};
+    result.status = status;
+    result.field_tag = field_tag;
+    return result;
+}
+
+[[nodiscard]] ControlBootstrapPayloadParseResultV1 parse_failure(
+    const ControlBootstrapPayloadStatusV1 status,
+    const std::uint8_t field_tag = 0xffU) noexcept {
+    ControlBootstrapPayloadParseResultV1 result{};
+    result.status = status;
+    result.field_tag = field_tag;
+    return result;
+}
+
 }  // namespace
 
 ControlBootstrapPayloadEncodeResultV1 encode_control_bootstrap_payload_v1(
@@ -338,49 +356,47 @@ ControlBootstrapPayloadEncodeResultV1 encode_control_bootstrap_payload_v1(
     const std::span<const ControlBootstrapPayloadFieldV1> fields) noexcept {
     const MessageSchema schema = schema_for(message_type);
     if (schema.rules == nullptr) {
-        return {.status =
-            ControlBootstrapPayloadStatusV1::invalid_message_type};
+        return encode_failure(
+            ControlBootstrapPayloadStatusV1::invalid_message_type);
     }
     if (fields.size() != schema.field_count) {
-        return {.status = ControlBootstrapPayloadStatusV1::invalid_field_count};
+        return encode_failure(
+            ControlBootstrapPayloadStatusV1::invalid_field_count);
     }
     std::size_t encoded_size{};
     for (std::size_t index{}; index < fields.size(); ++index) {
         const auto expected_tag = static_cast<std::uint8_t>(index);
         if (fields[index].tag != expected_tag) {
-            return {
-                .status =
-                    ControlBootstrapPayloadStatusV1::unexpected_field_tag,
-                .field_tag = fields[index].tag};
+            return encode_failure(
+                ControlBootstrapPayloadStatusV1::unexpected_field_tag,
+                fields[index].tag);
         }
         const FieldRule& rule = schema.rules[index];
         if (fields[index].value.size() < rule.minimum ||
             fields[index].value.size() > rule.maximum) {
-            return {
-                .status =
-                    ControlBootstrapPayloadStatusV1::invalid_field_length,
-                .field_tag = expected_tag};
+            return encode_failure(
+                ControlBootstrapPayloadStatusV1::invalid_field_length,
+                expected_tag);
         }
         if (!field_value_valid(rule, fields[index].value)) {
-            return {
-                .status =
-                    ControlBootstrapPayloadStatusV1::invalid_field_value,
-                .field_tag = expected_tag};
+            return encode_failure(
+                ControlBootstrapPayloadStatusV1::invalid_field_value,
+                expected_tag);
         }
         const std::size_t field_bytes =
             kControlBootstrapPayloadTlvHeaderBytesV1 +
             fields[index].value.size();
         if (encoded_size >
             kMaximumAuthenticatedControlBootstrapPayloadBytes - field_bytes) {
-            return {.status =
-                ControlBootstrapPayloadStatusV1::payload_too_large};
+            return encode_failure(
+                ControlBootstrapPayloadStatusV1::payload_too_large);
         }
         encoded_size += field_bytes;
     }
     if (!cross_field_values_valid(message_type, fields)) {
-        return {
-            .status = ControlBootstrapPayloadStatusV1::invalid_field_value,
-            .field_tag = 7U};
+        return encode_failure(
+            ControlBootstrapPayloadStatusV1::invalid_field_value,
+            7U);
     }
     try {
         std::vector<std::byte> encoded;
@@ -393,15 +409,16 @@ ControlBootstrapPayloadEncodeResultV1 encode_control_bootstrap_payload_v1(
             encoded.insert(
                 encoded.end(), field.value.begin(), field.value.end());
         }
-        return {
-            .status = ControlBootstrapPayloadStatusV1::encoded,
-            .payload = std::move(encoded)};
+        ControlBootstrapPayloadEncodeResultV1 result{};
+        result.status = ControlBootstrapPayloadStatusV1::encoded;
+        result.payload = std::move(encoded);
+        return result;
     } catch (const std::bad_alloc&) {
-        return {.status =
-            ControlBootstrapPayloadStatusV1::allocation_failed};
+        return encode_failure(
+            ControlBootstrapPayloadStatusV1::allocation_failed);
     } catch (...) {
-        return {.status =
-            ControlBootstrapPayloadStatusV1::allocation_failed};
+        return encode_failure(
+            ControlBootstrapPayloadStatusV1::allocation_failed);
     }
 }
 
@@ -416,14 +433,15 @@ ControlBootstrapPayloadParseResultV1 parse_control_bootstrap_payload_v1(
     const std::span<const std::byte> encoded) noexcept {
     const MessageSchema schema = schema_for(message_type);
     if (schema.rules == nullptr) {
-        return {.status =
-            ControlBootstrapPayloadStatusV1::invalid_message_type};
+        return parse_failure(
+            ControlBootstrapPayloadStatusV1::invalid_message_type);
     }
     if (encoded.empty()) {
-        return {.status = ControlBootstrapPayloadStatusV1::payload_empty};
+        return parse_failure(ControlBootstrapPayloadStatusV1::payload_empty);
     }
     if (encoded.size() > kMaximumAuthenticatedControlBootstrapPayloadBytes) {
-        return {.status = ControlBootstrapPayloadStatusV1::payload_too_large};
+        return parse_failure(
+            ControlBootstrapPayloadStatusV1::payload_too_large);
     }
     ParsedControlBootstrapPayloadV1 parsed{};
     parsed.message_type = message_type;
@@ -435,17 +453,16 @@ ControlBootstrapPayloadParseResultV1 parse_control_bootstrap_payload_v1(
         const auto expected_tag = static_cast<std::uint8_t>(index);
         if (encoded.size() - offset <
             kControlBootstrapPayloadTlvHeaderBytesV1) {
-            return {
-                .status = ControlBootstrapPayloadStatusV1::truncated_tlv,
-                .field_tag = expected_tag};
+            return parse_failure(
+                ControlBootstrapPayloadStatusV1::truncated_tlv,
+                expected_tag);
         }
         const auto actual_tag =
             std::to_integer<std::uint8_t>(encoded[offset]);
         if (actual_tag != expected_tag) {
-            return {
-                .status =
-                    ControlBootstrapPayloadStatusV1::unexpected_field_tag,
-                .field_tag = actual_tag};
+            return parse_failure(
+                ControlBootstrapPayloadStatusV1::unexpected_field_tag,
+                actual_tag);
         }
         const auto length_bytes =
             encoded.subspan(offset + 1U, 4U);
@@ -454,42 +471,41 @@ ControlBootstrapPayloadParseResultV1 parse_control_bootstrap_payload_v1(
                 length_bytes.data(), length_bytes.size()});
         const FieldRule& rule = schema.rules[index];
         if (field_size < rule.minimum || field_size > rule.maximum) {
-            return {
-                .status =
-                    ControlBootstrapPayloadStatusV1::invalid_field_length,
-                .field_tag = expected_tag};
+            return parse_failure(
+                ControlBootstrapPayloadStatusV1::invalid_field_length,
+                expected_tag);
         }
         offset += kControlBootstrapPayloadTlvHeaderBytesV1;
         if (field_size > encoded.size() - offset) {
-            return {
-                .status = ControlBootstrapPayloadStatusV1::truncated_tlv,
-                .field_tag = expected_tag};
+            return parse_failure(
+                ControlBootstrapPayloadStatusV1::truncated_tlv,
+                expected_tag);
         }
         const auto value = encoded.subspan(offset, field_size);
         if (!field_value_valid(rule, value)) {
-            return {
-                .status =
-                    ControlBootstrapPayloadStatusV1::invalid_field_value,
-                .field_tag = expected_tag};
+            return parse_failure(
+                ControlBootstrapPayloadStatusV1::invalid_field_value,
+                expected_tag);
         }
         parsed.fields[index] = value;
         validation_fields[index] = {expected_tag, value};
         offset += field_size;
     }
     if (offset != encoded.size()) {
-        return {.status = ControlBootstrapPayloadStatusV1::trailing_data};
+        return parse_failure(ControlBootstrapPayloadStatusV1::trailing_data);
     }
     if (!cross_field_values_valid(
             message_type,
             std::span<const ControlBootstrapPayloadFieldV1>{
                 validation_fields.data(), schema.field_count})) {
-        return {
-            .status = ControlBootstrapPayloadStatusV1::invalid_field_value,
-            .field_tag = 7U};
+        return parse_failure(
+            ControlBootstrapPayloadStatusV1::invalid_field_value,
+            7U);
     }
-    return {
-        .status = ControlBootstrapPayloadStatusV1::parsed,
-        .payload = parsed};
+    ControlBootstrapPayloadParseResultV1 result{};
+    result.status = ControlBootstrapPayloadStatusV1::parsed;
+    result.payload = parsed;
+    return result;
 }
 
 std::uint16_t read_control_bootstrap_u16_be_v1(
