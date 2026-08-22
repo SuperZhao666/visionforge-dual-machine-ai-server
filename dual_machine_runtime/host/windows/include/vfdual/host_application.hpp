@@ -67,6 +67,9 @@ public:
   HostApplication& operator=(const HostApplication&) = delete;
 
   [[nodiscard]] bool start(const HostRuntimeConfig& config);
+  [[nodiscard]] bool install_confirmed_peer_session(
+      const ConfirmedPeerHandshakeSessionV1& session) noexcept;
+  void clear_confirmed_peer_session() noexcept;
   [[nodiscard]] bool publish_next();
   void stop() noexcept;
 

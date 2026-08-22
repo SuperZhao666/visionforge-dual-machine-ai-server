@@ -69,6 +69,19 @@ bool HostApplication::start(const HostRuntimeConfig& config) {
   return true;
 }
 
+bool HostApplication::install_confirmed_peer_session(
+    const ConfirmedPeerHandshakeSessionV1& session) noexcept {
+  if (!started_ || session.local_role() != PeerHandshakeRole::host) {
+    return false;
+  }
+  return mouse_button_publisher_.install_confirmed_session(
+      session.connection_id(), session.mouse_host_to_android());
+}
+
+void HostApplication::clear_confirmed_peer_session() noexcept {
+  mouse_button_publisher_.clear_confirmed_session();
+}
+
 bool HostApplication::publish_next() {
   if (!started_ || !video_agent_) return false;
   if (idr_requests_.poll_request()) video_agent_->request_idr();

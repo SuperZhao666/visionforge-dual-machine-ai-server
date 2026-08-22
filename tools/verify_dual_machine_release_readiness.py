@@ -5364,7 +5364,7 @@ def _check_authenticated_idr(root: Path) -> CheckResult:
 
 
 def _check_authenticated_mouse_button(root: Path) -> CheckResult:
-    paths = (
+    legacy_paths = (
         root
         / "dual_machine_runtime"
         / "shared"
@@ -5390,20 +5390,123 @@ def _check_authenticated_mouse_button(root: Path) -> CheckResult:
     )
     insecure = {
         str(path): ["VFMB"]
-        for path in paths
+        for path in legacy_paths
         if path.is_file() and "VFMB" in _read_text(path)
     }
-    missing_paths = [str(path) for path in paths if not path.is_file()]
-    evidence = {"legacy_mouse_button_markers": insecure, "missing_paths": missing_paths}
-    if missing_paths or insecure:
+    required_markers = {
+        root
+        / "dual_machine_runtime"
+        / "host"
+        / "windows"
+        / "include"
+        / "vfdual"
+        / "host_mouse_button_publisher.hpp": (
+            "AuthenticatedPacketSealer",
+            "install_confirmed_session",
+            "authenticated_session_ready",
+        ),
+        root
+        / "dual_machine_runtime"
+        / "host"
+        / "windows"
+        / "src"
+        / "host_mouse_button_publisher.cpp": (
+            "encode_authenticated_mouse_button_payload",
+            "PacketSealStatus::sealed",
+            "clear_confirmed_session",
+            "active_connection_id_ == connection_id",
+        ),
+        root
+        / "android_inference_benchmark"
+        / "app"
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "visionforge"
+        / "inferencebenchmark"
+        / "Cat6MouseButtonProtocol.java": (
+            "AuthenticatedDataPlaneV2Receiver",
+            "installConfirmedMaterial",
+            "receiver.open",
+            "clearConfirmedSession",
+            "activeConnectionId == connectionId",
+        ),
+        root
+        / "android_inference_benchmark"
+        / "app"
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "visionforge"
+        / "inferencebenchmark"
+        / "Cat6MouseButtonInput.java": (
+            "installConfirmedSession",
+            "protocol.decode",
+            "RECEIVE_BUFFER_BYTES",
+        ),
+        root
+        / "dual_machine_runtime"
+        / "host"
+        / "windows"
+        / "tests"
+        / "host_mouse_button_publisher_tests.cpp": (
+            "receiver.receive(datagram, 120U) == 0U",
+            "PacketOpenStatus::opened",
+            "clear_confirmed_session",
+            "duplicate_install_received",
+            "!publisher.install_confirmed_session(0U",
+        ),
+        root
+        / "android_inference_benchmark"
+        / "app"
+        / "src"
+        / "test"
+        / "java"
+        / "com"
+        / "visionforge"
+        / "inferencebenchmark"
+        / "Cat6MouseButtonProtocolSelfTest.java": (
+            "legacyPlaintextPacket",
+            "tampered",
+            "wrongConnection",
+            "clearConfirmedSession",
+            "afterIdempotentInstall",
+            "malformedReplacement",
+        ),
+        root / "dual_machine_runtime" / "CMakeLists.txt": (
+            "vfdual_host_mouse_button_publisher_tests",
+        ),
+        root / "android_inference_benchmark" / "app" / "build.gradle": (
+            "verifyAuthenticatedMouseButtonRuntime",
+        ),
+    }
+    missing_paths = [
+        str(path)
+        for path in (*legacy_paths, *required_markers.keys())
+        if not path.is_file()
+    ]
+    missing_markers = {
+        str(path): [marker for marker in markers if marker not in _read_text(path)]
+        for path, markers in required_markers.items()
+        if path.is_file()
+        and any(marker not in _read_text(path) for marker in markers)
+    }
+    evidence = {
+        "legacy_mouse_button_markers": insecure,
+        "missing_paths": sorted(set(missing_paths)),
+        "missing_authenticated_runtime_markers": missing_markers,
+    }
+    if missing_paths or insecure or missing_markers:
         return _fail(
             REVERSE_RESISTANCE_CHECK_PREFIX + "authenticated-mouse-button",
-            "Mouse-button packets remain forgeable outside the authenticated session",
+            "Mouse-button packets are not yet proven fail-closed and session-bound",
             evidence,
         )
     return _pass(
         REVERSE_RESISTANCE_CHECK_PREFIX + "authenticated-mouse-button",
-        "Mouse-button packets are authenticated and session-bound",
+        "Runtime sources and focused behavior gates require confirmed-session authenticated mouse packets",
         evidence,
     )
 

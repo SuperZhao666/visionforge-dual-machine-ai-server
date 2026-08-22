@@ -341,6 +341,18 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(deliveryReconcileIndex > cat6WorkerMaintenanceIndex);
         require(cat6MouseButtonInput.contains(
                 "private synchronized void acceptPacket("));
+        require(controlRuntime.contains(
+                "synchronized boolean installConfirmedPeerSession("));
+        require(controlRuntime.contains(
+                "synchronized void clearConfirmedPeerSession("));
+        require(cat6MouseButtonInput.contains(
+                "installConfirmedSession("));
+        require(cat6MouseButtonInput.contains(
+                "protocol.decode(bytes, datagram.getLength())"));
+        require(cat6MouseButtonInput.contains(
+                "clearConfirmedSession(\"session_install_rejected_\""));
+        require(!cat6MouseButtonInput.contains(
+                "Cat6MouseButtonProtocol.isNewerSequence("));
         String cat6AcceptPacketMethod = methodSlice(
                 cat6MouseButtonInput,
                 "private synchronized void acceptPacket(",
@@ -2436,10 +2448,14 @@ final class MobileRuntimeServiceCommandContractSelfTest {
     }
 
     private static String methodSlice(String source, String start, String end) {
-        int startIndex = source.indexOf(start);
-        int endIndex = source.indexOf(end, startIndex + start.length());
+        String normalizedSource = source.replace("\r\n", "\n").replace('\r', '\n');
+        String normalizedStart = start.replace("\r\n", "\n").replace('\r', '\n');
+        String normalizedEnd = end.replace("\r\n", "\n").replace('\r', '\n');
+        int startIndex = normalizedSource.indexOf(normalizedStart);
+        int endIndex = normalizedSource.indexOf(
+                normalizedEnd, startIndex + normalizedStart.length());
         require(startIndex >= 0 && endIndex > startIndex);
-        return source.substring(startIndex, endIndex);
+        return normalizedSource.substring(startIndex, endIndex);
     }
 
     private static int countOccurrences(String source, String value) {

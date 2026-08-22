@@ -86,6 +86,25 @@ final class MobileControlRuntime {
         }
     }
 
+    /** Installs the mouse key only after the peer Finished gate has succeeded. */
+    synchronized boolean installConfirmedPeerSession(
+            ConfirmedAndroidPeerSession session) {
+        if (destroyed || activeRoute != ControlOutputRoute.BLUETOOTH_HID) {
+            return false;
+        }
+        boolean installed = cat6ButtonInput.installConfirmedSession(session);
+        if (!installed) output.failClosed("cat6_button_session_unavailable");
+        return installed;
+    }
+
+    synchronized void clearConfirmedPeerSession(String reason) {
+        if (destroyed) return;
+        cat6ButtonInput.clearConfirmedSession(reason);
+        if (activeRoute == ControlOutputRoute.BLUETOOTH_HID) {
+            output.failClosed("cat6_button_session_closed");
+        }
+    }
+
     synchronized String selectOutputRoute(ControlOutputRoute requestedRoute) {
         if (destroyed) return "runtime_destroyed";
         ControlOutputRoute requested = requestedRoute == null

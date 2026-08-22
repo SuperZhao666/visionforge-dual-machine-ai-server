@@ -1,7 +1,7 @@
 # VisionForge 双机认证握手 v1 合同
 
-状态：**基础密码合同草案；P1 配对/状态机/控制记录仍待冻结；尚未接入生产；不得解除 formal gate**  
-更新日期：2026-08-04
+状态：**基础密码合同草案；鼠标发布/接收已迁移到显式 confirmed-session 安装边界；完整生产握手协调器仍未接线；不得解除 formal gate**
+更新日期：2026-08-22
 
 ## 1. 目标与非目标
 
@@ -169,8 +169,14 @@ replay window。v1 暂不支持 session 内 rekey，初始 `key_epoch` 固定为
 HOST_TO_ANDROID, MOUSE_BUTTON)` 域。认证明文固定为一个字节的完整按钮状态快照，有效位为
 `0x1f`；长度不等于 1 或包含其他位必须丢弃。旧 `VFMB` 数据报中的 `session_id` 和 `sequence`
 不进入新载荷：连接身份由认证头中的 `connection_id` 绑定，顺序和重放由同一密钥域的单一发送
-counter 与接收 replay window 负责。在 Host 发布器与 Android 输入端都由同一个已确认会话安装
-密钥并完成生命周期接线前，不得把本契约视为生产路径已启用，也不得回退接受明文 `VFMB`。
+counter 与接收 replay window 负责。
+
+截至 2026-08-22，`HostApplication` 与 `MobileControlRuntime` 已提供显式安装/清除 confirmed session
+的边界，Host 发布器和 Android 输入端在未安装会话时均停流，旧明文 codec 已从运行时移除；同一
+`connection_id` 的重复安装保持原 counter/replay owner，无效替换会清除会话并 fail closed。仓库中
+仍没有生产握手协调器调用这两个安装边界，因此真实双机鼠标链路当前是“安全不可用”而非“已完成
+生产接线”。在协调器、关闭通知和实体 CAT6/PCAP 证据完成前，不得把本契约视为生产路径已启用，
+也不得回退接受明文 `VFMB`。
 
 ECDH private handle、raw shared secret、PRK、HKDF 临时缓冲和所有 session key 必须在各自生命周期
 结束后立即销毁/尽力清零，且不得进入日志、bug report、crash metadata 或异常文本。

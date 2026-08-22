@@ -240,6 +240,7 @@ public:
         ConfirmedPeerHandshakeSessionV1&&) = delete;
 
     [[nodiscard]] PeerHandshakeRole local_role() const noexcept;
+    [[nodiscard]] std::uint64_t connection_id() const noexcept;
     [[nodiscard]] PeerHandshakeDataPlaneKeyView
     control_host_to_android() const noexcept;
     [[nodiscard]] PeerHandshakeDataPlaneKeyView
@@ -273,6 +274,7 @@ private:
 #endif
 
     PeerHandshakeRole local_role_{PeerHandshakeRole::host};
+    std::uint64_t connection_id_{};
     std::array<std::byte, 36U> control_host_to_android_{};
     std::array<std::byte, 36U> control_android_to_host_{};
     std::array<std::byte, 36U> presence_host_to_android_{};

@@ -520,6 +520,8 @@ HostStreamMetrics copy_metrics(const HostApplicationStats& source, std::uint64_t
         source.mouse_button_publisher.running;
     metrics.mouse_button_transport_ready =
         source.mouse_button_publisher.transport_ready;
+    metrics.mouse_button_authenticated_session_ready =
+        source.mouse_button_publisher.authenticated_session_ready;
     metrics.physical_button_mask =
         source.mouse_button_publisher.current_button_mask;
     metrics.mouse_button_packets_sent =
@@ -1738,8 +1740,10 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
                     << " outside_region_skips=" << stats.outside_region_skips
                     << " mouse_button_publisher_running="
                     << stats.mouse_button_publisher.running
-                    << " mouse_button_transport_ready="
-                    << stats.mouse_button_publisher.transport_ready
+                     << " mouse_button_transport_ready="
+                     << stats.mouse_button_publisher.transport_ready
+                     << " mouse_button_authenticated_session_ready="
+                     << stats.mouse_button_publisher.authenticated_session_ready
                     << " physical_button_mask="
                     << static_cast<std::uint32_t>(
                            stats.mouse_button_publisher.current_button_mask)

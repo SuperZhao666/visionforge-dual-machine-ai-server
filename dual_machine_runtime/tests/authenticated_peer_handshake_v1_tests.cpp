@@ -867,6 +867,7 @@ struct ConfirmedPair final {
 
 void check_vector_confirmed_material(
     const vfdual::ConfirmedPeerHandshakeSessionV1& secrets) {
+    CHECK(secrets.connection_id() == 0x1020'3040'5060'7080ULL);
     CHECK(bytes_equal(
         concatenate(secrets.control_host_to_android()),
         bytes_from_hex(

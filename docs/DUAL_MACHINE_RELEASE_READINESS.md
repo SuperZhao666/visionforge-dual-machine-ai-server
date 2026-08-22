@@ -1,6 +1,6 @@
 # 双机正式发布与安全验收清单
 
-> 安全状态更新：2026-08-04
+> 安全状态更新：2026-08-22
 >
 > 当前仓库只具备开发诊断资格，**不具备双机正式发布资格**。正式门禁必须保持失败，直到本文列出的 Host 身份、相互认证握手、认证数据面、模型密钥供应和实机攻击性证据全部落地。历史 Android-only、恒真 Host permit 和明文 UDP 方案不再是可接受的产品策略。
 
@@ -66,6 +66,13 @@ python tools\verify_dual_machine_release_readiness.py --mode formal --json
 14. formal 必须具备独立的 mutation/replay/artifact 行为证据，不能用源码关键词代替密码学证明。
 
 静态字符串检查只用于 fail-fast；最终放行还必须依赖行为测试、正式产物扫描、PCAP mutation/replay 和真实硬件证据。
+
+鼠标数据面边界状态（2026-08-22）：Host 发布器与 Android 接收器已删除旧明文 codec，并要求
+同一个已确认握手会话的 `mouse_host_to_android` 密钥、`connection_id`、固定方向/type、GCM tag
+和 replay window。无会话、无效替换、端点变化或会话清除都会停流；重复安装同一连接不会重置
+counter/replay owner。该代码路径已有 Host loopback 与 Android 恶意/合法包行为测试，但生产握手
+协调器尚未调用安装/清除边界，也没有实体 CAT6/PCAP 与最终 Host/APK 产物证据。因此第 4、8、10、
+14 项仍是 formal 集成/证据 blocker，不能因为源码检查或单元测试通过而放行。
 
 ## 3. 正式 v2 最小密码学纵切
 
