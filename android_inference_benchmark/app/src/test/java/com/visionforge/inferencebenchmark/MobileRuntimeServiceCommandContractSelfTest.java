@@ -359,12 +359,15 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "private void expireLeaseIfNeeded(");
         int cat6GenerationCheckIndex = cat6AcceptPacketMethod.indexOf(
                 "generation.get() != workerGeneration");
+        int cat6SessionRevisionCheckIndex = cat6AcceptPacketMethod.indexOf(
+                "protocol.isCurrentSessionRevision(packetSessionRevision)");
         int cat6StateCommitIndex = cat6AcceptPacketMethod.indexOf(
                 "buttonState.acceptPacket(");
         int cat6ListenerIndex = cat6AcceptPacketMethod.indexOf(
                 "buttonNotifications.enqueue(");
         require(cat6GenerationCheckIndex >= 0);
-        require(cat6StateCommitIndex > cat6GenerationCheckIndex);
+        require(cat6SessionRevisionCheckIndex > cat6GenerationCheckIndex);
+        require(cat6StateCommitIndex > cat6SessionRevisionCheckIndex);
         require(cat6ListenerIndex > cat6StateCommitIndex);
         require(cat6MouseButtonInput.contains(
                 "private WorkerFailureClaim claimWorkerFailureIfCurrent("));

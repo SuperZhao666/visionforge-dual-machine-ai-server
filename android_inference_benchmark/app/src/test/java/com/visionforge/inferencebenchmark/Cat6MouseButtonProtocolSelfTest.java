@@ -86,9 +86,12 @@ final class Cat6MouseButtonProtocolSelfTest {
             packet = protocol.decode(secondEnvelope, secondEnvelope.length);
             require(packet != null && packet.buttonMask == 0x10);
             require(packet.sessionRevision > firstRevision);
+            long decodedBeforeClearRevision = packet.sessionRevision;
+            require(protocol.isCurrentSessionRevision(decodedBeforeClearRevision));
 
             require(protocol.clearConfirmedSession());
             require(!protocol.sessionReady());
+            require(!protocol.isCurrentSessionRevision(decodedBeforeClearRevision));
             byte[] afterClear = secondSender.seal(
                     AuthenticatedMouseButtonV2.encodeButtonMask(0x00));
             require(protocol.decode(afterClear, afterClear.length) == null);

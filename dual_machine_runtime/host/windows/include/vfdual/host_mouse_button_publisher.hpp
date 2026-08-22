@@ -48,14 +48,28 @@ public:
       std::uint64_t connection_id,
       PeerHandshakeDataPlaneKeyView mouse_host_to_android) noexcept;
   void clear_confirmed_session() noexcept;
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+  using InstallPreparationHookForTest = void (*)();
+  void set_install_preparation_hook_for_test(
+      InstallPreparationHookForTest hook) noexcept;
+  using PublishPreLockHookForTest = void (*)();
+  void set_publish_pre_lock_hook_for_test(
+      PublishPreLockHookForTest hook) noexcept;
+  using StopRequestedHookForTest = void (*)();
+  void set_stop_requested_hook_for_test(
+      StopRequestedHookForTest hook) noexcept;
+#endif
   void stop() noexcept;
   [[nodiscard]] HostMouseButtonPublisherStats stats() const noexcept;
 
 private:
   void run() noexcept;
+  void clear_confirmed_session_locked() noexcept;
   [[nodiscard]] bool open_transport(UdpSocket& socket) noexcept;
   [[nodiscard]] bool publish(
-      UdpSocket& socket, std::uint8_t button_mask) noexcept;
+      UdpSocket& socket,
+      std::uint8_t button_mask,
+      bool shutdown_release = false) noexcept;
   [[nodiscard]] bool authorization_permits_send() const noexcept;
 
   std::thread worker_;
@@ -77,6 +91,11 @@ private:
   std::uint64_t active_connection_id_{};
   std::unique_ptr<Aes256GcmProvider> aes_provider_;
   std::unique_ptr<AuthenticatedPacketSealer> packet_sealer_;
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+  InstallPreparationHookForTest install_preparation_hook_for_test_{};
+  PublishPreLockHookForTest publish_pre_lock_hook_for_test_{};
+  StopRequestedHookForTest stop_requested_hook_for_test_{};
+#endif
 };
 
 }  // namespace vfdual

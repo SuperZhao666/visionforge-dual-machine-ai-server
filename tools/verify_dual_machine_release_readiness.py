@@ -5414,6 +5414,9 @@ def _check_authenticated_mouse_button(root: Path) -> CheckResult:
             "encode_authenticated_mouse_button_payload",
             "PacketSealStatus::sealed",
             "clear_confirmed_session",
+            "clear_confirmed_session_locked",
+            "const bool shutdown_release",
+            "publish(socket, 0U, true)",
             "active_connection_id_ == connection_id",
         ),
         root
@@ -5430,6 +5433,7 @@ def _check_authenticated_mouse_button(root: Path) -> CheckResult:
             "installConfirmedMaterial",
             "receiver.open",
             "clearConfirmedSession",
+            "isCurrentSessionRevision",
             "activeConnectionId == connectionId",
         ),
         root
@@ -5444,6 +5448,7 @@ def _check_authenticated_mouse_button(root: Path) -> CheckResult:
         / "Cat6MouseButtonInput.java": (
             "installConfirmedSession",
             "protocol.decode",
+            "protocol.isCurrentSessionRevision",
             "RECEIVE_BUFFER_BYTES",
         ),
         root
@@ -5455,6 +5460,10 @@ def _check_authenticated_mouse_button(root: Path) -> CheckResult:
             "receiver.receive(datagram, 120U) == 0U",
             "PacketOpenStatus::opened",
             "clear_confirmed_session",
+            "clear_finished",
+            "publish_gate_entered",
+            "stop_gate_entered",
+            "release_opened",
             "duplicate_install_received",
             "!publisher.install_confirmed_session(0U",
         ),
@@ -5472,6 +5481,7 @@ def _check_authenticated_mouse_button(root: Path) -> CheckResult:
             "tampered",
             "wrongConnection",
             "clearConfirmedSession",
+            "decodedBeforeClearRevision",
             "afterIdempotentInstall",
             "malformedReplacement",
         ),

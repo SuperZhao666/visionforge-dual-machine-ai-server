@@ -1212,6 +1212,8 @@ if(WIN32)
     target_include_directories(vfdual_host_mouse_button_publisher_tests PRIVATE
         host/windows/include
         shared/include)
+    target_compile_definitions(vfdual_host_mouse_button_publisher_tests PRIVATE
+        VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING=1)
     target_link_libraries(vfdual_host_mouse_button_publisher_tests PRIVATE
         vfdual_protocol ws2_32 user32)
     add_test(NAME vfdual_host_mouse_button_publisher_tests

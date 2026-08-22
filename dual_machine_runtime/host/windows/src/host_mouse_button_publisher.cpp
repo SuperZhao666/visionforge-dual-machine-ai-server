@@ -34,6 +34,26 @@ std::uint8_t read_physical_button_mask() noexcept {
 
 HostMouseButtonPublisher::~HostMouseButtonPublisher() { stop(); }
 
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+void HostMouseButtonPublisher::set_install_preparation_hook_for_test(
+    const InstallPreparationHookForTest hook) noexcept {
+  std::lock_guard lock(session_mutex_);
+  install_preparation_hook_for_test_ = hook;
+}
+
+void HostMouseButtonPublisher::set_publish_pre_lock_hook_for_test(
+    const PublishPreLockHookForTest hook) noexcept {
+  std::lock_guard lock(session_mutex_);
+  publish_pre_lock_hook_for_test_ = hook;
+}
+
+void HostMouseButtonPublisher::set_stop_requested_hook_for_test(
+    const StopRequestedHookForTest hook) noexcept {
+  std::lock_guard lock(session_mutex_);
+  stop_requested_hook_for_test_ = hook;
+}
+#endif
+
 bool HostMouseButtonPublisher::start(
     std::string_view local_ipv4,
     std::string_view mobile_ipv4,
@@ -78,25 +98,42 @@ bool HostMouseButtonPublisher::start(
 bool HostMouseButtonPublisher::install_confirmed_session(
     const std::uint64_t connection_id,
     const PeerHandshakeDataPlaneKeyView mouse_host_to_android) noexcept {
-  if (connection_id == 0U ||
-      !running_.load(std::memory_order_acquire) ||
+  if (!running_.load(std::memory_order_acquire) ||
       stop_requested_.load(std::memory_order_acquire)) {
-    clear_confirmed_session();
     return false;
   }
   try {
-    {
-      std::lock_guard lock(session_mutex_);
-      if (authenticated_session_ready_.load(std::memory_order_acquire) &&
-          packet_sealer_ && active_connection_id_ == connection_id) {
-        // A lifecycle retry for the same confirmed connection must preserve
-        // the one counter owner. Rebuilding it would reuse AES-GCM nonces.
-        return true;
-      }
+    std::unique_lock session_lock(session_mutex_);
+    if (!running_.load(std::memory_order_acquire) ||
+        stop_requested_.load(std::memory_order_acquire)) {
+      return false;
     }
+    if (connection_id == 0U) {
+      clear_confirmed_session_locked();
+      session_lock.unlock();
+      transport_ready_.store(false, std::memory_order_release);
+      current_button_mask_.store(0U, std::memory_order_release);
+      wait_condition_.notify_all();
+      return false;
+    }
+    if (authenticated_session_ready_.load(std::memory_order_acquire) &&
+        packet_sealer_ && active_connection_id_ == connection_id) {
+      // A lifecycle retry for the same confirmed connection must preserve
+      // the one counter owner. Rebuilding it would reuse AES-GCM nonces.
+      return true;
+    }
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+    if (install_preparation_hook_for_test_) {
+      install_preparation_hook_for_test_();
+    }
+#endif
     auto provider = make_platform_aes_256_gcm_provider();
     if (!provider) {
-      clear_confirmed_session();
+      clear_confirmed_session_locked();
+      session_lock.unlock();
+      transport_ready_.store(false, std::memory_order_release);
+      current_button_mask_.store(0U, std::memory_order_release);
+      wait_condition_.notify_all();
       return false;
     }
     AuthenticatedTrafficKey traffic_key;
@@ -112,15 +149,9 @@ bool HostMouseButtonPublisher::install_confirmed_session(
         traffic_key.nonce_prefix.begin());
     auto sealer = std::make_unique<AuthenticatedPacketSealer>(
         std::move(traffic_key), *provider);
-
-    std::lock_guard lock(session_mutex_);
     if (!running_.load(std::memory_order_acquire) ||
         stop_requested_.load(std::memory_order_acquire)) {
       return false;
-    }
-    if (authenticated_session_ready_.load(std::memory_order_acquire) &&
-        packet_sealer_ && active_connection_id_ == connection_id) {
-      return true;
     }
     packet_sealer_.reset();
     aes_provider_.reset();
@@ -129,31 +160,55 @@ bool HostMouseButtonPublisher::install_confirmed_session(
     active_connection_id_ = connection_id;
     authenticated_session_ready_.store(true, std::memory_order_release);
     session_revision_.fetch_add(1U, std::memory_order_acq_rel);
+    session_lock.unlock();
     transport_ready_.store(false, std::memory_order_release);
     wait_condition_.notify_all();
     return true;
   } catch (...) {
-    clear_confirmed_session();
+    {
+      std::lock_guard lock(session_mutex_);
+      if (stop_requested_.load(std::memory_order_acquire)) return false;
+      clear_confirmed_session_locked();
+    }
+    transport_ready_.store(false, std::memory_order_release);
+    current_button_mask_.store(0U, std::memory_order_release);
+    wait_condition_.notify_all();
     return false;
   }
 }
 
 void HostMouseButtonPublisher::clear_confirmed_session() noexcept {
-  authenticated_session_ready_.store(false, std::memory_order_release);
   {
     std::lock_guard lock(session_mutex_);
-    packet_sealer_.reset();
-    aes_provider_.reset();
-    active_connection_id_ = 0U;
+    clear_confirmed_session_locked();
   }
-  session_revision_.fetch_add(1U, std::memory_order_acq_rel);
   transport_ready_.store(false, std::memory_order_release);
   current_button_mask_.store(0U, std::memory_order_release);
   wait_condition_.notify_all();
 }
 
+void HostMouseButtonPublisher::clear_confirmed_session_locked() noexcept {
+  authenticated_session_ready_.store(false, std::memory_order_release);
+  packet_sealer_.reset();
+  aes_provider_.reset();
+  active_connection_id_ = 0U;
+  session_revision_.fetch_add(1U, std::memory_order_acq_rel);
+}
+
 void HostMouseButtonPublisher::stop() noexcept {
-  stop_requested_.store(true, std::memory_order_release);
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+  StopRequestedHookForTest stop_requested_hook{};
+#endif
+  {
+    std::lock_guard lock(session_mutex_);
+    stop_requested_.store(true, std::memory_order_release);
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+    stop_requested_hook = stop_requested_hook_for_test_;
+#endif
+  }
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+  if (stop_requested_hook) stop_requested_hook();
+#endif
   wait_condition_.notify_all();
   if (worker_.joinable()) worker_.join();
   clear_confirmed_session();
@@ -221,6 +276,7 @@ void HostMouseButtonPublisher::run() noexcept {
     if (current_mask != last_published_mask ||
         now - last_publish >= kButtonHeartbeatInterval) {
       if (!publish(socket, current_mask)) {
+        if (stop_requested_.load(std::memory_order_acquire)) break;
         transport_ready_.store(false, std::memory_order_release);
         socket.close();
         continue;
@@ -237,8 +293,8 @@ void HostMouseButtonPublisher::run() noexcept {
 
   if (transport_ready_.load(std::memory_order_acquire) &&
       authorization_permits_send()) {
-    (void)publish(socket, 0U);
-    (void)publish(socket, 0U);
+    (void)publish(socket, 0U, true);
+    (void)publish(socket, 0U, true);
   }
   socket.close();
   transport_ready_.store(false, std::memory_order_release);
@@ -260,23 +316,33 @@ bool HostMouseButtonPublisher::open_transport(UdpSocket& socket) noexcept {
 
 bool HostMouseButtonPublisher::publish(
     UdpSocket& socket,
-    std::uint8_t button_mask) noexcept {
+    std::uint8_t button_mask,
+    const bool shutdown_release) noexcept {
   if (!authorization_permits_send()) return false;
   std::array<std::byte, kAuthenticatedMouseButtonPayloadBytes> payload{};
   if (!encode_authenticated_mouse_button_payload(button_mask, payload)) {
     send_failures_.fetch_add(1U, std::memory_order_relaxed);
     return false;
   }
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+  PublishPreLockHookForTest publish_pre_lock_hook{};
+  {
+    std::lock_guard hook_lock(session_mutex_);
+    publish_pre_lock_hook = publish_pre_lock_hook_for_test_;
+  }
+  if (publish_pre_lock_hook) publish_pre_lock_hook();
+#endif
   std::lock_guard lock(session_mutex_);
-  if (!authenticated_session_ready_.load(std::memory_order_acquire) ||
-      !packet_sealer_) {
+  if ((!shutdown_release &&
+       stop_requested_.load(std::memory_order_acquire)) ||
+      !authenticated_session_ready_.load(std::memory_order_acquire) ||
+      !packet_sealer_ ||
+      !authorization_permits_send()) {
     return false;
   }
   PacketSealResult sealed = packet_sealer_->seal(payload);
-  if (sealed.status != PacketSealStatus::sealed ||
-      !socket.send(sealed.datagram)) {
+  if (sealed.status != PacketSealStatus::sealed) {
     send_failures_.fetch_add(1U, std::memory_order_relaxed);
-    last_socket_error_.store(socket.last_error(), std::memory_order_release);
     if (sealed.status == PacketSealStatus::counter_exhausted ||
         sealed.status == PacketSealStatus::invalid_configuration) {
       authenticated_session_ready_.store(false, std::memory_order_release);
@@ -285,6 +351,15 @@ bool HostMouseButtonPublisher::publish(
       active_connection_id_ = 0U;
       session_revision_.fetch_add(1U, std::memory_order_acq_rel);
     }
+    return false;
+  }
+  // The live lease may be revoked while this publisher waits for the session
+  // lock or while the provider seals. Burn the attempted counter, but never
+  // cross the UDP boundary after the send-boundary authorization recheck.
+  if (!authorization_permits_send()) return false;
+  if (!socket.send(sealed.datagram)) {
+    send_failures_.fetch_add(1U, std::memory_order_relaxed);
+    last_socket_error_.store(socket.last_error(), std::memory_order_release);
     return false;
   }
   packets_sent_.fetch_add(1U, std::memory_order_relaxed);
