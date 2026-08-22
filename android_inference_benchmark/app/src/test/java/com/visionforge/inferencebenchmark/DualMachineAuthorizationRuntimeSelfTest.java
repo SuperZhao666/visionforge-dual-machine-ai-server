@@ -77,6 +77,11 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
                         hostProgress::get,
                         () -> 100L));
         check(runtime.hasAuthenticatedHost());
+        check(CHANNEL.equals(
+                runtime.authenticatedHostChannelBindingSha256()));
+        authenticated.set(false);
+        expectSecurity(runtime::authenticatedHostChannelBindingSha256);
+        authenticated.set(true);
         runtime.activateCard(CARD);
         DualMachineFormalUsageStateMachine.Snapshot activated =
                 runtime.snapshot();
@@ -145,6 +150,7 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
 
         runtime.detachAuthenticatedHost();
         check(!runtime.hasAuthenticatedHost());
+        expectSecurity(runtime::authenticatedHostChannelBindingSha256);
         check(boundary.closeCalls > 0);
         check(runtime.snapshot().state
                 == DualMachineFormalUsageStateMachine.State.ACTIVATED_IDLE);
@@ -171,6 +177,7 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
                         () -> 100L));
         verifiesClosedRuntimeRejectsGenerationReceipt(runtime, sidecar);
         check(!runtime.hasAuthenticatedHost());
+        verifiesMismatchedReadinessChannelBindingIsRejected(host, android);
         verifiesCrashSafePersistedActivationReconciliation(
                 host, android, rsa);
         System.out.println("DUAL_MACHINE_AUTHORIZATION_RUNTIME_OK");
@@ -1005,6 +1012,53 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
         }
     }
 
+    private static void verifiesMismatchedReadinessChannelBindingIsRejected(
+            DualMachineCardAuthorizationCoordinator.IdentityBinding host,
+            DualMachineCardAuthorizationCoordinator.IdentityBinding android)
+            throws Exception {
+        ActivationSidecar sidecar = new ActivationSidecar(host, android);
+        FakeRuntimeBoundary mismatchedBoundary =
+                new FakeRuntimeBoundary("77".repeat(32));
+        AtomicLong nextId = new AtomicLong(0x90L);
+        KeyPairGenerator rsa = KeyPairGenerator.getInstance("RSA");
+        rsa.initialize(DualMachineUsageLeaseVerifier.MINIMUM_RSA_BITS);
+        DualMachineAuthorizationRuntime runtime =
+                new DualMachineAuthorizationRuntime(
+                        sidecar,
+                        new DualMachineFormalUsageStateMachine(),
+                        new DualMachineUsageLeaseKeyring(
+                                Collections.singletonList(
+                                        rsa.generateKeyPair().getPublic()),
+                                5),
+                        new InMemoryEntitlementStore(),
+                        new InMemoryPendingStore(),
+                        android,
+                        "visionforge-dual-machine-pairing-identity",
+                        () -> String.format(
+                                "%032x", nextId.getAndIncrement()),
+                        System::nanoTime,
+                        (deadline, action) -> () -> { },
+                        () -> 0L);
+        try {
+            runtime.attachAuthenticatedHost(
+                    new DualMachineAuthorizationRuntime.Attachment(
+                            host,
+                            CHANNEL,
+                            mismatchedBoundary,
+                            () -> true,
+                            () -> 0L,
+                            () -> 100L));
+            runtime.activateCard(CARD);
+            expectSecurity(runtime::startFormalUsage);
+            check(mismatchedBoundary.prepareCalls == 1);
+            check(mismatchedBoundary.closeCalls > 0);
+            check(sidecar.starts == 0);
+            check(!runtime.snapshot().permitsDataPlane);
+        } finally {
+            runtime.close();
+        }
+    }
+
     private static void verifiesCrashSafePersistedActivationReconciliation(
             DualMachineCardAuthorizationCoordinator.IdentityBinding host,
             DualMachineCardAuthorizationCoordinator.IdentityBinding android,
@@ -1244,6 +1298,7 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
     private static final class FakeRuntimeBoundary
             implements DualMachineFormalUsageCoordinator.RuntimeBoundary {
         private final AtomicLong physicalCloseCalls;
+        private final String readinessChannelBinding;
         int closeCalls;
         int openCalls;
         int prepareCalls;
@@ -1253,11 +1308,22 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
         volatile Runnable targetedCloseHook;
 
         FakeRuntimeBoundary() {
-            this(new AtomicLong());
+            this(new AtomicLong(), CHANNEL);
+        }
+
+        FakeRuntimeBoundary(String readinessChannelBinding) {
+            this(new AtomicLong(), readinessChannelBinding);
         }
 
         FakeRuntimeBoundary(AtomicLong physicalCloseCalls) {
+            this(physicalCloseCalls, CHANNEL);
+        }
+
+        FakeRuntimeBoundary(
+                AtomicLong physicalCloseCalls,
+                String readinessChannelBinding) {
             this.physicalCloseCalls = physicalCloseCalls;
+            this.readinessChannelBinding = readinessChannelBinding;
         }
 
         @Override
@@ -1272,7 +1338,7 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
                 throw new IOException("simulated preparation cancellation");
             }
             return new DualMachineFormalUsageCoordinator.StartReadiness(
-                    CHANNEL, true, true);
+                    readinessChannelBinding, true, true);
         }
 
         @Override
