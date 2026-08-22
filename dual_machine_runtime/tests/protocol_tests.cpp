@@ -3,7 +3,6 @@
 #include "vfdual/image_preprocessor.hpp"
 #include "vfdual/h264_annex_b_access_units.hpp"
 #include "vfdual/h264_access_unit.hpp"
-#include "vfdual/mouse_button_protocol.hpp"
 #include "vfdual/protocol.hpp"
 
 #include <array>
@@ -26,25 +25,6 @@ void require(bool condition, const char* expression, const char* file, int line)
     require(static_cast<bool>(expression), #expression, __FILE__, __LINE__)
 
 int main() {
-    const vfdual::MouseButtonStatePacket button_source{0x12U, 0x1234abcdU, 9U};
-    std::array<std::byte, vfdual::kMouseButtonPacketBytes> button_datagram{};
-    CHECK(vfdual::encode_mouse_button_state_packet(
-        button_source, button_datagram) == button_datagram.size());
-    vfdual::MouseButtonStatePacket button_decoded{};
-    CHECK(vfdual::decode_mouse_button_state_packet(
-        button_datagram, button_decoded));
-    CHECK(button_decoded.button_mask == button_source.button_mask);
-    CHECK(button_decoded.session_id == button_source.session_id);
-    CHECK(button_decoded.sequence == button_source.sequence);
-    auto bad_button_datagram = button_datagram;
-    bad_button_datagram[6] = std::byte{1U};
-    CHECK(!vfdual::decode_mouse_button_state_packet(
-        bad_button_datagram, button_decoded));
-    CHECK(vfdual::encode_mouse_button_state_packet(
-        {0x20U, 1U, 1U}, button_datagram) == 0U);
-    CHECK(vfdual::encode_mouse_button_state_packet(
-        {0x01U, 0U, 1U}, button_datagram) == 0U);
-
     const std::array<std::byte, 6> annex_b_idr{
         std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1},
         std::byte{0x65}, std::byte{0x80}};

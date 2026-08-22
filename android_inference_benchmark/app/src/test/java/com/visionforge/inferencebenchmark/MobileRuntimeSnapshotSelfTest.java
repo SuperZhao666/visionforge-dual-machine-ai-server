@@ -33,7 +33,6 @@ public final class MobileRuntimeSnapshotSelfTest {
         ControlOutputCoordinatorSelfTest.run();
         BluetoothHidOutputFailClosedPolicySelfTest.run();
         ControlOutputRoutePolicySelfTest.run();
-        Cat6MouseButtonProtocolSelfTest.run();
         Cat6MouseButtonEndpointPolicySelfTest.run();
         Cat6MouseButtonLeaseStateSelfTest.run();
         Cat6MouseButtonNotificationDispatcherSelfTest.run();

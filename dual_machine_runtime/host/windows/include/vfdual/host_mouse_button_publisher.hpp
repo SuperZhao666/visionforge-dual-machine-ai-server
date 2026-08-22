@@ -1,11 +1,14 @@
 #pragma once
 
+#include "vfdual/authenticated_data_plane_v2.hpp"
+#include "vfdual/authenticated_peer_handshake_v1.hpp"
 #include "vfdual/udp_socket.hpp"
 #include "vfdual/udp_video_publisher.hpp"
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -16,6 +19,7 @@ namespace vfdual {
 struct HostMouseButtonPublisherStats {
   bool running{};
   bool transport_ready{};
+  bool authenticated_session_ready{};
   std::uint8_t current_button_mask{};
   std::uint64_t packets_sent{};
   std::uint64_t send_failures{};
@@ -39,6 +43,11 @@ public:
       std::string_view local_ipv4,
       std::string_view mobile_ipv4,
       VideoDataPlanePermitSource permit_source) noexcept;
+  /** Copies one already-confirmed Host mouse traffic domain into the sender. */
+  [[nodiscard]] bool install_confirmed_session(
+      std::uint64_t connection_id,
+      PeerHandshakeDataPlaneKeyView mouse_host_to_android) noexcept;
+  void clear_confirmed_session() noexcept;
   void stop() noexcept;
   [[nodiscard]] HostMouseButtonPublisherStats stats() const noexcept;
 
@@ -51,19 +60,23 @@ private:
 
   std::thread worker_;
   mutable std::mutex wait_mutex_;
+  mutable std::mutex session_mutex_;
   std::condition_variable wait_condition_;
   std::atomic_bool stop_requested_{};
   std::atomic_bool running_{};
   std::atomic_bool transport_ready_{};
+  std::atomic_bool authenticated_session_ready_{};
+  std::atomic_uint64_t session_revision_{};
   std::atomic_uint8_t current_button_mask_{};
   std::atomic_uint64_t packets_sent_{};
   std::atomic_uint64_t send_failures_{};
   std::atomic_uint32_t last_socket_error_{};
-  std::uint32_t session_id_{};
-  std::uint32_t sequence_{};
   std::string local_ipv4_;
   std::string mobile_ipv4_;
   VideoDataPlanePermitSource permit_source_;
+  std::uint64_t active_connection_id_{};
+  std::unique_ptr<Aes256GcmProvider> aes_provider_;
+  std::unique_ptr<AuthenticatedPacketSealer> packet_sealer_;
 };
 
 }  // namespace vfdual

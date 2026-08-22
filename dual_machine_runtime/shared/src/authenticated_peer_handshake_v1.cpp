@@ -1208,6 +1208,7 @@ ConfirmedPeerHandshakeSessionV1::~ConfirmedPeerHandshakeSessionV1() {
 }
 
 void ConfirmedPeerHandshakeSessionV1::erase() noexcept {
+    connection_id_ = 0U;
     erase_bytes(control_host_to_android_);
     erase_bytes(control_android_to_host_);
     erase_bytes(presence_host_to_android_);
@@ -1224,6 +1225,11 @@ void ConfirmedPeerHandshakeSessionV1::erase() noexcept {
 PeerHandshakeRole
 ConfirmedPeerHandshakeSessionV1::local_role() const noexcept {
     return local_role_;
+}
+
+std::uint64_t
+ConfirmedPeerHandshakeSessionV1::connection_id() const noexcept {
+    return connection_id_;
 }
 
 PeerHandshakeDataPlaneKeyView
@@ -1725,6 +1731,7 @@ derive_pending_after_peer_identity_verified(
         auto secrets = std::unique_ptr<ConfirmedPeerHandshakeSessionV1>(
             new ConfirmedPeerHandshakeSessionV1());
         secrets->local_role_ = local_role;
+        secrets->connection_id_ = transcript.fields().connection_id;
         const auto expand = [&prk, &error](
             const std::string_view label,
             const std::span<std::byte> output) {

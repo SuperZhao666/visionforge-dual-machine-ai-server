@@ -6,7 +6,7 @@ final class EthernetTransportContract {
     static final String HOST_IPV4 = "10.57.23.1";
     static final String MOBILE_IPV4 = "10.57.23.2";
     static final int PREFIX_LENGTH = 24;
-    static final int MOUSE_BUTTON_PORT = Cat6MouseButtonProtocol.PORT;
+    static final int MOUSE_BUTTON_PORT = 5005;
 
     private EthernetTransportContract() {
     }

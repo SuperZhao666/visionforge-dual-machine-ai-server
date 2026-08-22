@@ -2,12 +2,16 @@ package com.visionforge.inferencebenchmark;
 
 import android.os.SystemClock;
 
+import com.visionforge.inferencebenchmark.handshake.AuthenticatedPeerHandshakeV1;
+
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
+import java.security.GeneralSecurityException;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -30,6 +34,8 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
     }
 
     private final MobileRuntimeEventSink events;
+    private final Cat6MouseButtonProtocol protocol =
+            new Cat6MouseButtonProtocol();
     private final Cat6MouseButtonEndpointPolicy endpointPolicy =
             new Cat6MouseButtonEndpointPolicy();
     private final Cat6MouseButtonLeaseState buttonState =
@@ -82,13 +88,17 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
                     && buttonSnapshot.buttonMask == 0;
             if (!endpointPolicy.shouldHandleUnavailable(
                     inputAlreadyStopped)) return;
+            clearConfirmedSession("endpoint_unavailable");
             stopWorker("endpoint_changed");
             workerRecovery.reset();
             writeEvent("cat6_mouse_button_input_stopped",
                     "reason=endpoint_unavailable fail_closed=true");
             return;
         }
-        if (!sameEndpoint) workerRecovery.reset();
+        if (!sameEndpoint) {
+            workerRecovery.reset();
+            clearConfirmedSession("endpoint_changed");
+        }
         stopWorker("endpoint_changed");
         endpointPolicy.recordEndpointStarting();
         long workerGeneration = generation.incrementAndGet();
@@ -103,6 +113,63 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
         writeEvent("cat6_mouse_button_input_starting", endpoint.detail()
                 + " previous_worker_failures="
                 + workerRecovery.consecutiveFailures());
+    }
+
+    /**
+     * Snapshots only the mouse traffic material from a fully confirmed CAT6
+     * peer session. The session owner must call {@link #clearConfirmedSession}
+     * when that peer session closes.
+     */
+    synchronized boolean installConfirmedSession(
+            ConfirmedAndroidPeerSession session) {
+        if (session == null) return rejectSessionInstall("session_missing");
+        byte[] hostIpv4 = null;
+        byte[] androidIpv4 = null;
+        byte[] trafficMaterial = null;
+        try {
+            if (session.transportKind()
+                    != AuthenticatedPeerHandshakeV1.TransportKind.CAT6) {
+                return rejectSessionInstall("transport_not_cat6");
+            }
+            hostIpv4 = session.hostIpv4();
+            androidIpv4 = session.androidIpv4();
+            String sessionEndpointIdentity =
+                    formatIpv4(androidIpv4) + "|" + formatIpv4(hostIpv4);
+            if (networkHandle == 0L
+                    || !sessionEndpointIdentity.equals(endpointIdentity)) {
+                return rejectSessionInstall("endpoint_binding_mismatch");
+            }
+            long connectionId = session.connectionId();
+            long sessionGeneration = session.sessionGeneration();
+            trafficMaterial = session.mouseHostToAndroidMaterial();
+            if (!protocol.installConfirmedMaterial(
+                    trafficMaterial, connectionId)) {
+                return rejectSessionInstall("crypto_install_failed");
+            }
+            expireStream("authenticated_session_replaced");
+            writeEvent("cat6_mouse_button_session_installed",
+                    "connection_id=" + Long.toUnsignedString(connectionId)
+                            + " session_generation="
+                            + Long.toUnsignedString(sessionGeneration)
+                            + " endpoint=" + endpointIdentity
+                            + " fail_closed=false");
+            return true;
+        } catch (GeneralSecurityException | RuntimeException failure) {
+            return rejectSessionInstall(
+                    "session_read_failed_" + safeToken(
+                            failure.getClass().getSimpleName()));
+        } finally {
+            if (hostIpv4 != null) Arrays.fill(hostIpv4, (byte) 0);
+            if (androidIpv4 != null) Arrays.fill(androidIpv4, (byte) 0);
+            if (trafficMaterial != null) Arrays.fill(trafficMaterial, (byte) 0);
+        }
+    }
+
+    synchronized void clearConfirmedSession(String reason) {
+        if (!protocol.clearConfirmedSession()) return;
+        expireStream("authenticated_session_cleared");
+        writeEvent("cat6_mouse_button_session_cleared",
+                "reason=" + safeToken(reason) + " fail_closed=true");
     }
 
     @Override
@@ -138,10 +205,12 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
                         - snapshot.lastPacketNanos) / 1_000_000L);
         return String.format(Locale.US,
                 "network_handle=%d worker_alive=%s worker_failures=%d "
+                        + "authenticated_session_ready=%s "
                         + "stream_ready=%s button_mask=%d required_mask=%d "
                         + "last_packet_age_ms=%d accepted_packets=%d rejected_packets=%d",
                 networkHandle, worker != null && worker.isAlive(),
                 workerRecovery.consecutiveFailures(),
+                protocol.sessionReady(),
                 snapshot.streamReady, snapshot.buttonMask,
                 requiredTriggerMask,
                 ageMillis, acceptedPackets, rejectedPackets);
@@ -149,6 +218,7 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
 
     @Override
     public synchronized void close() {
+        clearConfirmedSession("closed");
         stopWorker("closed");
         workerRecovery.reset();
         listener = null;
@@ -219,11 +289,10 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
             DatagramSocket socket,
             String expectedHost,
             long workerGeneration) throws IOException {
-        byte[] bytes = new byte[Cat6MouseButtonProtocol.PACKET_BYTES];
+        byte[] bytes = new byte[Cat6MouseButtonProtocol.RECEIVE_BUFFER_BYTES];
         DatagramPacket datagram = new DatagramPacket(bytes, bytes.length);
-        int activeSessionId = 0;
-        int lastSequence = 0;
-        boolean sequenceKnown = false;
+        long activeSessionRevision = 0L;
+        boolean sessionKnown = false;
         while (generation.get() == workerGeneration && !socket.isClosed()) {
             datagram.setLength(bytes.length);
             try {
@@ -240,21 +309,15 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
                 continue;
             }
             Cat6MouseButtonProtocol.Packet packet =
-                    Cat6MouseButtonProtocol.decode(bytes, datagram.getLength());
+                    protocol.decode(bytes, datagram.getLength());
             if (packet == null) {
                 rejectedPackets++;
                 continue;
             }
-            boolean newSession = packet.sessionId != activeSessionId;
-            if (!newSession && sequenceKnown
-                    && !Cat6MouseButtonProtocol.isNewerSequence(
-                    packet.sequence, lastSequence)) {
-                rejectedPackets++;
-                continue;
-            }
-            activeSessionId = packet.sessionId;
-            lastSequence = packet.sequence;
-            sequenceKnown = true;
+            boolean newSession = !sessionKnown
+                    || packet.sessionRevision != activeSessionRevision;
+            activeSessionRevision = packet.sessionRevision;
+            sessionKnown = true;
             acceptPacket(
                     packet.buttonMask, newSession, workerGeneration);
         }
@@ -342,6 +405,21 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
 
     private void writeEvent(String event, String detail) {
         if (events != null) events.write(event, detail);
+    }
+
+    private boolean rejectSessionInstall(String reason) {
+        clearConfirmedSession("session_install_rejected_" + safeToken(reason));
+        writeEvent("cat6_mouse_button_session_rejected",
+                "reason=" + safeToken(reason) + " fail_closed=true");
+        return false;
+    }
+
+    private static String formatIpv4(byte[] address) {
+        if (address == null || address.length != 4) return "";
+        return (address[0] & 0xff) + "."
+                + (address[1] & 0xff) + "."
+                + (address[2] & 0xff) + "."
+                + (address[3] & 0xff);
     }
 
     private static String safeToken(String value) {

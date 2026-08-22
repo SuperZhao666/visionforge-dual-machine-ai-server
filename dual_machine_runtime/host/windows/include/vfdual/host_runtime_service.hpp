@@ -96,6 +96,7 @@ struct HostStreamMetrics {
     std::uint64_t staging_busy_drops{};
     bool mouse_button_publisher_running{};
     bool mouse_button_transport_ready{};
+    bool mouse_button_authenticated_session_ready{};
     std::uint8_t physical_button_mask{};
     std::uint64_t mouse_button_packets_sent{};
     std::uint64_t mouse_button_send_failures{};

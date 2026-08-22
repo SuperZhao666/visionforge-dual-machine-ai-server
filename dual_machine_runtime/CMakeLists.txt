@@ -89,7 +89,6 @@ add_library(vfdual_protocol STATIC
     shared/src/h264_annex_b_access_units.cpp
     shared/src/host_data_plane_authorization_gate.cpp
     shared/src/image_preprocessor.cpp
-    shared/src/mouse_button_protocol.cpp
     shared/src/protocol.cpp
     shared/src/usage_authorization_contract.cpp
     shared/src/usage_lease_gate.cpp
@@ -553,7 +552,7 @@ if(WIN32)
         host/windows
         host/windows/include
         third_party/nv-codec-headers/include)
-    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_host_usage_lease_verifier_v1 vfdual_host_device_identity_runtime ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
+    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_authenticated_peer_handshake_v1 vfdual_host_usage_lease_verifier_v1 vfdual_host_device_identity_runtime ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
         mfplat mf mfuuid wmcodecdspuuid ole32 oleaut32 user32 gdi32 shell32 dwmapi dbghelp)
     add_test(NAME vfdual_host_device_identity_runtime_probe
         COMMAND $<TARGET_FILE:VisionForgeHost> --host-device-identity-probe)
@@ -1204,6 +1203,19 @@ if(WIN32)
         shared/include)
     target_link_libraries(vfdual_idr_request_listener_tests PRIVATE ws2_32)
     add_test(NAME vfdual_idr_request_listener_tests COMMAND vfdual_idr_request_listener_tests)
+
+    add_executable(vfdual_host_mouse_button_publisher_tests
+        host/windows/tests/host_mouse_button_publisher_tests.cpp
+        host/windows/src/host_mouse_button_publisher.cpp
+        host/windows/src/udp_socket.cpp
+    )
+    target_include_directories(vfdual_host_mouse_button_publisher_tests PRIVATE
+        host/windows/include
+        shared/include)
+    target_link_libraries(vfdual_host_mouse_button_publisher_tests PRIVATE
+        vfdual_protocol ws2_32 user32)
+    add_test(NAME vfdual_host_mouse_button_publisher_tests
+        COMMAND vfdual_host_mouse_button_publisher_tests)
 
     add_executable(vfdual_udp_video_publisher_contract_tests
         host/windows/tests/udp_video_publisher_contract_tests.cpp

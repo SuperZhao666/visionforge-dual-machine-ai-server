@@ -51,6 +51,23 @@ public final class AuthenticatedMouseButtonV2 {
         }
     }
 
+    /** Creates the single counter owner for one confirmed Host send session. */
+    public static AuthenticatedDataPlaneV2Sender newSender(
+            byte[] trafficMaterial, long connectionId)
+            throws AuthenticatedDataPlaneV2Exception {
+        MaterialParts parts = splitMaterial(trafficMaterial);
+        try {
+            return AuthenticatedDataPlaneV2.newSender(
+                    parts.key,
+                    parts.noncePrefix,
+                    createHostToAndroidDomain(connectionId),
+                    PAYLOAD_BYTES,
+                    0L);
+        } finally {
+            parts.clear();
+        }
+    }
+
     public static byte[] encodeButtonMask(int buttonMask) {
         if ((buttonMask & ~VALID_BUTTON_MASK) != 0) {
             throw new IllegalArgumentException("buttonMask contains unsupported bits");

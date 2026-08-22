@@ -1468,9 +1468,8 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/main/java/com/visionforge/inferencebenchmark/BluetoothHidMouseTransportCore.java',
             'src/main/java/com/visionforge/inferencebenchmark/BluetoothHidDebugMoveProbePolicy.java',
             'src/main/java/com/visionforge/inferencebenchmark/ControlOutputRoute.java',
-            'src/main/java/com/visionforge/inferencebenchmark/ControlOutputRoutePolicy.java',
-            'src/main/java/com/visionforge/inferencebenchmark/ControlButtonInput.java',
-             'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocol.java',
+             'src/main/java/com/visionforge/inferencebenchmark/ControlOutputRoutePolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/ControlButtonInput.java',
              'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonEndpointPolicy.java',
              'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonLeaseState.java',
              'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonNotificationDispatcher.java',
@@ -1550,7 +1549,6 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/test/java/com/visionforge/inferencebenchmark/ControlOutputCoordinatorSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/BluetoothHidOutputFailClosedPolicySelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/ControlOutputRoutePolicySelfTest.java',
-             'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocolSelfTest.java',
              'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonEndpointPolicySelfTest.java',
              'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonLeaseStateSelfTest.java',
              'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonNotificationDispatcherSelfTest.java',
@@ -1665,11 +1663,39 @@ tasks.named('check').configure {
             tasks.named('verifyAuthenticatedDataPlaneV2'),
             tasks.named('verifyAuthenticatedControlRecordV1'))
 }
+
+def authenticatedMouseButtonRuntimeSelfTestClasses =
+        layout.buildDirectory.dir('authenticated-mouse-button-runtime-self-test/classes')
+tasks.register('compileAuthenticatedMouseButtonRuntimeSelfTest', JavaCompile) {
+    source = files(
+            fileTree('src/main/java/com/visionforge/inferencebenchmark/dataplane') {
+                include '*.java'
+            },
+            'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
+            'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocol.java',
+            'src/test/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocolSelfTest.java')
+    classpath = files()
+    destinationDirectory = authenticatedMouseButtonRuntimeSelfTestClasses
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+    options.compilerArgs.addAll(['-Xlint:all', '-Werror'])
+}
+tasks.register('verifyAuthenticatedMouseButtonRuntime', JavaExec) {
+    group = 'verification'
+    description = 'Rejects plaintext, replayed and unauthenticated CAT6 mouse packets.'
+    dependsOn(tasks.named('compileAuthenticatedMouseButtonRuntimeSelfTest'))
+    classpath = files(authenticatedMouseButtonRuntimeSelfTestClasses)
+    mainClass = 'com.visionforge.inferencebenchmark.Cat6MouseButtonProtocolSelfTest'
+}
+tasks.named('check').configure {
+    dependsOn(tasks.named('verifyAuthenticatedMouseButtonRuntime'))
+}
 tasks.configureEach { task ->
     if (task.name == 'preReleaseBuild') {
         task.dependsOn(
-                tasks.named('verifyAuthenticatedDataPlaneV2'),
-                tasks.named('verifyAuthenticatedControlRecordV1'))
+             tasks.named('verifyAuthenticatedDataPlaneV2'),
+             tasks.named('verifyAuthenticatedControlRecordV1'),
+             tasks.named('verifyAuthenticatedMouseButtonRuntime'))
     }
 }
 
@@ -2241,9 +2267,8 @@ tasks.register('verifyDualMachinePairingIdentityCodec', JavaExec) {
 def ethernetContractSelfTestClasses = layout.buildDirectory.dir('ethernet-contract-self-test/classes')
 tasks.register('compileEthernetTransportContractSelfTest', JavaCompile) {
     source = files(
-            'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
-            'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocol.java',
-            'src/test/java/com/visionforge/inferencebenchmark/EthernetTransportContractSelfTest.java')
+             'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
+             'src/test/java/com/visionforge/inferencebenchmark/EthernetTransportContractSelfTest.java')
     classpath = files()
     destinationDirectory = ethernetContractSelfTestClasses
     sourceCompatibility = JavaVersion.VERSION_17.toString()
@@ -2260,9 +2285,8 @@ tasks.register('verifyEthernetTransportContract', JavaExec) {
 def cat6ReadySelfTestClasses = layout.buildDirectory.dir('cat6-ready-self-test/classes')
 tasks.register('compileCat6ReadySelfTests', JavaCompile) {
     source = files(
-            'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
-            'src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocol.java',
-            'src/main/java/com/visionforge/inferencebenchmark/MobileTransportEndpoint.java',
+             'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
+             'src/main/java/com/visionforge/inferencebenchmark/MobileTransportEndpoint.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileTransportCatalog.java',
             'src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyContract.java',
             'src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyAgentPort.java',
@@ -2644,9 +2668,10 @@ def verifyMobilePublicContractsTask = tasks.register('verifyMobilePublicContract
             tasks.named('verifyEthernetTransportContract'),
             tasks.named('verifyCat6ReadyContract'),
             tasks.named('verifyCat6ReadyLifecycle'),
-            tasks.named('verifyMobileRuntimeSnapshot'),
-            tasks.named('verifyAuthenticatedDataPlaneV2'),
-            tasks.named('verifyAuthenticatedControlRecordV1'),
+             tasks.named('verifyMobileRuntimeSnapshot'),
+             tasks.named('verifyAuthenticatedDataPlaneV2'),
+             tasks.named('verifyAuthenticatedControlRecordV1'),
+             tasks.named('verifyAuthenticatedMouseButtonRuntime'),
             tasks.named('verifyAuthenticatedPeerHandshakeV1'),
             tasks.named('verifyPairGenerationProposalV1'),
             tasks.named('verifyPairGenerationPopV1'),

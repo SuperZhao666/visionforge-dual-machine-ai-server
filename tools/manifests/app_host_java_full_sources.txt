@@ -12,6 +12,14 @@ android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonNotificationDispatcher.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonProtocol.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/Cat6MouseButtonWorkerRecoveryPolicy.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedControlRecordV1.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedDataPlaneV2.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedDataPlaneV2Exception.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedDataPlaneV2Internals.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedDataPlaneV2Receiver.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedDataPlaneV2Sender.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedMouseButtonV2.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/UnsignedReplayWindow.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyAgentLogPolicy.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlButtonInput.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlMoveDeadline.java
