@@ -66,6 +66,7 @@ FORBIDDEN_ANDROID_RELEASE_TEST_SEAM_MARKERS = (
     "channelBindingExporterForTest",
     "AuthenticatedPeerHandshakeV1SelfTest",
     "AuthenticatedControlBootstrapRecordV1SelfTest",
+    "ControlBootstrapSequenceV1SelfTest",
     "PairGenerationProposalV1SelfTest",
     "AndroidBoundPeerHandshakeSessionSelfTest",
     "AuthenticatedPeerHandshakeV1InstrumentationProbe",

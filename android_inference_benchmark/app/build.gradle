@@ -1794,7 +1794,9 @@ def authenticatedControlBootstrapV1SelfTestClasses =
 tasks.register('compileAuthenticatedControlBootstrapV1SelfTest', JavaCompile) {
     source = files(
             'src/main/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1.java',
-            'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1SelfTest.java')
+            'src/main/java/com/visionforge/inferencebenchmark/handshake/ControlBootstrapSequenceV1.java',
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1SelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/ControlBootstrapSequenceV1SelfTest.java')
     classpath = files()
     destinationDirectory = authenticatedControlBootstrapV1SelfTestClasses
     sourceCompatibility = JavaVersion.VERSION_1_8.toString()
@@ -1811,12 +1813,25 @@ tasks.register('verifyAuthenticatedControlBootstrapV1', JavaExec) {
     mainClass =
             'com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1SelfTest'
 }
+tasks.register('verifyControlBootstrapSequenceV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs the exact Host/Android pre-VFC1 ordering and terminal-state contract.'
+    dependsOn(tasks.named('compileAuthenticatedControlBootstrapV1SelfTest'))
+    classpath = files(authenticatedControlBootstrapV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.ControlBootstrapSequenceV1SelfTest'
+}
 tasks.named('check').configure {
-    dependsOn(tasks.named('verifyAuthenticatedControlBootstrapV1'))
+    dependsOn(
+            tasks.named('verifyAuthenticatedControlBootstrapV1'),
+            tasks.named('verifyControlBootstrapSequenceV1'))
 }
 tasks.configureEach { task ->
     if (task.name == 'preReleaseBuild') {
-        task.dependsOn(tasks.named('verifyAuthenticatedControlBootstrapV1'))
+        task.dependsOn(
+                tasks.named('verifyAuthenticatedControlBootstrapV1'),
+                tasks.named('verifyControlBootstrapSequenceV1'))
     }
 }
 
