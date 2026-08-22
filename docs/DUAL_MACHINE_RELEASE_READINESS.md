@@ -97,14 +97,15 @@ Server pair-generation boundary: the sidecar now has a transactional,
 monotonic persistence foundation for pair binding revisions, one-time
 generation challenges and immutable generation allocations. Binding revisions
 are allocated by the server inside `BEGIN IMMEDIATE`; allocation retries must
-match the stored tuple and revalidate the live entitlement/binding state. This
-foundation deliberately has no HTTP route, no proof-free `activate_pair`
-operation and no caller-supplied credential field. It also does **not** yet
-issue a signed generation credential. Formal readiness remains blocked until a
-restricted signing service creates the credential only after the final
-generation is allocated, verifies every signed claim against the committed
-server state, and both Host and Android validate that same credential before
-the authenticated handshake and lease state machine can advance.
+match the stored tuple and revalidate the live entitlement/binding state. The
+sidecar now exposes the composed `/pair-generations/challenges` and
+`/pair-generations/credentials` routes and uses a restricted signing service
+plus an immutable issuance journal to create the signed generation credential
+only after verifying the committed server state. It still has no proof-free
+`activate_pair` operation or caller-supplied credential field. Formal readiness
+remains blocked until the Host production coordinator and Android production
+socket/runtime wiring validate the same credential before the authenticated
+handshake and lease state machine can advance.
 
 ## 4. 正式 bundle 的不可伪造发布边界
 
