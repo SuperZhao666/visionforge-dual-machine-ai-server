@@ -180,7 +180,7 @@ public final class AndroidBoundPeerHandshakeSession implements AutoCloseable {
      * adapter and reflection-based JVM contract tests. It cannot sign raw
      * bytes, accept a digest or inject a verification result.
      */
-    interface TranscriptIdentity {
+    private interface TranscriptIdentity {
         String alias();
 
         byte[] publicKeySpkiDer() throws GeneralSecurityException;
@@ -189,22 +189,6 @@ public final class AndroidBoundPeerHandshakeSession implements AutoCloseable {
                 HandshakeTranscriptV1 transcript,
                 DualMachineEntitlementRecord expectedPair)
                 throws GeneralSecurityException;
-    }
-
-    /** Package-private typed seam used by the production bootstrap coordinator. */
-    static AndroidBoundPeerHandshakeSession bindWithTypedIdentityForCoordinator(
-            DualMachineEntitlementRecord expectedPair,
-            TranscriptIdentity androidIdentity,
-            FreshP256KeyAgreement freshAndroidEphemeral,
-            HandshakeTranscriptV1 locallyRebuiltTranscript,
-            byte[] untrustedHostTranscriptSignature)
-            throws GeneralSecurityException {
-        return bindWithTypedIdentity(
-                expectedPair,
-                androidIdentity,
-                freshAndroidEphemeral,
-                locallyRebuiltTranscript,
-                untrustedHostTranscriptSignature);
     }
 
     private static AndroidBoundPeerHandshakeSession bindWithTypedIdentity(

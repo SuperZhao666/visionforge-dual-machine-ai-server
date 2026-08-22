@@ -47,8 +47,11 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
         long now();
     }
 
-    interface AndroidIdentityCapability
-            extends AndroidBoundPeerHandshakeSession.TranscriptIdentity {
+    interface AndroidIdentityCapability {
+        String alias();
+
+        byte[] publicKeySpkiDer() throws GeneralSecurityException;
+
         byte[] signPairGenerationChallenge(
                 PairGenerationPopV1.ChallengeRequest request,
                 DualMachineEntitlementRecord expectedPair)
@@ -122,6 +125,7 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
     }
 
     private final DualMachineEntitlementRecord expectedPair;
+    private final AndroidPairingIdentityStore androidIdentityStore;
     private final AndroidIdentityCapability androidIdentity;
     private final PairGenerationAuthority authority;
     private final String androidRuntimeVersion;
@@ -169,46 +173,32 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
             throw failure(Reason.INVALID_CONFIGURATION);
         }
         SecureRandom random = new SecureRandom();
-        return createWithTypedCapabilities(
-                expectedPair,
-                new StoreBackedAndroidIdentity(androidIdentityStore),
-                new VerifiedSidecarAuthority(sidecar, credentialVerifier),
-                androidRuntimeVersion,
-                idSource,
-                () -> {
-                    byte[] nonce = new byte[32];
-                    random.nextBytes(nonce);
-                    return nonce;
-                },
-                () -> System.currentTimeMillis() / 1000L);
-    }
-
-    static AuthenticatedPairingHandshake createWithTypedCapabilities(
-            DualMachineEntitlementRecord expectedPair,
-            AndroidIdentityCapability androidIdentity,
-            PairGenerationAuthority authority,
-            String androidRuntimeVersion,
-            HexIdSource idSource,
-            NonceSource nonceSource,
-            EpochSecondsSource epochSecondsSource) throws PairingException {
         try {
             return new AuthenticatedPairingHandshake(
                     expectedPair,
-                    androidIdentity,
-                    authority,
+                    androidIdentityStore,
+                    new StoreBackedAndroidIdentity(androidIdentityStore),
+                    new VerifiedSidecarAuthority(sidecar, credentialVerifier),
                     androidRuntimeVersion,
                     idSource,
-                    nonceSource,
-                    epochSecondsSource,
+                    () -> {
+                        byte[] nonce = new byte[32];
+                        random.nextBytes(nonce);
+                        return nonce;
+                    },
+                    () -> System.currentTimeMillis() / 1000L,
                     AuthenticatedPeerHandshakeV1
                             .generateFreshEphemeralKeyAgreement());
-        } catch (Exception failure) {
+        } catch (PairingException rejected) {
+            throw rejected;
+        } catch (Exception rejected) {
             throw failure(Reason.INVALID_CONFIGURATION);
         }
     }
 
     private AuthenticatedPairingHandshake(
             DualMachineEntitlementRecord expectedPair,
+            AndroidPairingIdentityStore androidIdentityStore,
             AndroidIdentityCapability androidIdentity,
             PairGenerationAuthority authority,
             String androidRuntimeVersion,
@@ -222,7 +212,8 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
         try {
             if (expectedPair == null || expectedPair.revoked
                     || !expectedPair.hasActivePairSecurityBinding()
-                    || androidIdentity == null || authority == null
+                    || androidIdentityStore == null || androidIdentity == null
+                    || authority == null
                     || idSource == null || nonceSource == null
                     || epochSecondsSource == null || androidEphemeral == null
                     || !stableSemVer(androidRuntimeVersion)) {
@@ -256,6 +247,7 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
             throw rejected;
         }
         this.expectedPair = expectedPair;
+        this.androidIdentityStore = androidIdentityStore;
         this.androidIdentity = androidIdentity;
         this.authority = authority;
         this.androidRuntimeVersion = androidRuntimeVersion;
@@ -491,10 +483,9 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
                             authorizedGeneration.generation);
             FreshP256KeyAgreement fresh = androidEphemeral;
             androidEphemeral = null;
-            boundSession = AndroidBoundPeerHandshakeSession
-                    .bindWithTypedIdentityForCoordinator(
+            boundSession = AndroidBoundPeerHandshakeSession.bindExpectedPair(
                             expectedPair,
-                            androidIdentity,
+                            androidIdentityStore,
                             fresh,
                             transcript,
                             hostSignature);
@@ -682,14 +673,6 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
         @Override
         public byte[] publicKeySpkiDer() throws GeneralSecurityException {
             return store.publicKeySpkiDer();
-        }
-
-        @Override
-        public byte[] signTranscript(
-                HandshakeTranscriptV1 transcript,
-                DualMachineEntitlementRecord expectedPair)
-                throws GeneralSecurityException {
-            return store.signHandshakeTranscript(transcript, expectedPair);
         }
 
         @Override
