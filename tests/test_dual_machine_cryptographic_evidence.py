@@ -340,6 +340,59 @@ def test_symlink_escape_is_rejected(tmp_path: Path) -> None:
     _assert_rejected(manifest)
 
 
+def _replace_open_path(root: Path, relative: str, replacement: bytes) -> None:
+    target = root / Path(*relative.split("/"))
+    moved = target.with_name(target.name + ".original")
+    try:
+        os.replace(target, moved)
+        target.write_bytes(replacement)
+    except OSError as exc:
+        if moved.exists() and not target.exists():
+            os.replace(moved, target)
+        pytest.skip(f"path replacement unavailable: {exc}")
+
+
+def test_manifest_handle_remains_bound_when_manifest_path_is_replaced(
+    tmp_path: Path,
+) -> None:
+    manifest, _ = _valid_manifest(tmp_path)
+    original = manifest.read_bytes()
+    replacement = b"manifest path replacement must not be read"
+
+    with verifier._SecureArchive(tmp_path) as archive:
+        with archive.open_file(manifest.name) as handle:
+            _replace_open_path(tmp_path, manifest.name, replacement)
+            handle.seek(0)
+            assert handle.read() == original
+
+
+def test_artifact_handle_remains_bound_when_artifact_path_is_replaced(
+    tmp_path: Path,
+) -> None:
+    _valid_manifest(tmp_path)
+    relative = f"artifacts/{REQUIRED_CASES[0]}.evidence"
+    target = tmp_path / Path(*relative.split("/"))
+    original = target.read_bytes()
+
+    with verifier._SecureArchive(tmp_path) as archive:
+        with archive.open_file(relative) as handle:
+            _replace_open_path(tmp_path, relative, b"artifact path replacement")
+            handle.seek(0)
+            assert handle.read() == original
+
+
+def test_manifest_symlink_is_rejected_or_skipped_explicitly(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-manifest-evidence.json"
+    outside.write_text("{}", encoding="utf-8")
+    link = tmp_path / "manifest-link.json"
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink/junction creation unavailable: {exc}")
+
+    _assert_rejected(link)
+
+
 def test_size_mutation_and_hash_mutation_are_rejected(tmp_path: Path) -> None:
     manifest, payload = _valid_manifest(tmp_path)
     artifact = tmp_path / "artifacts" / f"{REQUIRED_CASES[0]}.evidence"
@@ -357,6 +410,39 @@ def test_size_mutation_and_hash_mutation_are_rejected(tmp_path: Path) -> None:
     payload["artifacts"][0]["sha256"] = "f" * 64
     _write_manifest(tmp_path, payload)
     _assert_rejected(manifest)
+
+
+def test_total_declared_artifact_bytes_is_checked_before_hashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, payload = _valid_manifest(tmp_path)
+    payload["artifacts"][0]["size"] = verifier.MAX_TOTAL_ARTIFACT_BYTES
+    payload["artifacts"][1]["size"] = 1
+    _write_manifest(tmp_path, payload)
+
+    def fail_if_hashing(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("artifact hashing must not start before total-size validation")
+
+    monkeypatch.setattr(verifier, "_hash_artifact", fail_if_hashing)
+    with pytest.raises(verifier.CryptographicEvidenceError) as caught:
+        verifier.verify_evidence_manifest(manifest)
+    assert caught.value.code == "artifact_total_size_bound"
+
+
+def test_total_declared_artifact_bytes_boundary_is_inclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, payload = _valid_manifest(tmp_path)
+    total = sum(artifact["size"] for artifact in payload["artifacts"])
+    monkeypatch.setattr(verifier, "MAX_TOTAL_ARTIFACT_BYTES", total)
+    assert verifier.verify_evidence_manifest(manifest)["ok"] is True
+
+    monkeypatch.setattr(verifier, "MAX_TOTAL_ARTIFACT_BYTES", total - 1)
+    with pytest.raises(verifier.CryptographicEvidenceError) as caught:
+        verifier.verify_evidence_manifest(manifest)
+    assert caught.value.code == "artifact_total_size_bound"
 
 
 def test_cli_json_and_text_stdout_stderr_contract(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

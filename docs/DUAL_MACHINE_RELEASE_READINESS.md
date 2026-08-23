@@ -228,7 +228,8 @@ root 内的 regular file，拒绝缺失文件、目录、symlink/reparse point�
 未知、缺失、重复 case，未引用或多余工件均拒绝。
 
 v1 限制 manifest 不超过 1 MiB、工件不超过 256 个、case 条目不超过 64 个、单个
-工件不超过 1 GiB。CLI 的 JSON 报告 schema 为
+工件以及全部工件的声明/读取字节总量均不超过 512 MiB。总量在任何工件哈希前
+使用非 boolean 整数边界检查；超限直接拒绝。CLI 的 JSON 报告 schema 为
 `visionforge-dual-machine-cryptographic-evidence-verifier-report-v1`；成功时
 `ok=true` 且 `verified_cases`/`verified_artifacts` 为稳定排序列表，失败时 `ok=false`
 并保持 fail-closed。错误报告不包含工件内容、manifest 内容或 secret；`--output`
