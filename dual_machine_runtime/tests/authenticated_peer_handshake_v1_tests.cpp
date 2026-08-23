@@ -90,8 +90,8 @@ struct AuthenticatedPeerHandshakeV1TestAccess final {
             all_zero(secrets.finished_host_) &&
             all_zero(secrets.finished_android_) &&
             all_zero(secrets.channel_binding_exporter_) &&
-            all_zero(secrets.transcript_sha256_) &&
-            all_zero(secrets.channel_binding_sha256_);
+            all_zero(secrets.binding_.transcript_sha256) &&
+            all_zero(secrets.binding_.channel_binding_sha256);
     }
 
     [[nodiscard]] static bool handshake_only_secrets_zero(
@@ -156,6 +156,11 @@ concept ExposesChannelBinding = requires(const Type& value) {
     value.channel_binding_sha256();
 };
 
+template <typename Type>
+concept ExposesConfirmedBinding = requires(const Type& value) {
+    value.binding();
+};
+
 static_assert(!ExposesVideoTrafficMaterial<
     vfdual::PendingPeerHandshakeConfirmationV1>);
 static_assert(!ExposesChannelBinding<
@@ -164,6 +169,14 @@ static_assert(ExposesVideoTrafficMaterial<
     vfdual::ConfirmedPeerHandshakeSessionV1>);
 static_assert(ExposesChannelBinding<
     vfdual::ConfirmedPeerHandshakeSessionV1>);
+static_assert(!ExposesConfirmedBinding<
+    vfdual::PendingPeerHandshakeConfirmationV1>);
+static_assert(ExposesConfirmedBinding<
+    vfdual::ConfirmedPeerHandshakeSessionV1>);
+static_assert(std::is_same_v<
+    decltype(std::declval<const
+        vfdual::ConfirmedPeerHandshakeSessionV1&>().binding()),
+    vfdual::ConfirmedPeerHandshakeBindingV1>);
 
 void require(
     const bool condition,
@@ -926,6 +939,121 @@ void check_vector_unconfirmed_handshake_secrets(
             "3c4b28019f16c8e99c03f70d0a0e33d2")));
 }
 
+void check_confirmed_binding_matches_transcript(
+    const vfdual::ConfirmedPeerHandshakeBindingV1& binding,
+    const vfdual::CanonicalPeerHandshakeTranscriptV1& transcript) {
+    const auto& fields = transcript.fields();
+    CHECK(binding.pair_id == fields.pair_id);
+    CHECK(bytes_equal(
+        binding.host_identity_spki_sha256,
+        fields.host_identity_spki_sha256));
+    CHECK(bytes_equal(
+        binding.android_identity_spki_sha256,
+        fields.android_identity_spki_sha256));
+    CHECK(binding.connection_id == fields.connection_id);
+    CHECK(binding.session_generation == fields.session_generation);
+    CHECK(bytes_equal(
+        binding.transcript_sha256,
+        transcript.transcript_sha256()));
+}
+
+void check_confirmed_bindings_equal(
+    const vfdual::ConfirmedPeerHandshakeBindingV1& left,
+    const vfdual::ConfirmedPeerHandshakeBindingV1& right) {
+    CHECK(left.pair_id == right.pair_id);
+    CHECK(left.host_identity_spki_sha256 == right.host_identity_spki_sha256);
+    CHECK(left.android_identity_spki_sha256 ==
+        right.android_identity_spki_sha256);
+    CHECK(left.connection_id == right.connection_id);
+    CHECK(left.session_generation == right.session_generation);
+    CHECK(left.transcript_sha256 == right.transcript_sha256);
+    CHECK(left.channel_binding_sha256 == right.channel_binding_sha256);
+}
+
+void verify_confirmed_binding_snapshot() {
+    const auto transcript = build_vector_transcript();
+    CHECK(transcript.succeeded());
+    auto vector_keys = import_vector_keys();
+    auto confirmed = confirm_pending_pair(derive_pending_pair(
+        vector_keys, *transcript.transcript));
+
+    const auto host_binding = confirmed.host->binding();
+    const auto android_binding = confirmed.android->binding();
+    check_confirmed_binding_matches_transcript(
+        host_binding, *transcript.transcript);
+    check_confirmed_binding_matches_transcript(
+        android_binding, *transcript.transcript);
+    check_confirmed_bindings_equal(host_binding, android_binding);
+    CHECK(bytes_equal(
+        host_binding.channel_binding_sha256,
+        confirmed.host->channel_binding_sha256()));
+    CHECK(bytes_equal(
+        host_binding.channel_binding_sha256,
+        bytes_from_hex(
+            "5238342449e1585fe95db78cf437a47d"
+            "386d0e2cf895a751053afa0cc431a98b")));
+
+    // The accessor returns an owned value. A copy remains valid after the
+    // session is destroyed and cannot be a dangling span or string_view.
+    const auto detached_binding = host_binding;
+    confirmed.host.reset();
+    check_confirmed_bindings_equal(detached_binding, host_binding);
+    CHECK(detached_binding.pair_id == vector_fields().pair_id);
+}
+
+void verify_confirmed_binding_tracks_transcript_inputs() {
+    const auto baseline_transcript = build_vector_transcript();
+    CHECK(baseline_transcript.succeeded());
+    auto baseline_keys = import_vector_keys();
+    auto baseline_confirmed = confirm_pending_pair(derive_pending_pair(
+        baseline_keys, *baseline_transcript.transcript));
+    const auto baseline_binding = baseline_confirmed.host->binding();
+
+    const auto verify_mutation = [&baseline_binding](
+        const auto& mutate) {
+        auto fields = vector_fields();
+        mutate(fields);
+        const auto transcript =
+            vfdual::build_canonical_peer_handshake_transcript_v1(
+                fields,
+                vfdual::PeerHandshakePairIdRequirement::require_bound_pair);
+        CHECK(transcript.succeeded());
+        auto mutation_keys = import_vector_keys();
+        auto confirmed = confirm_pending_pair(derive_pending_pair(
+            mutation_keys, *transcript.transcript));
+        const auto binding = confirmed.host->binding();
+        check_confirmed_binding_matches_transcript(
+            binding, *transcript.transcript);
+        CHECK(binding.transcript_sha256 != baseline_binding.transcript_sha256);
+        return binding;
+    };
+
+    const auto changed_pair = verify_mutation([](
+        auto& fields) { fields.pair_id += "-NEXT"; });
+    CHECK(changed_pair.pair_id != baseline_binding.pair_id);
+
+    const auto changed_host_identity = verify_mutation([](
+        auto& fields) { fields.host_identity_spki_sha256[0] ^= std::byte{1U}; });
+    CHECK(changed_host_identity.host_identity_spki_sha256 !=
+        baseline_binding.host_identity_spki_sha256);
+
+    const auto changed_android_identity = verify_mutation([](
+        auto& fields) {
+            fields.android_identity_spki_sha256[0] ^= std::byte{1U};
+        });
+    CHECK(changed_android_identity.android_identity_spki_sha256 !=
+        baseline_binding.android_identity_spki_sha256);
+
+    const auto changed_connection = verify_mutation([](
+        auto& fields) { ++fields.connection_id; });
+    CHECK(changed_connection.connection_id != baseline_binding.connection_id);
+
+    const auto changed_generation = verify_mutation([](
+        auto& fields) { ++fields.session_generation; });
+    CHECK(changed_generation.session_generation !=
+        baseline_binding.session_generation);
+}
+
 void verify_ecdh_hkdf_finished_and_channel_binding_vector() {
     const auto transcript = build_vector_transcript();
     CHECK(transcript.succeeded());
@@ -1374,6 +1502,8 @@ int main() {
     verify_strict_tlv_rejections();
     verify_field_validation_boundaries();
     verify_every_accepted_field_mutation_changes_transcript_hash();
+    verify_confirmed_binding_snapshot();
+    verify_confirmed_binding_tracks_transcript_inputs();
     verify_ecdh_hkdf_finished_and_channel_binding_vector();
     verify_pending_finished_gate_is_typed_and_fail_closed();
     verify_pairing_only_transcript_cannot_release_key_material();

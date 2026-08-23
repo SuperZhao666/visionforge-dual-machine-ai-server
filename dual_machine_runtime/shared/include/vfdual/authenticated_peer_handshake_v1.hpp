@@ -205,6 +205,23 @@ struct PeerHandshakeDataPlaneKeyView final {
     std::span<const std::byte, kPeerHandshakeNoncePrefixBytes> nonce_prefix;
 };
 
+/**
+ * Non-secret binding metadata released with a confirmed peer session.
+ *
+ * This is a value snapshot, not a view into the transcript or session
+ * storage.  The fields are populated only from the validated canonical
+ * transcript and its channel-binding exporter during key derivation.
+ */
+struct ConfirmedPeerHandshakeBindingV1 final {
+    std::string pair_id;
+    PeerHandshakeSha256 host_identity_spki_sha256{};
+    PeerHandshakeSha256 android_identity_spki_sha256{};
+    std::uint64_t connection_id{};
+    std::uint64_t session_generation{};
+    PeerHandshakeSha256 transcript_sha256{};
+    PeerHandshakeSha256 channel_binding_sha256{};
+};
+
 struct PeerHandshakeDigestResult final {
     std::optional<PeerHandshakeSha256> digest;
     PeerHandshakeError error;
@@ -241,6 +258,8 @@ public:
 
     [[nodiscard]] PeerHandshakeRole local_role() const noexcept;
     [[nodiscard]] std::uint64_t connection_id() const noexcept;
+    /** Returns an owned snapshot; no session-backed view can dangle. */
+    [[nodiscard]] ConfirmedPeerHandshakeBindingV1 binding() const;
     [[nodiscard]] PeerHandshakeDataPlaneKeyView
     control_host_to_android() const noexcept;
     [[nodiscard]] PeerHandshakeDataPlaneKeyView
@@ -274,7 +293,7 @@ private:
 #endif
 
     PeerHandshakeRole local_role_{PeerHandshakeRole::host};
-    std::uint64_t connection_id_{};
+    ConfirmedPeerHandshakeBindingV1 binding_{};
     std::array<std::byte, 36U> control_host_to_android_{};
     std::array<std::byte, 36U> control_android_to_host_{};
     std::array<std::byte, 36U> presence_host_to_android_{};
@@ -284,8 +303,6 @@ private:
     std::array<std::byte, 32U> finished_host_{};
     std::array<std::byte, 32U> finished_android_{};
     std::array<std::byte, 32U> channel_binding_exporter_{};
-    PeerHandshakeSha256 transcript_sha256_{};
-    PeerHandshakeSha256 channel_binding_sha256_{};
 };
 
 struct PeerHandshakeConfirmationResult final {

@@ -1208,7 +1208,13 @@ ConfirmedPeerHandshakeSessionV1::~ConfirmedPeerHandshakeSessionV1() {
 }
 
 void ConfirmedPeerHandshakeSessionV1::erase() noexcept {
-    connection_id_ = 0U;
+    binding_.pair_id.clear();
+    erase_bytes(binding_.host_identity_spki_sha256);
+    erase_bytes(binding_.android_identity_spki_sha256);
+    binding_.connection_id = 0U;
+    binding_.session_generation = 0U;
+    erase_bytes(binding_.transcript_sha256);
+    erase_bytes(binding_.channel_binding_sha256);
     erase_bytes(control_host_to_android_);
     erase_bytes(control_android_to_host_);
     erase_bytes(presence_host_to_android_);
@@ -1218,8 +1224,6 @@ void ConfirmedPeerHandshakeSessionV1::erase() noexcept {
     erase_bytes(finished_host_);
     erase_bytes(finished_android_);
     erase_bytes(channel_binding_exporter_);
-    erase_bytes(transcript_sha256_);
-    erase_bytes(channel_binding_sha256_);
 }
 
 PeerHandshakeRole
@@ -1229,7 +1233,12 @@ ConfirmedPeerHandshakeSessionV1::local_role() const noexcept {
 
 std::uint64_t
 ConfirmedPeerHandshakeSessionV1::connection_id() const noexcept {
-    return connection_id_;
+    return binding_.connection_id;
+}
+
+ConfirmedPeerHandshakeBindingV1
+ConfirmedPeerHandshakeSessionV1::binding() const {
+    return binding_;
 }
 
 PeerHandshakeDataPlaneKeyView
@@ -1264,12 +1273,12 @@ ConfirmedPeerHandshakeSessionV1::mouse_host_to_android() const noexcept {
 
 const PeerHandshakeSha256&
 ConfirmedPeerHandshakeSessionV1::transcript_sha256() const noexcept {
-    return transcript_sha256_;
+    return binding_.transcript_sha256;
 }
 
 const PeerHandshakeSha256&
 ConfirmedPeerHandshakeSessionV1::channel_binding_sha256() const noexcept {
-    return channel_binding_sha256_;
+    return binding_.channel_binding_sha256;
 }
 
 PeerHandshakeDigestResult
@@ -1301,8 +1310,8 @@ ConfirmedPeerHandshakeSessionV1::create_finished_mac_for_role(
     message[kFinishedProofDomain.size()] =
         std::byte{static_cast<std::uint8_t>(role)};
     std::copy(
-        transcript_sha256_.begin(),
-        transcript_sha256_.end(),
+        binding_.transcript_sha256.begin(),
+        binding_.transcript_sha256.end(),
         message.begin() +
             static_cast<std::ptrdiff_t>(kFinishedProofDomain.size() + 1U));
 
@@ -1731,7 +1740,15 @@ derive_pending_after_peer_identity_verified(
         auto secrets = std::unique_ptr<ConfirmedPeerHandshakeSessionV1>(
             new ConfirmedPeerHandshakeSessionV1());
         secrets->local_role_ = local_role;
-        secrets->connection_id_ = transcript.fields().connection_id;
+        const auto& transcript_fields = transcript.fields();
+        secrets->binding_.pair_id = transcript_fields.pair_id;
+        secrets->binding_.host_identity_spki_sha256 =
+            transcript_fields.host_identity_spki_sha256;
+        secrets->binding_.android_identity_spki_sha256 =
+            transcript_fields.android_identity_spki_sha256;
+        secrets->binding_.connection_id = transcript_fields.connection_id;
+        secrets->binding_.session_generation =
+            transcript_fields.session_generation;
         const auto expand = [&prk, &error](
             const std::string_view label,
             const std::span<std::byte> output) {
@@ -1763,7 +1780,7 @@ derive_pending_after_peer_identity_verified(
                 secrets->channel_binding_exporter_)) {
             return nullptr;
         }
-        secrets->transcript_sha256_ = transcript.transcript_sha256();
+        secrets->binding_.transcript_sha256 = transcript.transcript_sha256();
         SecureFixedBytes<
             kChannelBindingDomain.size() + 2U * kPeerHandshakeSha256Bytes>
             binding_input;
@@ -1777,8 +1794,8 @@ derive_pending_after_peer_identity_verified(
         auto binding_output = binding_input.bytes().begin() +
             static_cast<std::ptrdiff_t>(kChannelBindingDomain.size());
         binding_output = std::copy(
-            secrets->transcript_sha256_.begin(),
-            secrets->transcript_sha256_.end(),
+            secrets->binding_.transcript_sha256.begin(),
+            secrets->binding_.transcript_sha256.end(),
             binding_output);
         std::copy(
             secrets->channel_binding_exporter_.begin(),
@@ -1786,7 +1803,7 @@ derive_pending_after_peer_identity_verified(
             binding_output);
         error = sha256_bytes(
             binding_input.bytes(),
-            secrets->channel_binding_sha256_,
+            secrets->binding_.channel_binding_sha256,
             "derive_channel_binding_sha256");
         if (error.has_error()) return nullptr;
         return std::unique_ptr<PendingPeerHandshakeConfirmationV1>(
