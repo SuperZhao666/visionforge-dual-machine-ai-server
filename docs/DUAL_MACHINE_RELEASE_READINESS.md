@@ -187,3 +187,49 @@ python tools\verify_publishable_release_bundle.py `
 R8、壳、Themida、反调试、字符串隐藏、客户端签名自检和本地布尔 gate只能增加分析成本。它们不能替代服务端权威、硬件非导出身份、相互认证、短租约、AEAD、anti-replay、签名模型供应和不可伪造发布清单。
 
 项目不承诺本地管理员/root 永远无法观察运行时明文。正式安全目标是：即使客户端被完整解包、动态调试、内存 dump、WPM patch、TrustAnchor 替换或网络重定向，攻击者仍不能伪造服务端能力、横向控制另一台设备、重放关键操作、降级到明文协议或投递未签名发布组件。
+
+## 8. 密码学行为证据 manifest v1
+
+`tools/verify_dual_machine_cryptographic_evidence.py` 只验证本地 manifest
+及其 archive-local 工件，不执行工件、不解析 PCAP、不采集设备证据、不联网，也不把源码关键词当作密码学通过证明。
+manifest 文件所在目录就是 archive root；manifest 中所有工件路径必须使用 POSIX `/`、相对路径，且不得包含空段、`.`、`..`、反斜杠、盘符或绝对路径。
+
+manifest 的精确顶层 schema 为：
+
+```json
+{
+  "schema": "visionforge-dual-machine-cryptographic-evidence-v1",
+  "artifacts": [
+    {
+      "path": "artifacts/tag-bit-flip.evidence",
+      "size": 123,
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ],
+  "attack_matrix": [
+    {
+      "case_id": "tag_bit_flip",
+      "result": "rejected",
+      "artifact": "artifacts/tag-bit-flip.evidence"
+    }
+  ]
+}
+```
+
+`artifacts` 条目只能含 `path`、`size`、`sha256`；`size` 必须是非负且非
+boolean 的 JSON integer，`sha256` 必须是 64 位小写 hex。每个工件必须是 archive
+root 内的 regular file，拒绝缺失文件、目录、symlink/reparse point、大小不符和摘要不符。
+`attack_matrix` 条目只能含 `case_id`、`result`、`artifact`，每类必须恰好一次且
+`result` 必须为 `rejected`。v1 的必需 case 为
+`tag_bit_flip`、`aad_bit_flip`、`ciphertext_bit_flip`、`truncation`、`oversize`、
+`duplicate_counter`（duplicate/replay）、`out_of_order`、`wrong_epoch`
+（stale epoch/generation）、`wrong_direction`、`wrong_type`、`wrong_connection`、
+`cross_session`、`plaintext_downgrade` 和 `artifact_sha256`（artifact tamper）。
+未知、缺失、重复 case，未引用或多余工件均拒绝。
+
+v1 限制 manifest 不超过 1 MiB、工件不超过 256 个、case 条目不超过 64 个、单个
+工件不超过 1 GiB。CLI 的 JSON 报告 schema 为
+`visionforge-dual-machine-cryptographic-evidence-verifier-report-v1`；成功时
+`ok=true` 且 `verified_cases`/`verified_artifacts` 为稳定排序列表，失败时 `ok=false`
+并保持 fail-closed。错误报告不包含工件内容、manifest 内容或 secret；`--output`
+使用同目录临时文件和原子替换，失败清理临时文件。
