@@ -5,8 +5,10 @@
     "release_requires_encrypted_session_delivery": true,
     "plaintext_allowed_variants": [
       "debug",
-      "qa"
+      "qa",
+      "owner"
     ],
+    "owner_private_release_plaintext_allowed": true,
     "release_plaintext_allowed": false,
     "source_root_environment": "VISIONFORGE_ANDROID_PRIVATE_ARTIFACT_ROOT"
   },
@@ -20,7 +22,8 @@
       "sha256": "87c5c1c1c651c8944018f567fafe67e086eac2797e2fc2075cb78383f7c2d3ef",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -34,7 +37,8 @@
       "sha256": "96358d3be411b3681863a55d9aa33b3c474375ecc3de6af1890b1bbdcd6237ee",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -48,7 +52,8 @@
       "sha256": "9b9f1bd71caea55366fbc7e6236f4064a766e96126c5c787f7680935bb774100",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -62,7 +67,8 @@
       "sha256": "3c0de799379af2f4063724238d5f6ebfd709f811de03b99bc56196ee058ef2e8",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -76,7 +82,8 @@
       "sha256": "56a071ce94bd9d316cd99232d1d7bc532fd28bd9dfab946a672013fe5f0885ef",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -90,7 +97,8 @@
       "sha256": "850fd6f59bfd1303b05a549176dbadbcdcb0a3a3a35e93768f9778d9a0e4d97a",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -104,7 +112,8 @@
       "sha256": "87c5c1c1c651c8944018f567fafe67e086eac2797e2fc2075cb78383f7c2d3ef",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -118,7 +127,8 @@
       "sha256": "afa861e27cf6e3ded413d89b61859ef223c1691bea074f8fc9589520ed68d961",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -132,7 +142,8 @@
       "sha256": "092095c3a72574cd3a78f5b2fce9c85d68245f666f09e730fab9c0f69370139e",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -146,7 +157,8 @@
       "sha256": "c757e58d82230f1f1cc1697b558d30ca259fd951e8d2240b7ce3ac2ec131eb34",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -160,7 +172,8 @@
       "sha256": "5c7d1dc22706f7f94918fe47026b12c652d175ccc149a25a25c1175f9ff53220",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -174,7 +187,8 @@
       "sha256": "3417afc89ac79aa4629fc6928fb3f07350ceeba6eb55b67dccdac4fccb430df1",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -188,7 +202,8 @@
       "sha256": "320f5e6b25915491e9b449c7b0f94f74c59f2fe285479a935e010030bf9b25e5",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -202,7 +217,8 @@
       "sha256": "19cb9a62d28a3de1a724bd84d475eed4f0ee11e130afbae1968c3b2de5dc9e3c",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": true,
@@ -219,7 +235,8 @@
       "sha256": "e0f97a9f9d25dbb6b8877b08ef9be9a5f947609c77d7458b0a5e95c5c76e24ea",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": true,
@@ -236,7 +253,8 @@
       "sha256": "d29164f8696ae76c5ff592b270d3f9fd311fb3406ec84c85a78a395673d209e4",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": true,
@@ -253,7 +271,8 @@
       "sha256": "44ee3c2f176a53223af2150d0c7fcab407281d632517aa74ff737e5a8e8f3f13",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": true,
@@ -270,7 +289,8 @@
       "sha256": "6bf15ed6554667c1fad4d7240f7e5eb2ad3ee76ccde121d0b69e8e5963f95669",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -284,7 +304,8 @@
       "sha256": "805c575bbf6ffee00002bc20d4bfaf362aabd5db9b839c457c78416c2756fba3",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -298,7 +319,8 @@
       "sha256": "aa560084eb4880aa748e4b32fe545c0aa37ec1fa9eba55f3b986b3e577bd347a",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false
@@ -312,7 +334,8 @@
       "sha256": "dd70f00f040421ea216c3fc913b35e9be822f65f4c3354c41f6787f5282e0e7d",
       "allowed_variants": [
         "debug",
-        "qa"
+        "qa",
+        "owner"
       ],
       "license_review_required": true,
       "public_repository_allowed": false

@@ -22,6 +22,24 @@ final class MobilePipelineCoordinator {
         this.events = events;
     }
 
+    synchronized boolean installConfirmedPeerSession(
+            ConfirmedMobileDataPlaneMaterialV2 material) {
+        boolean installed = pipeline.installConfirmedPeerSession(material);
+        events.write(
+                installed
+                        ? "mobile_vfa2_session_installed"
+                        : "mobile_vfa2_session_install_failed",
+                "video=true presence=true idr=true plaintext_fallback=false");
+        return installed;
+    }
+
+    synchronized void clearConfirmedPeerSession() {
+        pipeline.clearConfirmedPeerSession();
+        events.write(
+                "mobile_vfa2_session_cleared",
+                "video=false presence=false idr=false fail_closed=true");
+    }
+
     /**
      * Loads QNN and configures the decoder while UDP video remains closed.
      * This is readiness work only and must complete before a paid lease is

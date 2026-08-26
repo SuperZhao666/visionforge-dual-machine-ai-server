@@ -71,6 +71,8 @@ int main() {
         read_source("host/windows/include/vfdual/streamer_desktop_app.hpp");
     const std::string source =
         read_source("host/windows/src/streamer_desktop_app.cpp");
+    const std::string failure_copy_source =
+        read_source("host/windows/src/host_ui_failure_copy.cpp");
     const std::string cmake_source = read_source("CMakeLists.txt");
     const std::string host_build_script =
         read_source("host/windows/build_host_application.bat");
@@ -305,8 +307,9 @@ int main() {
                          std::string::npos);
 
     const std::string failure_mapper = slice_between(
-        source, "std::wstring friendly_host_failure(std::string_view error)",
-        "bool set_window_text_if_changed(HWND control, std::wstring_view text)");
+        failure_copy_source,
+        "std::wstring friendly_host_failure(std::string_view error)",
+        "}  // namespace vfdual");
     const std::size_t wireless_discovery_index =
         failure_mapper.find("Automatic wireless-LAN UDP fallback was unavailable");
     const std::size_t mobile_ipv4_index =
@@ -319,7 +322,10 @@ int main() {
         failure_mapper.find("wireless_firewall_status=failed");
     const std::size_t legacy_firewall_conflict_index =
         failure_mapper.find("ambiguous_same_name_rule");
+    const std::size_t activation_pending_index =
+        failure_mapper.find("fresh-pair activation request was not received");
     const std::size_t h264_index = failure_mapper.find("H.264");
+    VFDUAL_TEST_REQUIRE(activation_pending_index != std::string::npos);
     VFDUAL_TEST_REQUIRE(wireless_discovery_index != std::string::npos);
     VFDUAL_TEST_REQUIRE(mobile_ipv4_index != std::string::npos);
     VFDUAL_TEST_REQUIRE(heartbeat_index != std::string::npos);
@@ -333,7 +339,28 @@ int main() {
     VFDUAL_TEST_REQUIRE(wireless_discovery_index < mobile_ipv4_index);
     VFDUAL_TEST_REQUIRE(mobile_ipv4_index < heartbeat_index);
     VFDUAL_TEST_REQUIRE(failure_mapper.find("error.find(\"firewall\")") ==
-                         std::string::npos);
+                          std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("host_failure_is_authorization_pending") !=
+                          std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("HostUiPhase::recovering : HostUiPhase::failed") !=
+                          std::string::npos);
+    VFDUAL_TEST_REQUIRE(create_controls.find("events_text_ = add_read_only_log") !=
+                          std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("WS_VSCROLL") != std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL") !=
+                          std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("case WM_CTLCOLOREDIT:") != std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("compact_recent_event") != std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("kRecentEventLimit = 8U") != std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("kRecentEventCharacterLimit") ==
+                          std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("result.back() = L'\\u2026'") ==
+                          std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("\\u53ef\\u6eda\\u52a8\\u67e5\\u770b\\u5b8c\\u6574\\u5185\\u5bb9") !=
+                          std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("recent_events_.push_back") != std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("recent_events_.pop_front") != std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find("EM_SETSEL, end, end") != std::string::npos);
 
     const std::string mobile_refresh_handler = slice_between(
         source, "case kMobileRefreshCompletedMessage:", "case kStartupCompletedMessage:");
@@ -377,6 +404,34 @@ int main() {
     VFDUAL_TEST_REQUIRE(start_streamer.find("post_startup_completed_result(") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(start_streamer.find("host_gui_start_streamer_entered") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find(
+                            "host_gui_start_failed_detail") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(source.find(
+                            "if (!technical.empty() && !authorization_pending)") !=
+                         std::string::npos);
+    const std::string refresh_status = slice_between(
+        source, "void StreamerDesktopApp::refresh_status()",
+        "void StreamerDesktopApp::set_status(const std::wstring& text)");
+    VFDUAL_TEST_REQUIRE(refresh_status.find(
+                            "runtime_facade_.authorization_read_model()") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(refresh_status.find("authorization.permits_data_plane") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(refresh_status.find(
+                            "host_gui_authorization_ready_starting_once") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(refresh_status.find("start_streamer(window_);") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(refresh_status.find(
+                            "host_gui_authorization_interruption_waiting_renewal") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(refresh_status.find(
+                            "start_when_authorized_ = authorization_pending;") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(runtime_source.find(
+                            "verified server usage lease authorization closed") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(start_streamer.find("host_gui_start_streamer_skipped") !=
                          std::string::npos);

@@ -11,7 +11,10 @@ final class MobileServiceDestroyCleanup {
         FORMAL_USAGE_STOP("formal_usage_stop"),
         AUTHORIZATION_STATUS_RETRY_CANCEL("authorization_status_retry_cancel"),
         RUNTIME_PERMIT_DEADLINES_CLOSE("runtime_permit_deadlines_close"),
+        AUTHORIZATION_HEALTH_EXECUTOR_SHUTDOWN(
+                "authorization_health_executor_shutdown"),
         AUTHORIZATION_EXECUTOR_SHUTDOWN("authorization_executor_shutdown"),
+        FIRST_PAIRING_EXECUTOR_SHUTDOWN("first_pairing_executor_shutdown"),
         START_CANCELLATION_EXECUTOR_SHUTDOWN("start_cancellation_executor_shutdown"),
         AUTHORIZATION_RUNTIME_CLOSE("authorization_runtime_close"),
         ETHERNET_RECOVERY_DESTROY("ethernet_recovery_destroy"),

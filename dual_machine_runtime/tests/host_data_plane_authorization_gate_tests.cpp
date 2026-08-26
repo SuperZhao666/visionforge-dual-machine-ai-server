@@ -58,7 +58,7 @@ vfdual::VerifiedUsageLease ticket(
 }
 
 void test_fail_closed_until_peer_and_lease() {
-    std::uint64_t monotonic = 100U;
+    std::uint64_t monotonic = 100'000U;
     vfdual::HostDataPlaneAuthorizationGate gate(
         [&monotonic] { return monotonic; });
     assert(!gate.permits_data_plane());
@@ -76,14 +76,14 @@ void test_fail_closed_until_peer_and_lease() {
         vfdual::UsageLeaseAdmission::accepted_current);
     assert(gate.permits_data_plane());
 
-    monotonic += 9U;
+    monotonic += 9'000U;
     assert(gate.permits_data_plane());
-    monotonic += 1U;
+    monotonic += 1'000U;
     assert(!gate.permits_data_plane());
 }
 
 void test_binding_revoke_and_wrong_ticket() {
-    std::uint64_t monotonic = 5U;
+    std::uint64_t monotonic = 5'000U;
     vfdual::HostDataPlaneAuthorizationGate gate(
         [&monotonic] { return monotonic; });
     assert(gate.install_confirmed_peer_binding(binding()));
@@ -105,23 +105,23 @@ void test_binding_revoke_and_wrong_ticket() {
 }
 
 void test_monotonic_rollback_is_terminal() {
-    std::uint64_t monotonic = 500U;
+    std::uint64_t monotonic = 500'000U;
     vfdual::HostDataPlaneAuthorizationGate gate(
         [&monotonic] { return monotonic; });
     assert(gate.install_confirmed_peer_binding(binding()));
     const auto valid = ticket(0U, 3'000U, 3'010U, kZeroSha256, 'd');
     assert(gate.submit_verified_ticket(valid, 3'000U) ==
         vfdual::UsageLeaseAdmission::accepted_current);
-    monotonic = 499U;
+    monotonic = 499'000U;
     const auto snapshot = gate.snapshot();
     assert(!snapshot.permits_data_plane);
     assert(snapshot.monotonic_clock_rollback);
-    monotonic = 600U;
+    monotonic = 600'000U;
     assert(!gate.permits_data_plane());
 }
 
 void test_contiguous_renewal() {
-    std::uint64_t monotonic = 10U;
+    std::uint64_t monotonic = 10'000U;
     vfdual::HostDataPlaneAuthorizationGate gate(
         [&monotonic] { return monotonic; });
     assert(gate.install_confirmed_peer_binding(binding()));
@@ -132,11 +132,52 @@ void test_contiguous_renewal() {
     renewal.claims.issued_at_epoch = 4'009U;
     assert(gate.submit_verified_ticket(renewal, 4'009U) ==
         vfdual::UsageLeaseAdmission::staged_future);
-    monotonic += 1U;
+    monotonic += 1'000U;
     assert(gate.permits_data_plane());
     const auto snapshot = gate.snapshot();
     assert(snapshot.sequence == 1U);
     assert(snapshot.expires_at_epoch == 4'020U);
+}
+
+void test_subsecond_commit_retransmit_does_not_revoke() {
+    std::uint64_t monotonic = 100'900U;
+    vfdual::HostDataPlaneAuthorizationGate gate(
+        [&monotonic] { return monotonic; });
+    assert(gate.install_confirmed_peer_binding(binding()));
+    const auto initial = ticket(0U, 5'000U, 5'010U, kZeroSha256, '7');
+    assert(gate.submit_verified_ticket(initial, 5'000U) ==
+        vfdual::UsageLeaseAdmission::accepted_current);
+
+    // This crosses both a monotonic and wall-clock second boundary with only
+    // 1.2 seconds elapsed. Second-granularity anchoring used to derive two
+    // elapsed seconds and permanently revoke the healthy session.
+    monotonic += 1'200U;
+    assert(gate.submit_verified_ticket(initial, 5'001U) ==
+        vfdual::UsageLeaseAdmission::accepted_idempotent);
+    assert(gate.permits_data_plane());
+    assert(!gate.snapshot().monotonic_clock_rollback);
+}
+
+void test_explicit_reset_accepts_a_new_server_session() {
+    std::uint64_t monotonic = 200'000U;
+    vfdual::HostDataPlaneAuthorizationGate gate(
+        [&monotonic] { return monotonic; });
+    assert(gate.install_confirmed_peer_binding(binding()));
+    const auto first = ticket(0U, 6'000U, 6'010U, kZeroSha256, '8');
+    assert(gate.submit_verified_ticket(first, 6'000U) ==
+        vfdual::UsageLeaseAdmission::accepted_current);
+    gate.stop();
+    assert(!gate.permits_data_plane());
+
+    gate.reset();
+    auto next_binding = binding();
+    next_binding.session_id = hex('9', 32U);
+    assert(gate.install_confirmed_peer_binding(next_binding));
+    auto next = ticket(0U, 6'001U, 6'011U, kZeroSha256, '9');
+    next.claims.session_id = next_binding.session_id;
+    assert(gate.submit_verified_ticket(next, 6'001U) ==
+        vfdual::UsageLeaseAdmission::accepted_current);
+    assert(gate.permits_data_plane());
 }
 
 }  // namespace
@@ -146,5 +187,7 @@ int main() {
     test_binding_revoke_and_wrong_ticket();
     test_monotonic_rollback_is_terminal();
     test_contiguous_renewal();
+    test_subsecond_commit_retransmit_does_not_revoke();
+    test_explicit_reset_accepts_a_new_server_session();
     return 0;
 }

@@ -45,6 +45,12 @@ constexpr std::size_t kMinimumRecordBytes =
         case ControlMessageTypeV1::lease_commit:
         case ControlMessageTypeV1::session_close:
         case ControlMessageTypeV1::session_close_ack:
+        case ControlMessageTypeV1::entitlement_status_sign_request:
+        case ControlMessageTypeV1::entitlement_status_sign_response:
+        case ControlMessageTypeV1::usage_authorization_sign_request:
+        case ControlMessageTypeV1::usage_authorization_sign_response:
+        case ControlMessageTypeV1::host_start_intent_claim_request:
+        case ControlMessageTypeV1::host_start_intent_claim_response:
             return true;
         case ControlMessageTypeV1::invalid:
             return false;

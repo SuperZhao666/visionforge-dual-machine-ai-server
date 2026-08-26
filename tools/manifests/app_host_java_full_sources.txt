@@ -1,4 +1,5 @@
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AuthorizationFailureMessagePolicy.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AuthenticatedHostStartIntentClaimV1.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AutomaticFormalStartRetryPolicy.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AutomaticFormalUsageSessionGuard.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/AutomaticUsageGuardCheckpointPolicy.java
@@ -21,6 +22,7 @@ android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedMouseButtonV2.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/dataplane/UnsignedReplayWindow.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/Cat6ReadyAgentLogPolicy.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ConfirmedMobileDataPlaneMaterialV2.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlButtonInput.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlMoveDeadline.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/ControlOutputCoordinator.java
@@ -85,9 +87,13 @@ android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/MobileTransportEndpoint.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/NativeDetectionTracePort.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/NativeVideoInferencePipeline.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/PairGenerationChallengeReplayPolicy.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/PortableModelAssetInstaller.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/QnnAssetBundleInstaller.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/QnnHtpCompatibilityPolicy.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/SelectedNetworkDatagramSocket.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/FirstPairingUiState.java
+android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileFirstPairingObserver.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeAuthorizationObserver.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeBinding.java
 android_inference_benchmark/app/src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeCommandPort.java
@@ -137,7 +143,10 @@ android_inference_benchmark/app/src/main/java/com/visionforge/mobile/ports/Decod
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/ports/RecoveryPort.java
 android_inference_benchmark/app/src/main/java/com/visionforge/mobile/ports/RuntimeDiagnosticsPort.java
 android_inference_benchmark/app/src/test/java/android/net/Network.java
+android_inference_benchmark/app/src/test/java/android/system/ErrnoException.java
+android_inference_benchmark/app/src/test/java/android/system/OsConstants.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/AuthorizationFailureMessagePolicySelfTest.java
+android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/AuthenticatedHostStartIntentClaimV1SelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/AutomaticFormalStartRetryPolicySelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/AutomaticFormalUsageSessionGuardSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/AutomaticUsageGuardCheckpointPolicySelfTest.java
@@ -205,9 +214,11 @@ android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileThroughputTrackerSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileTransportCatalogSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/MobileTransportEndpointTestFixtures.java
+android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/PairGenerationChallengeReplayPolicySelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/PortableModelAssetInstallerSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/QnnAssetBundleInstallerSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/QnnHtpCompatibilityPolicySelfTest.java
+android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/SelectedNetworkDatagramSocketSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeArchitectureSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/ui/FxParticleEngineSelfTest.java
 android_inference_benchmark/app/src/test/java/com/visionforge/inferencebenchmark/ui/FxTransitionPolicySelfTest.java

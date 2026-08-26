@@ -34,6 +34,12 @@ enum class ControlMessageTypeV1 : std::uint8_t {
     lease_commit = 3U,
     session_close = 4U,
     session_close_ack = 5U,
+    entitlement_status_sign_request = 6U,
+    entitlement_status_sign_response = 7U,
+    usage_authorization_sign_request = 8U,
+    usage_authorization_sign_response = 9U,
+    host_start_intent_claim_request = 10U,
+    host_start_intent_claim_response = 11U,
 };
 
 /**

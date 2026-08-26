@@ -1,5 +1,6 @@
 package com.visionforge.inferencebenchmark;
 
+import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -21,6 +22,8 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.Log;
 
+import com.visionforge.inferencebenchmark.runtime.FirstPairingUiState;
+import com.visionforge.inferencebenchmark.runtime.MobileFirstPairingObserver;
 import com.visionforge.inferencebenchmark.runtime.MobileRuntimeAuthorizationObserver;
 import com.visionforge.inferencebenchmark.runtime.MobileRuntimeBinding;
 import com.visionforge.inferencebenchmark.runtime.MobileRuntimeCompositionRoot;
@@ -39,9 +42,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -78,7 +81,7 @@ public final class MobileRuntimeService extends Service {
     private static final long AUTHORIZATION_STATUS_RETRY_INITIAL_MILLIS = 500L;
     private static final long AUTHORIZATION_STATUS_RETRY_MAX_MILLIS = 2_000L;
     private static final long AUTHORIZATION_RENEWAL_MIN_INTERVAL_MILLIS =
-            3_000L;
+            500L;
     private static final long AUTHORIZATION_RENEWAL_NO_PROGRESS_BACKOFF_MILLIS =
             500L;
     private static final long AUTHORIZATION_RENEWAL_REJECTED_BACKOFF_MILLIS =
@@ -87,10 +90,12 @@ public final class MobileRuntimeService extends Service {
             1_000L;
     private static final long AUTOMATIC_HOST_RETRY_BACKOFF_MILLIS = 1_000L;
     private static final long AUTOMATIC_NO_PROGRESS_STOP_MILLIS = 1_500L;
-    private static final long AUTOMATIC_REARM_PROBE_INTERVAL_MILLIS = 500L;
-    private static final long AUTOMATIC_REARM_PROBE_TIMEOUT_MILLIS = 250L;
+    private static final long AUTOMATIC_REARM_CLAIM_INTERVAL_MILLIS = 500L;
     private static final long AUTOMATIC_REARM_HOST_ABSENCE_MILLIS = 1_000L;
-    private static final long AUTHORIZATION_RENEWAL_WINDOW_SECONDS = 2L;
+    // Start the renewal early enough to cover real WAN/TLS/signing latency.
+    // The server-issued successor remains future-dated and contiguous, so
+    // this does not open the data plane beyond already prepaid lease time.
+    private static final long AUTHORIZATION_RENEWAL_WINDOW_SECONDS = 4L;
     private static final long AUTHORIZATION_RENEWAL_WINDOW_GUARD_MILLIS =
             500L;
     static final long WIRELESS_HOST_DISCOVERY_TIMEOUT_MILLIS = 4_000L;
@@ -111,35 +116,6 @@ public final class MobileRuntimeService extends Service {
     private static final String RUNTIME_WIFI_LOCK_TAG =
             "VisionForge:MobileRuntimeWifi";
 
-    /** Immutable cross-executor owner for one authorization/pipeline pair. */
-    private static final class FormalPipelineOwnerReceipt {
-        final DualMachineAuthorizationRuntime runtime;
-        final DualMachineAuthorizationRuntime.CurrentGenerationReceipt
-                authorizationReceipt;
-        final long pipelineGeneration;
-        final MobileTransportEndpoint endpoint;
-
-        FormalPipelineOwnerReceipt(
-                DualMachineAuthorizationRuntime runtime,
-                DualMachineAuthorizationRuntime.CurrentGenerationReceipt
-                        authorizationReceipt,
-                long pipelineGeneration,
-                MobileTransportEndpoint endpoint) {
-            this.runtime = runtime;
-            this.authorizationReceipt = authorizationReceipt;
-            this.pipelineGeneration = pipelineGeneration;
-            this.endpoint = endpoint;
-        }
-
-        boolean owns(long generation, MobileTransportEndpoint candidate) {
-            if (pipelineGeneration != generation) return false;
-            if (endpoint == null || candidate == null) {
-                return endpoint == candidate;
-            }
-            return endpoint.hasSameDataPlaneRoute(candidate);
-        }
-    }
-
     private enum FormalOwnerStopResult {
         CLAIMED,
         ALREADY_QUEUED,
@@ -158,6 +134,12 @@ public final class MobileRuntimeService extends Service {
         }
 
         @Override
+        public void setFirstPairingObserver(
+                MobileFirstPairingObserver observer) {
+            pairingRuntime.setObserver(observer);
+        }
+
+        @Override
         public void setActivityForeground(boolean foreground) {
             updateActivityForeground(foreground);
         }
@@ -168,6 +150,11 @@ public final class MobileRuntimeService extends Service {
         }
 
         @Override
+        public FirstPairingUiState firstPairingState() {
+            return pairingRuntime.state();
+        }
+
+        @Override
         public void activateCard(String cardCode) {
             requestCardActivation(cardCode);
         }
@@ -175,6 +162,11 @@ public final class MobileRuntimeService extends Service {
         @Override
         public void resumePendingActivation() {
             requestPendingActivationResume();
+        }
+
+        @Override
+        public void confirmFirstPairing(boolean matchingCodes) {
+            pairingRuntime.confirm(matchingCodes);
         }
 
         @Override
@@ -230,6 +222,16 @@ public final class MobileRuntimeService extends Service {
                 thread.setDaemon(false);
                 return thread;
             });
+    // Renewal dispatch must not share a scheduler with expensive native/QNN
+    // health snapshots. The dedicated clock only queues serialized work onto
+    // authorizationExecutor; it does not create a second authorization owner.
+    private final ScheduledExecutorService authorizationHealthExecutor =
+            Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(
+                        runnable, "visionforge-mobile-authorization-health");
+                thread.setDaemon(false);
+                return thread;
+            });
     private final ExecutorService startCancellationExecutor =
             Executors.newSingleThreadExecutor(runnable -> {
                 Thread thread = new Thread(
@@ -247,6 +249,9 @@ public final class MobileRuntimeService extends Service {
             new DualMachineMonotonicDeadlineScheduler();
 
     private MobileEventLogger events;
+    private DualMachinePresentationBalanceReconciler
+            presentationBalanceReconciler;
+    private MobilePairingRuntimeCoordinator pairingRuntime;
     private MobileExternalHealthSnapshotWriter externalHealthSnapshotWriter;
     private MobileControlRuntime controlRuntime;
     private MobilePipelineCoordinator pipeline;
@@ -404,12 +409,30 @@ public final class MobileRuntimeService extends Service {
         compositionRoot.publish(runtimeStatus);
         compositionRoot.publishEthernetDiagnostics(latestEthernetDiagnostics);
         events = new MobileEventLogger(this);
+        presentationBalanceReconciler =
+                new DualMachinePresentationBalanceReconciler(
+                        new SharedPreferencesDualMachinePresentationBalanceStore(
+                                this),
+                        events);
         externalHealthSnapshotWriter = new MobileExternalHealthSnapshotWriter(
                 getExternalFilesDir(null));
         restoreAutomaticUsageGuard();
         controlRuntime = MobileControlRuntime.get(this);
         controlRuntime.ensureSelectedOutputConnected();
         pipeline = new MobilePipelineCoordinator(new QnnNativeVideoInferencePipeline(), events);
+        pairingRuntime = new MobilePairingRuntimeCoordinator(
+                this,
+                NOTIFICATION_ID,
+                events,
+                () -> destroying,
+                () -> authorizationRuntime,
+                this::requiredTransportEndpoint,
+                () -> controlRuntime,
+                () -> pipeline,
+                this::attachAuthenticatedHost,
+                () -> publishMappedAuthorizationState(""),
+                this::updateNotification,
+                this::nextAuthorizationId);
         hostVideoPresenceProbe = new HostVideoPresenceProbe(events);
         cat6ReadyLifecycle = new Cat6ReadyLifecycleCoordinator(new NativeCat6ReadyAgent());
         ethernetRecovery = createEthernetRecoveryCoordinator();
@@ -461,9 +484,9 @@ public final class MobileRuntimeService extends Service {
                         + "transport=cat6 preferred="
                         + EthernetTransportContract.requiredLink());
         initialiseAuthorizationRuntimeAsync();
-        healthExecutor.scheduleAtFixedRate(this::runPeriodicRuntimeHealth,
+        healthExecutor.scheduleWithFixedDelay(this::runPeriodicRuntimeHealth,
                 5L, 5L, TimeUnit.SECONDS);
-        healthExecutor.scheduleAtFixedRate(
+        authorizationHealthExecutor.scheduleWithFixedDelay(
                 this::runPeriodicAuthorizationMaintenance,
                 AUTHORIZATION_HEALTH_MILLIS,
                 AUTHORIZATION_HEALTH_MILLIS,
@@ -473,9 +496,13 @@ public final class MobileRuntimeService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = intent == null ? null : intent.getAction();
+        if (pairingRuntime.handleAction(action)) {
+            return START_NOT_STICKY;
+        }
         MobileRuntimeCommandProtocol.Command command =
                 MobileRuntimeCommandProtocol.parse(
-                        intent == null ? null : intent.getAction(),
+                        action,
                         true);
         if (command == MobileRuntimeCommandProtocol.Command.REFRESH_POWER_POLICY) {
             refreshRuntimeLocks();
@@ -496,6 +523,7 @@ public final class MobileRuntimeService extends Service {
     @Override
     public boolean onUnbind(Intent intent) {
         authorizationObserver = null;
+        pairingRuntime.clearObserver();
         return true;
     }
 
@@ -572,7 +600,11 @@ public final class MobileRuntimeService extends Service {
                                     deadlines,
                                     this::readAndroidProgress);
                     if (!installAuthorizationRuntimeIfCurrent(
-                            initializationGeneration, created, deadlines)) {
+                            initializationGeneration,
+                            created,
+                            deadlines,
+                            identityStore,
+                            androidIdentity)) {
                         created.close();
                         deadlines.close();
                         events.write(
@@ -588,6 +620,8 @@ public final class MobileRuntimeService extends Service {
                                     + "formal_lease_restored=false");
                     publishMappedAuthorizationState("");
                     refreshAuthorizationStatusAfterRestore(created);
+                    pairingRuntime.scheduleFirstPairingIfNeeded();
+                    pairingRuntime.scheduleAuthenticatedControlIfNeeded();
                 } catch (IOException | GeneralSecurityException
                          | RuntimeException failure) {
                     if (created != null) created.close();
@@ -616,7 +650,10 @@ public final class MobileRuntimeService extends Service {
     private boolean installAuthorizationRuntimeIfCurrent(
             long initializationGeneration,
             DualMachineAuthorizationRuntime runtime,
-            DualMachineMonotonicDeadlineScheduler deadlines) {
+            DualMachineMonotonicDeadlineScheduler deadlines,
+            AndroidPairingIdentityStore identityStore,
+            DualMachineCardAuthorizationCoordinator.IdentityBinding
+                    androidIdentity) {
         synchronized (authorizationLifecycleLock) {
             if (destroying
                     || initializationGeneration
@@ -625,6 +662,7 @@ public final class MobileRuntimeService extends Service {
             }
             authorizationDeadlines = deadlines;
             authorizationRuntime = runtime;
+            pairingRuntime.configureIdentity(identityStore, androidIdentity);
             authorizationSecurityFatal = false;
             return true;
         }
@@ -659,6 +697,7 @@ public final class MobileRuntimeService extends Service {
             deadlines = authorizationDeadlines;
             authorizationRuntime = null;
             authorizationDeadlines = null;
+            pairingRuntime.clearIdentity();
         }
         Throwable closeFailure = null;
         if (runtime != null) {
@@ -1129,25 +1168,6 @@ public final class MobileRuntimeService extends Service {
                         + automaticUsageGuard.snapshot().detail());
     }
 
-    private void recordHostVideoObservation(
-            HostVideoPresenceProbe.HostVideoObservation observation) {
-        if (observation == null) return;
-        automaticHostWaitLogPolicy.clearFailure();
-        automaticUsageGuard.recordHostFrame(
-                observation.logicalFrameSequence);
-        AutomaticFormalUsageSessionGuard.State state =
-                automaticUsageGuard.snapshot().state;
-        if (state == AutomaticFormalUsageSessionGuard.State.START_RESERVED
-                || state == AutomaticFormalUsageSessionGuard.State.ACTIVE) {
-            try {
-                persistAutomaticUsageBlock(true);
-            } catch (GeneralSecurityException failure) {
-                throw new SecurityException(
-                        "automatic usage guard checkpoint failed", failure);
-            }
-        }
-    }
-
     private void recordLatestHostFrameFromNative() {
         try {
             MobileRuntimeSnapshot snapshot = MobileRuntimeSnapshot.from(
@@ -1238,10 +1258,10 @@ public final class MobileRuntimeService extends Service {
     private long readAndroidProgress() {
         String decoder = QnnHtpBridge.getNativeH264DecoderReport();
         long progress = MobileRuntimeSnapshot.from(
-                "", decoder, "", "").qnnExecutionCount;
+                "", decoder, "", "").renderedFrameCount;
         if (progress < 0L) {
             throw new SecurityException(
-                    "Android QNN progress is unavailable");
+                    "Android decoder progress is unavailable");
         }
         return progress;
     }
@@ -1433,6 +1453,7 @@ public final class MobileRuntimeService extends Service {
                     committed = commitPreparedHotReloadModelIfCurrent(
                             generation,
                             sessionEndpoint,
+                            formalOwner,
                             selected,
                             "game_model_hot_reload_applied model="
                                     + selected.token);
@@ -1667,8 +1688,29 @@ public final class MobileRuntimeService extends Service {
     private HotReloadCommitResult commitPreparedHotReloadModelIfCurrent(
             long generation,
             MobileTransportEndpoint expectedEndpoint,
+            FormalPipelineOwnerReceipt formalOwner,
             MobileModelCatalog.Profile selected,
             String runningDetail) {
+        if (formalOwner == null
+                || !hotReloadSessionIdentityIsCurrent(
+                generation, expectedEndpoint)) {
+            return HotReloadCommitResult.superseded();
+        }
+        final long reconciledAndroidProgress;
+        try {
+            reconciledAndroidProgress = formalOwner.runtime
+                    .reconcileKnownAndroidPipelineRestart(
+                            formalOwner.authorizationReceipt);
+        } catch (DualMachineFormalUsageCoordinator
+                         .AdmissionSupersededException | IOException superseded) {
+            return HotReloadCommitResult.superseded();
+        }
+        events.write(
+                "mobile_game_model_hot_reload_progress_reconciled",
+                "model=" + selected.token
+                        + " android_session_progress="
+                        + reconciledAndroidProgress
+                        + " reset_sampled_before_data_plane_open=true");
         MobileTransportEndpoint currentEndpoint = requiredTransportEndpoint();
         synchronized (pipelineCommandLock) {
             if (!hotReloadSessionIdentityIsCurrentLocked(
@@ -1766,6 +1808,7 @@ public final class MobileRuntimeService extends Service {
                 committed = commitPreparedHotReloadModelIfCurrent(
                         generation,
                         sessionEndpoint,
+                        formalOwner,
                         previous,
                         "game_model_hot_reload_rolled_back model="
                                 + previous.token);
@@ -2210,6 +2253,39 @@ public final class MobileRuntimeService extends Service {
         try {
             handle = runtime.beginFormalUsageLifecycleStopRetryIfCurrent(
                     receipt,
+                    () -> {
+                        boolean claimed = automaticFormalStopQueued
+                                .compareAndSet(false, true);
+                        claimedByThisCall.set(claimed);
+                        return claimed;
+                    });
+        } catch (RuntimeException | LinkageError failure) {
+            if (claimedByThisCall.get()) {
+                automaticFormalStopQueued.compareAndSet(true, false);
+            }
+            throw failure;
+        }
+        if (handle == null) return;
+        try {
+            blockAutomaticStartForCurrentHostStream(reason);
+            clearFormalSessionBinding();
+            queuePendingFormalStartCancellation(
+                    handle.startCancellationHandle(), reason);
+            queueClaimedFormalUsageStop(handle, reason);
+        } catch (RuntimeException | LinkageError queueFailure) {
+            runClaimedFormalUsageStop(handle, reason);
+            throw queueFailure;
+        }
+    }
+
+    private void retryFormalUsageStopWithoutAuthenticatedHostIfDue(
+            DualMachineAuthorizationRuntime runtime,
+            String reason) {
+        AtomicBoolean claimedByThisCall = new AtomicBoolean();
+        DualMachineAuthorizationRuntime.FormalUsageLifecycleHandle handle;
+        try {
+            handle = runtime
+                    .beginFormalUsageLifecycleStopRetryWithoutAuthenticatedHost(
                     () -> {
                         boolean claimed = automaticFormalStopQueued
                                 .compareAndSet(false, true);
@@ -2881,20 +2957,15 @@ public final class MobileRuntimeService extends Service {
             acquireRuntimeLocks(endpoint);
             boolean pipelinePreparationAttempted = false;
             try {
-                recordHostVideoObservation(
-                        awaitFormalPreparationHostVideo(
-                                endpoint,
-                                HOST_VIDEO_PREFLIGHT_TIMEOUT_MILLIS,
-                                cancellationRequested));
                 requireFormalStartNotCancelled(cancellationRequested);
                 MobileTransportEndpoint verifiedBeforePreparation =
                         requiredTransportEndpoint();
                 if (!endpoint.hasSameDataPlaneRoute(verifiedBeforePreparation)) {
                     throw new IOException(
-                            "required transport changed during Host video preflight");
+                            "required transport changed during formal preparation");
                 }
                 updateStatus(MobileRuntimePhase.STARTING,
-                        "formal_usage_preparing host_authorization=true");
+                        "formal_usage_preparing authenticated_control=true data_plane_closed=true");
                 updateNotification(R.string.runtime_notification_starting);
                 String nativeDirectory = lastNativeDirectory == null
                         ? defaultNativeDirectory()
@@ -2961,18 +3032,13 @@ public final class MobileRuntimeService extends Service {
                     throw new IOException(
                             "required transport changed during QNN preparation");
                 }
-                recordHostVideoObservation(
-                        awaitFormalPreparationHostVideo(
-                                verifiedEndpoint,
-                                HOST_VIDEO_REVALIDATION_TIMEOUT_MILLIS,
-                                cancellationRequested));
                 requireFormalStartNotCancelled(cancellationRequested);
                 MobileTransportEndpoint verifiedAfterPreparation =
                         requiredTransportEndpoint();
                 if (!verifiedEndpoint.hasSameDataPlaneRoute(
                         verifiedAfterPreparation)) {
                     throw new IOException(
-                            "required transport changed during final Host video preflight");
+                            "required transport changed before formal pin");
                 }
                 MobileTransportEndpoint pinnedEndpoint =
                         transportCatalog.pinForFormalSession(
@@ -2997,7 +3063,9 @@ public final class MobileRuntimeService extends Service {
                 events.write(
                         "mobile_transport_formal_session_pinned",
                         pinnedEndpoint.detail()
-                                + " preference_changes_deferred=true");
+                                + " preference_changes_deferred=true"
+                                + " authenticated_control=true"
+                                + " host_video_wait_deferred_until_lease_commit=true");
                 return new DualMachineFormalUsageCoordinator.StartReadiness(
                         channelBinding,
                         true,
@@ -3043,21 +3111,19 @@ public final class MobileRuntimeService extends Service {
             acquireRuntimeLocks(expectedEndpoint);
             try {
                 requireWirelessForegroundDisplay(expectedEndpoint);
-                recordHostVideoObservation(
-                        hostVideoPresenceProbe.awaitValidHostVideo(
-                                expectedEndpoint,
-                                MobilePipelineCoordinator.VIDEO_PORT,
-                                HOST_VIDEO_REVALIDATION_TIMEOUT_MILLIS,
-                                cancellationRequested));
                 requireFormalStartNotCancelled(cancellationRequested);
                 MobileTransportEndpoint currentEndpoint =
                         requiredTransportEndpoint();
                 String currentAuthenticatedBinding =
                         requiredAuthenticatedHostChannelBinding();
+                AndroidBoundAuthenticatedControlCoordinatorV1 control =
+                        pairingRuntime.authenticatedControl();
                 synchronized (pipelineCommandLock) {
                     if (destroying
                             || expectedGeneration
                             != pipelineSessionGeneration.get()
+                            || control == null
+                            || !control.isAuthenticated()
                             || formalSessionEndpoint == null
                             || !expectedEndpoint.hasSameDataPlaneRoute(
                             currentEndpoint)
@@ -3068,7 +3134,7 @@ public final class MobileRuntimeService extends Service {
                             || !expectedChannelBindingSha256.equals(
                             currentAuthenticatedBinding)) {
                         throw new IOException(
-                                    "formal usage Host video proof was superseded");
+                                    "formal usage authenticated control was superseded");
                     }
                 }
                 requireWirelessForegroundDisplay(expectedEndpoint);
@@ -3079,12 +3145,13 @@ public final class MobileRuntimeService extends Service {
                 reservedChannelBindingSha256 =
                         expectedChannelBindingSha256;
                 events.write(
-                        "dual_machine_host_video_revalidated",
-                        "before_potential_debit=true route_unchanged=true");
+                        "dual_machine_authenticated_host_revalidated",
+                        "before_potential_debit=true route_unchanged=true "
+                                + "data_plane_closed=true");
             } catch (IOException | GeneralSecurityException
                      | RuntimeException failure) {
                 closeFormalDataPlaneLocally(
-                        "formal_start_host_video_revalidation_failed");
+                        "formal_start_authenticated_control_revalidation_failed");
                 throw failure;
             }
         }
@@ -3093,15 +3160,6 @@ public final class MobileRuntimeService extends Service {
         public void openDataPlane(
                 DualMachineFormalUsageCoordinator.DataPlanePermit permit)
                 throws IOException {
-            if (permit.sequence == 0L) {
-                // Reaching this callback proves that a verified start response
-                // was received. From this point forward the generation is
-                // potentially paid even if route validation or native startup
-                // fails, so the same Host stream must remain latched.
-                markAutomaticFormalSessionOpened(
-                        permit.startRequestId,
-                        permit.channelBindingSha256);
-            }
             MobileTransportEndpoint endpoint = requiredTransportEndpoint();
             if (endpoint == null) {
                 closeFormalDataPlaneLocally(
@@ -3114,6 +3172,45 @@ public final class MobileRuntimeService extends Service {
                         "wireless_foreground_display_unavailable");
                 throw new IOException(
                         "wireless runtime requires a foreground interactive display");
+            }
+            synchronized (pipelineCommandLock) {
+                MobileTransportEndpoint preparedEndpoint =
+                        formalSessionEndpoint;
+                if (permit == null || preparedEndpoint == null
+                        || formalSessionChannelBinding.isEmpty()
+                        || !preparedEndpoint.hasSameDataPlaneRoute(endpoint)
+                        || !formalSessionChannelBinding.equals(
+                                permit.channelBindingSha256)) {
+                    throw new IOException("formal usage binding changed");
+                }
+            }
+            AndroidBoundAuthenticatedControlCoordinatorV1 control =
+                    pairingRuntime.authenticatedControl();
+            if (control == null || !control.isAuthenticated()) {
+                closeFormalDataPlaneLocally(
+                        "authenticated_control_unavailable");
+                throw new IOException(
+                        "authenticated Host control channel is unavailable");
+            }
+            try {
+                control.installVerifiedUsageLease(permit);
+            } catch (GeneralSecurityException failure) {
+                closeFormalDataPlaneLocally(
+                        "host_lease_install_rejected");
+                throw new IOException(
+                        "Host rejected the verified usage lease", failure);
+            }
+            events.write(
+                    "dual_machine_host_usage_lease_committed",
+                    "sequence=" + permit.sequence
+                            + " raw_bytes_unchanged=true"
+                            + " host_independent_verification=true");
+            if (permit.sequence == 0L) {
+                // The paid generation is latched only after Host acceptance
+                // and the authenticated Android commit have completed.
+                markAutomaticFormalSessionOpened(
+                        permit.startRequestId,
+                        permit.channelBindingSha256);
             }
             long networkHandle = endpoint.networkHandle;
             boolean continued;
@@ -3209,9 +3306,11 @@ public final class MobileRuntimeService extends Service {
             }
             nextFormalStartRetryElapsedMillis.set(0L);
             formalRenewalRetryPending.set(false);
-            nextFormalRenewalAttemptElapsedMillis.set(
-                    SystemClock.elapsedRealtime()
-                            + AUTHORIZATION_RENEWAL_MIN_INTERVAL_MILLIS);
+            // Let the next 250 ms maintenance tick align the first renewal to
+            // the verified lease window. A fixed three-second delay leaves a
+            // five-second permit too little time for WAN/TLS/signing and turns
+            // every renewal into a close/reopen cycle.
+            nextFormalRenewalAttemptElapsedMillis.set(0L);
             events.write(
                     hotReloadOwnsReopen
                             ? "dual_machine_formal_permit_continued"
@@ -3220,7 +3319,10 @@ public final class MobileRuntimeService extends Service {
                             : "dual_machine_formal_data_plane_opened",
                     "network_handle=" + networkHandle
                             + " host_authorization=true "
-                            + "video_encrypted=false "
+                            + "video_encrypted=true "
+                            + "presence_authenticated=true "
+                            + "idr_authenticated=true "
+                            + "plaintext_fallback=false "
                             + "data_plane_open="
                             + !hotReloadOwnsReopen + " "
                             + "pipeline_reopen_deferred_to_hot_reload="
@@ -3239,6 +3341,21 @@ public final class MobileRuntimeService extends Service {
         public void stageFutureLease(
                 DualMachineFormalUsageCoordinator.DataPlanePermit permit)
                 throws IOException {
+            AndroidBoundAuthenticatedControlCoordinatorV1 control =
+                    pairingRuntime.authenticatedControl();
+            if (control == null || !control.isAuthenticated()) {
+                throw new IOException(
+                        "authenticated Host control channel is unavailable");
+            }
+            try {
+                control.installVerifiedUsageLease(permit);
+            } catch (GeneralSecurityException failure) {
+                closeFormalDataPlaneLocally(
+                        "host_future_lease_install_rejected");
+                throw new IOException(
+                        "Host rejected the verified future usage lease",
+                        failure);
+            }
             synchronized (pipelineCommandLock) {
                 stageRuntimePermitLocked(permit, System.nanoTime());
             }
@@ -3283,6 +3400,8 @@ public final class MobileRuntimeService extends Service {
     }
 
     private void scheduleAuthorizationMaintenance() {
+        pairingRuntime.scheduleFirstPairingIfNeeded();
+        pairingRuntime.scheduleAuthenticatedControlIfNeeded();
         ensureAuthorizationStatusRetryScheduled();
         DualMachineAuthorizationRuntime runtime = authorizationRuntime;
         if (destroying || runtime == null) {
@@ -3333,6 +3452,24 @@ public final class MobileRuntimeService extends Service {
                             }
                             return;
                         }
+                        if (!currentRuntime.hasAuthenticatedHost()) {
+                            DualMachineFormalUsageStateMachine.Snapshot
+                                    unavailableHostSnapshot =
+                                    currentRuntime.snapshot();
+                            if (unavailableHostSnapshot.state
+                                    == DualMachineFormalUsageStateMachine.State
+                                    .STOPPING) {
+                                retryFormalUsageStopWithoutAuthenticatedHostIfDue(
+                                        currentRuntime,
+                                        "authenticated_host_unavailable_retry");
+                            } else if (unavailableHostSnapshot
+                                    .canFormalStop()) {
+                                requestFormalUsageStop(
+                                        "authenticated_host_unavailable");
+                            }
+                            publishMappedAuthorizationState("");
+                            return;
+                        }
                         generationReceipt = currentRuntime
                                 .captureCurrentGenerationReceipt();
                         AtomicBoolean wirelessStartStopped =
@@ -3370,6 +3507,13 @@ public final class MobileRuntimeService extends Service {
                                             "failure_type="
                                                     + failure.getClass()
                                                     .getSimpleName()
+                                                    + " control_stage="
+                                                    + pairingRuntime
+                                                            .authenticatedControlDiagnosticStage()
+                                                    + " stack={"
+                                                    + MobileThrowableDiagnostics
+                                                            .format(failure)
+                                                    + "}"
                                                     + " data_plane_open=false");
                                     publishMappedAuthorizationState(getString(
                                             R.string
@@ -3554,6 +3698,8 @@ public final class MobileRuntimeService extends Service {
                         generationReceipt);
             }
         } catch (DualMachineSidecarPort.RejectedException failure) {
+            writeFormalRenewalTiming(
+                    runtime, generationReceipt, "rejected", failure);
             if (failure.statusCode != 429) {
                 throw failure;
             }
@@ -3572,6 +3718,8 @@ public final class MobileRuntimeService extends Service {
                     });
             return;
         } catch (IOException failure) {
+            writeFormalRenewalTiming(
+                    runtime, generationReceipt, "network_failure", failure);
             if (isFatalAuthorizationIoFailure(failure)) {
                 throw failure;
             }
@@ -3589,7 +3737,16 @@ public final class MobileRuntimeService extends Service {
                                         + failure.getClass().getSimpleName());
                     });
             return;
+        } catch (GeneralSecurityException | RuntimeException failure) {
+            writeFormalRenewalTiming(
+                    runtime, generationReceipt, "local_failure", failure);
+            throw failure;
         }
+        writeFormalRenewalTiming(
+                runtime,
+                generationReceipt,
+                outcome.name().toLowerCase(Locale.ROOT),
+                null);
         final String noProgressDetail = outcome
                 == DualMachineFormalUsageCoordinator.RenewalOutcome.NO_PROGRESS
                 ? noProgressRenewalDetail(
@@ -3614,9 +3771,10 @@ public final class MobileRuntimeService extends Service {
                         automaticUsageGuard.markProgressRenewed();
                         checkpointAutomaticUsageGuardIfDue(
                                 now, "successful_formal_renewal");
-                        if (outcome == DualMachineFormalUsageCoordinator
-                                .RenewalOutcome.FUTURE_STAGED) {
-                            deferRenewalUntilWindow(runtime, now);
+                        if (!deferRenewalUntilWindow(runtime, now)) {
+                            nextFormalRenewalAttemptElapsedMillis.set(
+                                    now
+                                            + AUTHORIZATION_RENEWAL_MIN_INTERVAL_MILLIS);
                         }
                     }
                     if (outcome != DualMachineFormalUsageCoordinator
@@ -3627,6 +3785,34 @@ public final class MobileRuntimeService extends Service {
                                         .toLowerCase(Locale.ROOT));
                     }
                 });
+    }
+
+    private void writeFormalRenewalTiming(
+            DualMachineAuthorizationRuntime runtime,
+            DualMachineAuthorizationRuntime.CurrentGenerationReceipt receipt,
+            String outcome,
+            Throwable failure) {
+        try {
+            DualMachineFormalUsageCoordinator.RenewalTiming timing =
+                    runtime.latestRenewalTiming(receipt);
+            if (!timing.attempted) return;
+            events.write(
+                    "dual_machine_formal_renewal_timing",
+                    "sequence=" + timing.sequence
+                            + " outcome=" + safeToken(outcome)
+                            + " terminal_phase="
+                            + safeToken(timing.terminalPhase)
+                            + " proof_ms=" + timing.proofMillis
+                            + " sidecar_ms=" + timing.sidecarMillis
+                            + " install_ms=" + timing.installMillis
+                            + " total_ms=" + timing.totalMillis
+                            + (failure == null
+                            ? ""
+                            : " failure_type="
+                            + failure.getClass().getSimpleName()));
+        } catch (RuntimeException staleGeneration) {
+            // Diagnostics must never revive or retain a superseded generation.
+        }
     }
 
     private String noProgressRenewalDetail(
@@ -3685,9 +3871,7 @@ public final class MobileRuntimeService extends Service {
                     generationReceipt)
             throws IOException, GeneralSecurityException {
         long now = SystemClock.elapsedRealtime();
-        AtomicReference<MobileTransportEndpoint> endpointRef =
-                new AtomicReference<>();
-        AtomicBoolean shouldProbe = new AtomicBoolean();
+        AtomicBoolean shouldClaim = new AtomicBoolean();
         commitFormalGeneration(
                 runtime,
                 generationReceipt,
@@ -3698,98 +3882,59 @@ public final class MobileRuntimeService extends Service {
                         return;
                     }
                     nextAutomaticHostAttemptElapsedMillis.set(
-                            now + AUTOMATIC_REARM_PROBE_INTERVAL_MILLIS);
-                    MobileTransportEndpoint endpoint =
-                            requiredTransportEndpoint();
-                    endpointRef.set(endpoint);
-                    acquireRuntimeLocks(endpoint == null
-                            ? transportCatalog.selected() : endpoint);
-                    shouldProbe.set(true);
+                            now + AUTOMATIC_REARM_CLAIM_INTERVAL_MILLIS);
+                    boolean wasConfirmed = automaticUsageGuard
+                            .snapshot().hostAbsenceConfirmed;
+                    boolean confirmed = automaticUsageGuard.recordHostAbsent(
+                            now, AUTOMATIC_REARM_HOST_ABSENCE_MILLIS);
+                    if (confirmed && !wasConfirmed) {
+                        events.write(
+                                "dual_machine_automatic_usage_host_absence_confirmed",
+                                "required_absence_ms="
+                                        + AUTOMATIC_REARM_HOST_ABSENCE_MILLIS
+                                        + " billing_started=false");
+                    }
+                    shouldClaim.set(confirmed);
                 });
-        if (!shouldProbe.get()) return;
-        MobileTransportEndpoint endpoint = endpointRef.get();
+        if (!shouldClaim.get()) return;
+        AndroidBoundAuthenticatedControlCoordinatorV1 coordinator =
+                pairingRuntime.authenticatedControl();
+        if (coordinator == null || !coordinator.isAuthenticated()) return;
         try {
-            if (endpoint == null || !endpoint.isReadyForDataPlane()) {
-                commitFormalGeneration(
-                        runtime,
-                        generationReceipt,
-                        () -> automaticUsageGuard.recordHostAbsent(
-                                SystemClock.elapsedRealtime(),
-                                AUTOMATIC_REARM_HOST_ABSENCE_MILLIS));
-                return;
-            }
-            HostVideoPresenceProbe.HostVideoObservation observation =
-                    hostVideoPresenceProbe.pollValidHostVideo(
-                            endpoint,
-                            MobilePipelineCoordinator.VIDEO_PORT,
-                            AUTOMATIC_REARM_PROBE_TIMEOUT_MILLIS);
-            long observedAt = SystemClock.elapsedRealtime();
-            if (observation == null) {
-                commitFormalGeneration(
-                        runtime,
-                        generationReceipt,
-                        () -> {
-                            boolean wasConfirmed = automaticUsageGuard
-                                    .snapshot().hostAbsenceConfirmed;
-                            boolean confirmed = automaticUsageGuard
-                                    .recordHostAbsent(
-                                            observedAt,
-                                            AUTOMATIC_REARM_HOST_ABSENCE_MILLIS);
-                            if (confirmed && !wasConfirmed) {
-                                events.write(
-                                        "dual_machine_automatic_usage_host_absence_confirmed",
-                                        "required_absence_ms="
-                                                + AUTOMATIC_REARM_HOST_ABSENCE_MILLIS
-                                                + " billing_started=false");
-                            }
-                            automaticRearmProbeFailureReported.set(false);
-                        });
+            AuthenticatedHostStartIntentClaimV1.Claim claim =
+                    coordinator.claimHostStartIntent();
+            if (!claim.present()) {
+                automaticRearmProbeFailureReported.set(false);
                 return;
             }
             commitFormalGeneration(
                     runtime,
                     generationReceipt,
                     () -> {
-                        AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                                outcome = automaticUsageGuard.recordHostFrame(
-                                observation.logicalFrameSequence);
+                        AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                                outcome = automaticUsageGuard
+                                .recordAuthenticatedHostStartIntent(
+                                        claim.connectionId,
+                                        claim.intentToken);
                         automaticRearmProbeFailureReported.set(false);
                         if (outcome == AutomaticFormalUsageSessionGuard
-                                .HostFrameOutcome.NEW_STREAM_REARMED) {
+                                .HostStartIntentOutcome
+                                .NEW_START_INTENT_REARMED) {
                             clearPersistedAutomaticUsageBlock();
                             nextAutomaticHostAttemptElapsedMillis.set(0L);
                             nextFormalStartRetryElapsedMillis.set(0L);
                             formalStartRetryPolicy.reset();
                             events.write(
                                     "dual_machine_automatic_usage_rearmed",
-                                    "observed_sequence="
-                                            + observation.logicalFrameSequence
-                                            + " reason=confirmed_host_stream_restart "
-                                            + automaticUsageGuard.snapshot()
-                                            .detail());
-                            return;
-                        }
-                        if (outcome == AutomaticFormalUsageSessionGuard
-                                .HostFrameOutcome
-                                .RESTART_CANDIDATE_RECORDED) {
-                            events.write(
-                                    "dual_machine_automatic_usage_restart_candidate",
-                                    "observed_sequence="
-                                            + observation.logicalFrameSequence
-                                            + " billing_started=false "
+                                    "reason=authenticated_host_start_intent "
+                                            + "one_shot_claim=true "
+                                            + "prelease_video=false "
+                                            + "billing_started=false "
                                             + automaticUsageGuard.snapshot()
                                             .detail());
                         }
-                        checkpointAutomaticUsageGuardIfDue(
-                                observedAt, "same_host_stream_blocked");
                     });
-        } catch (HostVideoPresenceProbe.HostVideoProbeCancelledException
-                 cancelled) {
-            commitFormalGeneration(
-                    runtime,
-                    generationReceipt,
-                    () -> automaticRearmProbeFailureReported.set(false));
-        } catch (IOException failure) {
+        } catch (IOException | GeneralSecurityException failure) {
             commitFormalGeneration(
                     runtime,
                     generationReceipt,
@@ -3798,7 +3943,9 @@ public final class MobileRuntimeService extends Service {
                                 false, true)) {
                             events.write(
                                     "dual_machine_automatic_usage_rearm_probe_failed",
-                                    "billing_started=false failure_type="
+                                    "channel=authenticated_control "
+                                            + "prelease_video=false "
+                                            + "billing_started=false failure_type="
                                             + failure.getClass()
                                             .getSimpleName()
                                             + " stack={"
@@ -3863,7 +4010,7 @@ public final class MobileRuntimeService extends Service {
                         automaticHostWaitLogPolicy.clearFailure();
                         events.write(
                                 "dual_machine_formal_start_automatic",
-                                "result=success trigger=verified_host_video");
+                                "result=success trigger=authenticated_host_lease_commit");
                     });
         } catch (HostVideoPresenceProbe.HostVideoProbeCancelledException cancelled) {
             commitFormalGeneration(
@@ -4388,6 +4535,7 @@ public final class MobileRuntimeService extends Service {
                             "dual_machine_authenticated_host_attached",
                             "channel_binding_verified=true");
                     publishMappedAuthorizationState("");
+                    refreshAuthorizationStatusAfterRestore(runtime);
                 } catch (GeneralSecurityException
                          | RuntimeException failure) {
                     stopFormalUsageIfCurrentOwner(
@@ -4473,12 +4621,19 @@ public final class MobileRuntimeService extends Service {
             }
             return;
         }
+        DualMachineFormalUsageStateMachine.Snapshot snapshot =
+                runtime.snapshot();
+        DualMachinePresentationBalance cachedBalance =
+                presentationBalanceReconciler.reconcile(
+                        snapshot, authorizationUiState.balanceKnown);
         DualMachineAuthorizationUiState mapped =
                 DualMachineAuthorizationUiMapper.map(
-                        runtime.snapshot(),
-                        true,
+                        snapshot,
+                        runtime.hasAuthenticatedHost(),
+                        runtime.hasCardActivationAuthority(),
                         authorizationSecurityFatal,
-                        detail);
+                        detail,
+                        cachedBalance);
         publishAuthorizationState(mapped, detail);
     }
 
@@ -4503,9 +4658,13 @@ public final class MobileRuntimeService extends Service {
                 new DualMachineAuthorizationUiState(
                         status,
                         current.authorizationReady,
+                        current.activationReady,
                         current.remainingSeconds,
                         current.totalConsumedSeconds,
                         current.balanceKnown,
+                        current.displayBalanceKnown,
+                        current.balanceStale,
+                        current.balanceSynchronizedAtEpochSeconds,
                         current.permanent,
                         ""),
                 "");
@@ -5352,23 +5511,6 @@ public final class MobileRuntimeService extends Service {
                         + " discovered_host_preserved=true");
     }
 
-    private HostVideoPresenceProbe.HostVideoObservation
-            awaitFormalPreparationHostVideo(
-                    MobileTransportEndpoint endpoint,
-                    long timeoutMillis,
-                    BooleanSupplier cancellationRequested) throws IOException {
-        try {
-            return hostVideoPresenceProbe.awaitValidHostVideo(
-                    endpoint,
-                    MobilePipelineCoordinator.VIDEO_PORT,
-                    timeoutMillis,
-                    cancellationRequested);
-        } catch (HostVideoPresenceProbe.HostVideoNotObservedException failure) {
-            resetStaleWirelessHostDiscovery(endpoint);
-            throw failure;
-        }
-    }
-
     private static void requireFormalStartNotCancelled(
             BooleanSupplier cancellationRequested)
             throws HostVideoPresenceProbe.HostVideoProbeCancelledException {
@@ -5380,33 +5522,6 @@ public final class MobileRuntimeService extends Service {
             throw new HostVideoPresenceProbe.HostVideoProbeCancelledException(
                     "host_video_preflight_cancelled", null);
         }
-    }
-
-    private void resetStaleWirelessHostDiscovery(
-            MobileTransportEndpoint failedEndpoint) {
-        if (failedEndpoint == null
-                || failedEndpoint.isCat6()
-                || !failedEndpoint.hostDiscovered) {
-            return;
-        }
-        MobileTransportEndpoint selected = transportCatalog
-                .resetWirelessHostDiscoveryIfSelectedRoute(failedEndpoint);
-        if (selected == null
-                || selected.isCat6()
-                || selected.hostDiscovered
-                || selected.networkHandle != failedEndpoint.networkHandle
-                || !selected.localIpv4.equals(failedEndpoint.localIpv4)) {
-            return;
-        }
-        controlRuntime.updateTransportEndpoint(selected);
-        updateCat6ReadyAgent(
-                selected, "formal_preflight_host_not_observed");
-        events.write(
-                "mobile_wireless_lan_host_discovery_reset",
-                selected.detail()
-                        + " source=formal_preflight_host_not_observed"
-                        + " previous_host_ipv4="
-                        + failedEndpoint.hostIpv4);
     }
 
     private void releaseFormalTransportPinAfterSession(String source) {
@@ -5818,6 +5933,7 @@ public final class MobileRuntimeService extends Service {
         synchronized (authorizationLifecycleLock) {
             authorizationInitializationGeneration++;
         }
+        pairingRuntime.closeSessions();
     }
 
     private void closeControlAndAuthorizationResources(
@@ -5828,8 +5944,9 @@ public final class MobileRuntimeService extends Service {
                     if (controlRuntime != null) {
                         controlRuntime.closeForServiceStop("service_destroyed");
                     }
-                });
+        });
         authorizationObserver = null;
+        pairingRuntime.clearObserver();
         cleanup.run(
                 MobileServiceDestroyCleanup.Step.FORMAL_USAGE_STOP,
                 () -> requestFormalUsageStop("service_destroyed"));
@@ -5843,9 +5960,19 @@ public final class MobileRuntimeService extends Service {
                 runtimePermitDeadlines::close);
         cleanup.run(
                 MobileServiceDestroyCleanup.Step
+                        .AUTHORIZATION_HEALTH_EXECUTOR_SHUTDOWN,
+                () -> shutdownExecutor(
+                        authorizationHealthExecutor, "authorization_health"));
+        cleanup.run(
+                MobileServiceDestroyCleanup.Step
                         .AUTHORIZATION_EXECUTOR_SHUTDOWN,
                 () -> shutdownExecutor(
                         authorizationExecutor, "authorization"));
+        cleanup.run(
+                MobileServiceDestroyCleanup.Step
+                        .FIRST_PAIRING_EXECUTOR_SHUTDOWN,
+                () -> shutdownExecutor(
+                        pairingRuntime.executor(), "first_pairing"));
         cleanup.run(
                 MobileServiceDestroyCleanup.Step
                         .START_CANCELLATION_EXECUTOR_SHUTDOWN,
@@ -6021,6 +6148,7 @@ public final class MobileRuntimeService extends Service {
         MobileServiceDestroyCleanup.rethrowFailure(primaryFailure);
     }
 
+    @SuppressLint({"Wakelock", "WakelockTimeout"})
     private synchronized void acquireRuntimeLocks(
             MobileTransportEndpoint endpoint) throws IOException {
         boolean changed = false;
@@ -6253,20 +6381,18 @@ public final class MobileRuntimeService extends Service {
         return getApplicationInfo().nativeLibraryDir;
     }
 
-    private String defaultSkeletonDirectory() {
-        return new File(getFilesDir(), QnnAssetBundleInstaller.DIRECTORY_NAME)
-                .getAbsolutePath();
-    }
-
     private void createNotificationChannel() {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
         NotificationChannel channel = new NotificationChannel(NOTIFICATION_CHANNEL,
                 getString(R.string.runtime_notification_channel), NotificationManager.IMPORTANCE_LOW);
         manager.createNotificationChannel(channel);
+        pairingRuntime.createNotificationChannel();
     }
 
     private Notification notification(int textResource) {
+        Notification pairing = pairingRuntime.pendingNotification();
+        if (pairing != null) return pairing;
         Intent open = new Intent(this, MainActivity.class);
         PendingIntent openIntent = PendingIntent.getActivity(this, 0, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);

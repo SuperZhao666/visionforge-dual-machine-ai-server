@@ -8,7 +8,6 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
-import android.widget.Switch;
 import android.widget.TextView;
 
 import com.visionforge.inferencebenchmark.ControlTrigger;
@@ -50,11 +49,6 @@ final class ControlScreen implements MobileScreen {
     private TextView maximumLimitDetail;
     private SliderBinding confidenceSlider;
     private TextView triggerStatus;
-    private TextView personalProfile;
-    private Switch personalEnabled;
-    private SliderBinding personalSpeedSlider;
-    private SliderBinding personalStabilitySlider;
-    private SliderBinding personalVariationSlider;
     private ControlPreset lastRenderedPreset;
     private ControlTrigger lastRenderedTrigger;
     private Boolean lastRouteMakcuActive;
@@ -62,9 +56,6 @@ final class ControlScreen implements MobileScreen {
     private Boolean lastRouteBluetoothAvailable;
     private MobileModelCatalog.Profile lastRenderedModel;
     private MobileAimTarget lastRenderedAimTarget;
-    private TextView advancedChevron;
-    private TextView advancedDetail;
-    private boolean advancedExpanded;
 
     ControlScreen(Context context, MobileAppActions actions) {
         this.context = context;
@@ -82,10 +73,6 @@ final class ControlScreen implements MobileScreen {
         page.addView(createPresetCard(), VisionForgeTheme.match(context, 10));
         page.addView(VisionForgeTheme.sectionLabel(context, R.string.section_fine_tuning));
         addSliders(page);
-        page.addView(createAdvancedNoteCard(), VisionForgeTheme.match(context, 8));
-        page.addView(VisionForgeTheme.sectionLabel(
-                context, R.string.section_personal_trajectory));
-        page.addView(createPersonalTrajectoryCard(), VisionForgeTheme.match(context, 4));
         addActions(page);
     }
 
@@ -353,93 +340,6 @@ final class ControlScreen implements MobileScreen {
         page.addView(confidenceSlider.root, VisionForgeTheme.match(context, 8));
     }
 
-    private View createAdvancedNoteCard() {
-        // Read-only disclosure: smoothing and clamping are enforced uniformly
-        // by the native control configuration, so there is no user-facing
-        // slider for them. This row only explains that behaviour.
-        LinearLayout card = sectionCard();
-        LinearLayout header = new LinearLayout(context);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setClickable(true);
-        header.setFocusable(true);
-        header.setId(R.id.control_advanced_toggle);
-        header.setContentDescription(context.getString(R.string.advanced_smoothing));
-        header.addView(VisionForgeTheme.icon(context, MaterialIcons.TUNE, 22,
-                VisionForgeTheme.ACCENT), VisionForgeTheme.fixed(context, 32, 42, 8));
-        TextView title = VisionForgeTheme.text(context,
-                context.getString(R.string.advanced_smoothing), 16, VisionForgeTheme.TEXT);
-        VisionForgeTheme.heading(title);
-        header.addView(title, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        advancedChevron = VisionForgeTheme.icon(context, MaterialIcons.EXPAND_MORE, 24,
-                VisionForgeTheme.TEXT_MUTED);
-        header.addView(advancedChevron, VisionForgeTheme.fixed(context, 32, 42, 0));
-        card.addView(header);
-        advancedDetail = VisionForgeTheme.text(context,
-                context.getString(R.string.advanced_smoothing_detail), 13,
-                VisionForgeTheme.TEXT_MUTED);
-        advancedDetail.setId(R.id.control_advanced_content);
-        advancedDetail.setPadding(0, VisionForgeTheme.dp(context, 6), 0, 0);
-        advancedDetail.setVisibility(View.GONE);
-        card.addView(advancedDetail);
-        header.setOnClickListener(view -> toggleAdvancedNote());
-        return card;
-    }
-
-    private void toggleAdvancedNote() {
-        advancedExpanded = !advancedExpanded;
-        advancedDetail.setVisibility(advancedExpanded ? View.VISIBLE : View.GONE);
-        advancedChevron.setText(advancedExpanded
-                ? MaterialIcons.EXPAND_LESS : MaterialIcons.EXPAND_MORE);
-    }
-
-    private View createPersonalTrajectoryCard() {
-        LinearLayout card = sectionCard();
-        LinearLayout header = new LinearLayout(context);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(VisionForgeTheme.icon(context, MaterialIcons.TIMELINE, 22,
-                VisionForgeTheme.ACCENT), VisionForgeTheme.fixed(context, 32, 42, 8));
-        TextView title = VisionForgeTheme.text(context,
-                context.getString(R.string.personal_trajectory_title), 16,
-                VisionForgeTheme.TEXT);
-        VisionForgeTheme.heading(title);
-        header.addView(title, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        personalEnabled = new Switch(context);
-        personalEnabled.setText(R.string.personal_trajectory_switch);
-        personalEnabled.setTextColor(VisionForgeTheme.TEXT);
-        personalEnabled.setOnCheckedChangeListener((button, checked) -> {
-            if (button.isPressed()) actions.onSetPersonalTrajectoryEnabled(checked);
-        });
-        header.addView(personalEnabled);
-        card.addView(header);
-        personalProfile = VisionForgeTheme.text(context, "", 13,
-                VisionForgeTheme.TEXT_MUTED);
-        personalProfile.setPadding(0, VisionForgeTheme.dp(context, 5), 0,
-                VisionForgeTheme.dp(context, 8));
-        card.addView(personalProfile);
-        Button importProfile = VisionForgeTheme.secondaryButton(
-                context, R.string.action_import_personal_trajectory);
-        importProfile.setOnClickListener(view -> actions.onImportPersonalTrajectory());
-        card.addView(importProfile);
-        personalSpeedSlider = new SliderBinding(
-                R.string.personal_speed, 0.5f, 1.5f, 100,
-                value -> String.format(Locale.US, "%.2f×", value),
-                actions::onSetPersonalTrajectorySpeed);
-        card.addView(personalSpeedSlider.root, VisionForgeTheme.match(context, 8));
-        personalStabilitySlider = new SliderBinding(
-                R.string.personal_stability, 0.5f, 1.5f, 100,
-                value -> String.format(Locale.US, "%.2f×", value),
-                actions::onSetPersonalTrajectoryStability);
-        card.addView(personalStabilitySlider.root, VisionForgeTheme.match(context, 8));
-        personalVariationSlider = new SliderBinding(
-                R.string.personal_variation, 0.5f, 1.5f, 100,
-                value -> String.format(Locale.US, "%.2f×", value),
-                actions::onSetPersonalTrajectoryVariation);
-        card.addView(personalVariationSlider.root, VisionForgeTheme.match(context, 8));
-        return card;
-    }
-
     private void addActions(LinearLayout page) {
         Button restore = VisionForgeTheme.secondaryButton(context, R.string.action_restore_defaults);
         restore.setOnClickListener(view -> actions.onRestoreControlDefaults());
@@ -475,7 +375,6 @@ final class ControlScreen implements MobileScreen {
         confidenceSlider.render(state.confidence);
         renderPreset(state.selectedPreset);
         renderTrigger(state);
-        renderPersonalTrajectory(state);
     }
 
     private void renderEffectiveMotionLimits(MobileUiState state) {
@@ -626,26 +525,6 @@ final class ControlScreen implements MobileScreen {
         }
         VisionForgeTheme.setTextIfChanged(triggerStatus, context.getString(statusResource));
         triggerStatus.setTextColor(statusColor);
-    }
-
-    private void renderPersonalTrajectory(MobileUiState state) {
-        boolean hasProfile = state.personalTrajectoryProfileId != null
-                && !state.personalTrajectoryProfileId.isEmpty();
-        VisionForgeTheme.setTextIfChanged(personalProfile, hasProfile
-                ? context.getString(R.string.personal_profile_loaded,
-                        state.personalTrajectoryProfileId)
-                : context.getString(R.string.personal_profile_not_loaded));
-        personalProfile.setTextColor(hasProfile
-                ? VisionForgeTheme.ACCENT : VisionForgeTheme.TEXT_MUTED);
-        personalEnabled.setEnabled(hasProfile);
-        personalEnabled.setChecked(
-                hasProfile && state.personalTrajectoryEnabled);
-        personalSpeedSlider.render(state.personalTrajectorySpeedScale);
-        personalStabilitySlider.render(state.personalTrajectoryStabilityScale);
-        personalVariationSlider.render(state.personalTrajectoryVariationScale);
-        personalSpeedSlider.setEnabled(hasProfile);
-        personalStabilitySlider.setEnabled(hasProfile);
-        personalVariationSlider.setEnabled(hasProfile);
     }
 
     private interface ValueFormatter {

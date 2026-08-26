@@ -15,6 +15,8 @@ final class MakcuJniContractSelfTest {
         String projectDirectory = System.getProperty(PROJECT_DIRECTORY_PROPERTY, "");
         require(!projectDirectory.isEmpty());
         Path sourceRoot = Paths.get(projectDirectory, "src", "main");
+        String proguardRules = readUtf8(Paths.get(
+                projectDirectory, "proguard-rules.pro"));
         String javaBridge = readUtf8(sourceRoot.resolve(Paths.get(
                 "java", "com", "visionforge", "inferencebenchmark", "QnnHtpBridge.java")));
         String controlProfile = readUtf8(sourceRoot.resolve(Paths.get(
@@ -38,6 +40,10 @@ final class MakcuJniContractSelfTest {
         require(Pattern.compile("if\\s*\\(\\s*!QnnHtpBridge\\.bindNativeMakcuMoveBridge"
                 + "\\s*\\(ControlOutputMoveDispatcher\\.class\\s*\\)\\s*\\)")
                 .matcher(controller).find());
+        require(proguardRules.contains(
+                "static boolean offerNativeMove(int,int,long,long);"));
+        require(!proguardRules.contains(
+                "static boolean offerNativeMove(int,int,long);"));
         require(Pattern.compile("final\\s+class\\s+MakcuSerialController\\s+implements\\s+"
                 + "MakcuConnection\\s*,\\s*MakcuButtonInput\\s*,\\s*ControlOutputMoveSink")
                 .matcher(controller).find());
@@ -72,17 +78,18 @@ final class MakcuJniContractSelfTest {
         require(controller.contains("suspendMoveDeliveryForNativeRecovery(long generation)"));
         require(controller.contains("resumeMoveDeliveryAfterNativeRecovery(long generation)"));
         require(controller.contains("failClosedNativeMoveDelivery()"));
-        require(controller.contains("suspendNativeDeliveryForRecovery(long generation)"));
-        require(controller.contains("resumeNativeDeliveryAfterRecovery(long generation)"));
-        require(controller.contains("failClosedNativeDelivery()"));
+        require(!controller.contains("static boolean offerNativeMove("));
+        require(!controller.contains("suspendNativeDeliveryForRecovery("));
+        require(!controller.contains("resumeNativeDeliveryAfterRecovery("));
+        require(!controller.contains("failClosedNativeDelivery("));
+        require(!controller.contains(
+                "private static volatile MakcuSerialController instance;"));
+        require(!controller.contains("instance = this;"));
+        require(!controller.contains("if (instance == this) instance = null;"));
+        require(!javaBridge.contains("static boolean offerNativeMove("));
         require(controller.contains("UsbManager.ACTION_USB_DEVICE_ATTACHED"));
         require(controller.contains("handleDeviceAttached(device)"));
         require(controller.contains("automatic_connect=true"));
-        require(Pattern.compile("offerNativeMove\\s*\\("
-                        + "\\s*int\\s+deltaX\\s*,\\s*int\\s+deltaY\\s*,"
-                        + "\\s*long\\s+ticket\\s*,"
-                        + "\\s*long\\s+remainingBudgetUs\\s*\\)")
-                .matcher(controller).find());
         require(Pattern.compile("private\\s+boolean\\s+offerMove\\s*\\(.*?"
                         + "!deliveryGate\\.isPhysicalTriggerSatisfied\\(\\).*?"
                         + "pendingMoveSlot\\.offer\\("

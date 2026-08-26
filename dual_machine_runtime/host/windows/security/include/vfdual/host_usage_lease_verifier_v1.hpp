@@ -95,6 +95,19 @@ public:
         const UsageLeaseBinding& expected_binding,
         std::uint64_t trusted_now_epoch) const noexcept;
 
+    /**
+     * Verifies a lease for an already-confirmed VFB1 peer when the opaque
+     * server-issued session id is first learned from the signed lease itself.
+     * Every peer-controlled binding field must still be supplied and matched;
+     * expected_peer_binding.session_id must be empty. The ordinary verify()
+     * entrypoint continues to require an exact expected session id.
+     */
+    [[nodiscard]] HostUsageLeaseVerificationResultV1
+    verify_for_confirmed_peer_with_signed_session(
+        std::string_view compact_token_ascii,
+        const UsageLeaseBinding& expected_peer_binding,
+        std::uint64_t trusted_now_epoch) const noexcept;
+
 private:
     struct Implementation;
 
@@ -104,6 +117,12 @@ private:
 
     explicit HostUsageLeaseVerifierV1(
         std::unique_ptr<Implementation> implementation) noexcept;
+
+    [[nodiscard]] HostUsageLeaseVerificationResultV1 verify_internal(
+        std::string_view compact_token_ascii,
+        const UsageLeaseBinding& expected_binding,
+        std::uint64_t trusted_now_epoch,
+        bool accept_signed_session_id) const noexcept;
 
     std::unique_ptr<Implementation> implementation_;
 };

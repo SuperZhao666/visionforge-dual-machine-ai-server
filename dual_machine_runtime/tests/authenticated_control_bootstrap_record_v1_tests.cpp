@@ -240,6 +240,133 @@ void test_maximum_payload_is_exact() {
     CHECK(parsed.record.payload.size() == maximum.size());
 }
 
+void test_tcp_stream_decoder_accepts_every_fragment_boundary() {
+    using D = vfdual::ControlBootstrapDirectionV1;
+    using M = vfdual::ControlBootstrapMessageTypeV1;
+    using S = vfdual::ControlBootstrapStreamStatusV1;
+    const auto first =
+        vfdual::encode_authenticated_control_bootstrap_record_v1(
+            D::host_to_android, M::host_hello, ascii("host-hello"));
+    CHECK(first.status == vfdual::ControlBootstrapEncodeStatusV1::encoded);
+
+    for (std::size_t split = 0U; split <= first.record.size(); ++split) {
+        vfdual::ControlBootstrapStreamDecoderV1 decoder(
+            D::host_to_android);
+        const auto prefix = decoder.feed(std::span<const std::byte>{
+            first.record.data(), split});
+        CHECK(prefix.consumed == split);
+        CHECK(prefix.status == (split == first.record.size()
+            ? S::record_ready
+            : S::need_more));
+        const auto suffix = decoder.feed(std::span<const std::byte>{
+            first.record.data() + split, first.record.size() - split});
+        if (split == first.record.size()) {
+            CHECK(suffix.status == S::output_pending);
+            CHECK(suffix.consumed == 0U);
+        } else {
+            CHECK(suffix.status == S::record_ready);
+            CHECK(suffix.consumed == first.record.size() - split);
+        }
+        auto taken = decoder.take_record();
+        CHECK(taken.has_value());
+        CHECK(*taken == first.record);
+        CHECK(!decoder.record_ready());
+        CHECK(!decoder.failed());
+    }
+
+    vfdual::ControlBootstrapStreamDecoderV1 bytewise(D::host_to_android);
+    for (std::size_t index = 0U; index < first.record.size(); ++index) {
+        const auto result = bytewise.feed(std::span<const std::byte>{
+            first.record.data() + index, 1U});
+        CHECK(result.consumed == 1U);
+        CHECK(result.status == (index + 1U == first.record.size()
+            ? S::record_ready
+            : S::need_more));
+    }
+    auto taken = bytewise.take_record();
+    CHECK(taken.has_value());
+    CHECK(*taken == first.record);
+}
+
+void test_tcp_stream_decoder_preserves_coalesced_remainder() {
+    using D = vfdual::ControlBootstrapDirectionV1;
+    using M = vfdual::ControlBootstrapMessageTypeV1;
+    using S = vfdual::ControlBootstrapStreamStatusV1;
+    const auto first =
+        vfdual::encode_authenticated_control_bootstrap_record_v1(
+            D::host_to_android, M::host_hello, ascii("one"));
+    const auto second =
+        vfdual::encode_authenticated_control_bootstrap_record_v1(
+            D::host_to_android, M::host_challenge_proof, ascii("two"));
+    CHECK(first.status == vfdual::ControlBootstrapEncodeStatusV1::encoded);
+    CHECK(second.status == vfdual::ControlBootstrapEncodeStatusV1::encoded);
+    std::vector<std::byte> coalesced = first.record;
+    coalesced.insert(
+        coalesced.end(), second.record.begin(), second.record.end());
+
+    vfdual::ControlBootstrapStreamDecoderV1 decoder(D::host_to_android);
+    const auto first_feed = decoder.feed(coalesced);
+    CHECK(first_feed.status == S::record_ready);
+    CHECK(first_feed.consumed == first.record.size());
+    const auto pending = decoder.feed(std::span<const std::byte>{
+        coalesced.data() + first_feed.consumed,
+        coalesced.size() - first_feed.consumed});
+    CHECK(pending.status == S::output_pending);
+    CHECK(pending.consumed == 0U);
+    auto first_taken = decoder.take_record();
+    CHECK(first_taken.has_value());
+    CHECK(*first_taken == first.record);
+
+    const auto second_feed = decoder.feed(std::span<const std::byte>{
+        coalesced.data() + first_feed.consumed,
+        coalesced.size() - first_feed.consumed});
+    CHECK(second_feed.status == S::record_ready);
+    CHECK(second_feed.consumed == second.record.size());
+    auto second_taken = decoder.take_record();
+    CHECK(second_taken.has_value());
+    CHECK(*second_taken == second.record);
+}
+
+void test_tcp_stream_decoder_rejects_header_before_payload_allocation() {
+    using D = vfdual::ControlBootstrapDirectionV1;
+    using M = vfdual::ControlBootstrapMessageTypeV1;
+    using P = vfdual::ControlBootstrapParseStatusV1;
+    using S = vfdual::ControlBootstrapStreamStatusV1;
+    const auto valid =
+        vfdual::encode_authenticated_control_bootstrap_record_v1(
+            D::android_to_host, M::server_challenge, ascii("challenge"));
+    CHECK(valid.status == vfdual::ControlBootstrapEncodeStatusV1::encoded);
+
+    auto oversized = valid.record;
+    oversized.resize(vfdual::kAuthenticatedControlBootstrapHeaderBytes);
+    oversized[8U] = std::byte{0U};
+    oversized[9U] = std::byte{1U};
+    oversized[10U] = std::byte{0U};
+    oversized[11U] = std::byte{1U};
+    vfdual::ControlBootstrapStreamDecoderV1 decoder(D::android_to_host);
+    const auto rejected = decoder.feed(oversized);
+    CHECK(rejected.status == S::rejected);
+    CHECK(rejected.consumed ==
+        vfdual::kAuthenticatedControlBootstrapHeaderBytes);
+    CHECK(rejected.rejection == P::payload_too_large);
+    CHECK(decoder.failed());
+    CHECK(!decoder.take_record().has_value());
+    const auto terminal = decoder.feed(valid.record);
+    CHECK(terminal.status == S::rejected);
+    CHECK(terminal.consumed == 0U);
+
+    vfdual::ControlBootstrapStreamDecoderV1 reflected(D::host_to_android);
+    const auto reflected_result = reflected.feed(std::span<const std::byte>{
+        valid.record.data(),
+        vfdual::kAuthenticatedControlBootstrapHeaderBytes});
+    CHECK(reflected_result.status == S::rejected);
+    CHECK(reflected_result.rejection == P::unexpected_direction);
+
+    vfdual::ControlBootstrapStreamDecoderV1 invalid(D::invalid);
+    CHECK(invalid.failed());
+    CHECK(invalid.feed(valid.record).status == S::rejected);
+}
+
 void test_host_and_android_complete_the_same_exact_sequence() {
     using A = vfdual::ControlBootstrapAdvanceStatusV1;
     using F = vfdual::ControlBootstrapFlowV1;
@@ -334,6 +461,9 @@ int main() {
     test_invalid_encode_inputs_fail_before_allocation();
     test_parser_rejects_mutation_reflection_and_length_confusion();
     test_maximum_payload_is_exact();
+    test_tcp_stream_decoder_accepts_every_fragment_boundary();
+    test_tcp_stream_decoder_preserves_coalesced_remainder();
+    test_tcp_stream_decoder_rejects_header_before_payload_allocation();
     test_host_and_android_complete_the_same_exact_sequence();
     test_sequence_failures_and_abort_are_terminal();
     std::cout << "authenticated control bootstrap record v1 tests passed\n";

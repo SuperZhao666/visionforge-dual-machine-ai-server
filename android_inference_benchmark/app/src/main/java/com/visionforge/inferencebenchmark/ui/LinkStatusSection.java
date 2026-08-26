@@ -185,8 +185,9 @@ final class LinkStatusSection {
         decoderStage.render(state.decoderReady ? R.string.state_ready : R.string.state_waiting,
                 state.decoderReady ? VisionForgeTheme.ACCENT : VisionForgeTheme.TEXT_MUTED,
                 false);
-        qnnStage.render(state.qnnReady ? R.string.state_running : R.string.state_waiting,
-                state.qnnReady ? VisionForgeTheme.ACCENT : VisionForgeTheme.TEXT_MUTED,
+        boolean pipelineRunning = state.pipelineRunning();
+        qnnStage.render(pipelineRunning ? R.string.state_running : R.string.state_waiting,
+                pipelineRunning ? VisionForgeTheme.ACCENT : VisionForgeTheme.TEXT_MUTED,
                 hasFailures(state.qnnFailures));
         boolean selectedOutputReady = state.selectedOutputTransportReady();
         outputStage.render(
@@ -197,14 +198,20 @@ final class LinkStatusSection {
                 selectedOutputReady ? R.string.state_ready : R.string.state_disconnected,
                 selectedOutputReady ? VisionForgeTheme.ACCENT : VisionForgeTheme.TEXT_MUTED,
                 false);
-        processingMetric.setValue(state.phoneProcessingP50);
-        inputMetric.setValue(state.accessUnitFps);
-        decodedMetric.setValue(state.decodedFrameFps);
-        inferenceThroughputMetric.setValue(state.qnnFps);
-        qnnMetric.setValue(state.qnnP50);
-        failureMetric.setValue(state.qnnFailures);
+        String unavailableMetric = "--";
+        processingMetric.setValue(
+                pipelineRunning ? state.phoneProcessingP50 : unavailableMetric);
+        inputMetric.setValue(pipelineRunning ? state.accessUnitFps : unavailableMetric);
+        decodedMetric.setValue(
+                pipelineRunning ? state.decodedFrameFps : unavailableMetric);
+        inferenceThroughputMetric.setValue(
+                pipelineRunning ? state.qnnFps : unavailableMetric);
+        qnnMetric.setValue(pipelineRunning ? state.qnnP50 : unavailableMetric);
+        String visibleQnnFailures =
+                pipelineRunning ? state.qnnFailures : unavailableMetric;
+        failureMetric.setValue(visibleQnnFailures);
         // A non-zero failure count is a warning surface, not a healthy one.
-        failureMetric.setValueColor(hasFailures(state.qnnFailures)
+        failureMetric.setValueColor(hasFailures(visibleQnnFailures)
                 ? VisionForgeTheme.WARNING : VisionForgeTheme.ACCENT);
 
         VisionForgeTheme.setTextIfChanged(safetyNote, state.controlOutputRecoverySuspended

@@ -1,4 +1,5 @@
 #include "vfdual/host_pair_generation_credential_verifier_v1.hpp"
+#include "vfdual/host_pair_generation_credential_keyring_build.hpp"
 
 #include <array>
 #include <cstdint>
@@ -308,10 +309,15 @@ void rejects_invalid_sources_keyrings_and_cross_purpose_reuse() {
 
     const auto production = vfdual::HostPairGenerationCredentialV1Verifier::
         create_from_build_pinned_keyring();
-    VFDUAL_TEST_REQUIRE(!production.succeeded());
-    VFDUAL_TEST_REQUIRE(
-        production.error.code ==
-        vfdual::HostPairGenerationCredentialErrorCodeV1::key_invalid);
+    if constexpr (vfdual::build::
+            kPairGenerationCredentialPublicPemBase64.empty()) {
+        VFDUAL_TEST_REQUIRE(!production.succeeded());
+        VFDUAL_TEST_REQUIRE(
+            production.error.code ==
+            vfdual::HostPairGenerationCredentialErrorCodeV1::key_invalid);
+    } else {
+        VFDUAL_TEST_REQUIRE(production.succeeded());
+    }
 }
 
 void verifies_sanitized_stable_error_names() {

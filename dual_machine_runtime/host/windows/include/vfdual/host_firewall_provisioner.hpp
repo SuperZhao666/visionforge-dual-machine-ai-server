@@ -20,6 +20,7 @@ struct HostFirewallRulePolicy {
     std::string local_address;
     std::string remote_addresses;
     std::uint16_t local_port{};
+    /** Zero is the internal sentinel for the Windows Firewall "Any" port. */
     std::uint16_t remote_port{};
     HostFirewallProtocol protocol{HostFirewallProtocol::udp};
     bool inbound{true};
@@ -115,8 +116,9 @@ struct HostFirewallProvisioningResult {
 };
 
 /**
- * Reconciles only the VisionForge-owned CAT6 and on-link LAN/Wi-Fi UDP rules. It
- * never changes firewall defaults or unrelated rules.
+ * Reconciles only the VisionForge-owned CAT6 and on-link LAN/Wi-Fi transport
+ * rules, including the activation-only TCP first-pairing listener. It never
+ * changes firewall defaults or unrelated rules.
  */
 [[nodiscard]] HostFirewallProvisioningResult ensure_host_firewall_rules();
 

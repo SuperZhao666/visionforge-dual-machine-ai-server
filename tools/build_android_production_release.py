@@ -26,6 +26,10 @@ from tools.verify_android_release_apk_contract import (  # noqa: E402
     sha256_file,
     verify_android_release_apk,
 )
+from tools.prepare_dual_machine_release_materials import (  # noqa: E402
+    fetch_leaf_tls_spki_pin,
+    validate_tls_pin,
+)
 
 
 SCHEMA = "visionforge-android-production-release-build-v1"
@@ -76,6 +80,58 @@ class ApkVerifier(Protocol):
 
 CommandRunner = Callable[[Sequence[str], Path, int], CommandResult]
 SigningChecker = Callable[[Path], Mapping[str, Any]]
+TlsPinChecker = Callable[[], Mapping[str, Any]]
+
+
+def verify_live_tls_pin_input(
+    *,
+    environ: Mapping[str, str] | None = None,
+    fetcher: Callable[..., str] = fetch_leaf_tls_spki_pin,
+) -> Mapping[str, Any]:
+    source = os.environ if environ is None else environ
+    host = "www.visionforge.cloud"
+    connect_host = str(
+        source.get("VISIONFORGE_DUAL_MACHINE_TLS_CONNECT_HOST") or ""
+    ).strip()
+    configured = str(source.get("VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS") or "")
+    errors: list[str] = []
+    pins: list[str] = []
+    for raw_pin in re.split(r"[,;]", configured):
+        candidate = raw_pin.strip()
+        if not candidate:
+            continue
+        try:
+            pins.append(validate_tls_pin(candidate))
+        except ValueError as exc:
+            errors.append(str(exc))
+    if len(pins) < 2 or len(pins) > 4 or len(set(pins)) != len(pins):
+        errors.append("release requires 2-4 distinct canonical TLS SPKI pins")
+
+    live_pin = ""
+    if not errors:
+        try:
+            live_pin = fetcher(
+                host,
+                connect_host=connect_host or None,
+                port=443,
+                timeout_sec=10.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - bounded preflight report
+            errors.append(f"unable to verify live TLS SPKI pin: {type(exc).__name__}")
+    if live_pin and pins and pins[0] != live_pin:
+        errors.append(
+            "configured current TLS SPKI pin does not match the live leaf certificate"
+        )
+    return {
+        "schema": "visionforge-android-live-tls-pin-preflight-v1",
+        "ok": not errors,
+        "host": host,
+        "connect_host": connect_host or host,
+        "configured_current_pin": pins[0] if pins else "",
+        "live_current_pin": live_pin,
+        "configured_pin_count": len(pins),
+        "errors": errors,
+    }
 
 
 def _configure_utf8_stdio() -> None:
@@ -281,6 +337,7 @@ def write_build_report(
     gradle: CommandResult | None,
     apk_result: CheckResult | None,
     artifact: Mapping[str, Any] | None,
+    tls_pin_report: Mapping[str, Any] | None = None,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     report = {
@@ -297,6 +354,7 @@ def write_build_report(
             stage=stage,
             signing_report=signing_report,
         ),
+        "tls_pin_preflight": tls_pin_report,
         "gradle": _command_json(gradle),
         "apk_verification": _check_json(apk_result),
         "artifact": artifact,
@@ -313,6 +371,7 @@ def build_android_production_release(
     report_path: Path | None = None,
     gradle_timeout_sec: int = 1200,
     signing_checker: SigningChecker = run_signing_preflight,
+    tls_pin_checker: TlsPinChecker = verify_live_tls_pin_input,
     runner: CommandRunner = run_command,
     apk_verifier: ApkVerifier = verify_android_release_apk,
     test_only_allow_noncanonical_inputs: bool = False,
@@ -337,6 +396,25 @@ def build_android_production_release(
     report = report_path or output_dir / "android_production_release_build.json"
     signing_report_path = output_dir / "android_production_signing_inputs.json"
 
+    tls_pin_report = tls_pin_checker()
+    if not tls_pin_report.get("ok"):
+        write_build_report(
+            output=report,
+            ok=False,
+            stage="live_tls_pin_preflight",
+            signing_report_path=signing_report_path,
+            signing_report=None,
+            gradle=None,
+            apk_result=None,
+            artifact=None,
+            tls_pin_report=tls_pin_report,
+        )
+        print(
+            f"[ERROR] Android live TLS pin preflight failed; report={report}",
+            flush=True,
+        )
+        return 7
+
     signing_report = signing_checker(signing_report_path)
     if not signing_report.get("ok"):
         write_build_report(
@@ -348,6 +426,7 @@ def build_android_production_release(
             gradle=None,
             apk_result=None,
             artifact=None,
+            tls_pin_report=tls_pin_report,
         )
         print(f"[ERROR] Android production signing preflight failed; report={report}", flush=True)
         return 2
@@ -369,6 +448,7 @@ def build_android_production_release(
             gradle=gradle,
             apk_result=None,
             artifact=None,
+            tls_pin_report=tls_pin_report,
         )
         print(f"[ERROR] Android release Gradle build failed; report={report}", flush=True)
         return 3
@@ -386,6 +466,7 @@ def build_android_production_release(
                 "r8_mapping_source": str(r8_mapping_path),
                 "error": "R8 mapping.txt is missing or empty",
             },
+            tls_pin_report=tls_pin_report,
         )
         print(f"[ERROR] R8 mapping.txt is missing; report={report}", flush=True)
         return 4
@@ -401,6 +482,7 @@ def build_android_production_release(
             gradle=gradle,
             apk_result=apk_result,
             artifact=None,
+            tls_pin_report=tls_pin_report,
         )
         print(f"[ERROR] Android APK static release verification failed; report={report}", flush=True)
         return 5
@@ -417,6 +499,7 @@ def build_android_production_release(
             gradle=gradle,
             apk_result=apk_result,
             artifact=None,
+            tls_pin_report=tls_pin_report,
         )
         print(
             f"[ERROR] Android APK signer does not match signing preflight; report={report}",
@@ -469,6 +552,7 @@ def build_android_production_release(
         gradle=gradle,
         apk_result=apk_result,
         artifact=artifact,
+        tls_pin_report=tls_pin_report,
     )
     print(f"[OK] Android production release APK built; report={report}", flush=True)
     print(f"[OK] apk={artifact_path}", flush=True)

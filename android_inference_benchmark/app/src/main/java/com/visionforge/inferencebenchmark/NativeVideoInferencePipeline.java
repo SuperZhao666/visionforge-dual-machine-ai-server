@@ -2,6 +2,13 @@ package com.visionforge.inferencebenchmark;
 
 /** Narrow native boundary used by the mobile video/inference lifecycle. */
 interface NativeVideoInferencePipeline {
+    default boolean installConfirmedPeerSession(
+            ConfirmedMobileDataPlaneMaterialV2 material) {
+        return false;
+    }
+
+    default void clearConfirmedPeerSession() {}
+
     boolean prepareQnn(
             String nativeLibraryDirectory, String skeletonDirectory, String modelToken);
 

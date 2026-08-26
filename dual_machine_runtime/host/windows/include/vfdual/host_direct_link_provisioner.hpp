@@ -87,6 +87,11 @@ enum class HostDirectLinkStatus {
 
 struct HostDirectLinkProvisioningResult {
     HostDirectLinkStatus status{HostDirectLinkStatus::not_required};
+    // True only when a real physical Ethernet candidate is still coming up
+    // (for example link-down or DAD-tentative).  Do not infer this from the
+    // free-form inventory detail: unrelated Wi-Fi/Bluetooth adapters may also
+    // contain "not_operational" and must not consume the CAT6 warm-up budget.
+    bool detection_temporarily_pending{};
     std::wstring downstream_name;
     std::wstring upstream_name;
     std::string detail;

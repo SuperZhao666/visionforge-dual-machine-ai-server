@@ -42,11 +42,15 @@ public:
   [[nodiscard]] bool start(
       std::string_view local_ipv4,
       std::string_view mobile_ipv4,
-      VideoDataPlanePermitSource permit_source) noexcept;
-  /** Copies one already-confirmed Host mouse traffic domain into the sender. */
+      VideoDataPlanePermitSource permit_source,
+      std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+          authenticated_session = {}) noexcept;
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
+  /** Test-only fixture path. Production accepts only the shared VFA2 owner. */
   [[nodiscard]] bool install_confirmed_session(
       std::uint64_t connection_id,
       PeerHandshakeDataPlaneKeyView mouse_host_to_android) noexcept;
+#endif
   void clear_confirmed_session() noexcept;
 #if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
   using InstallPreparationHookForTest = void (*)();
@@ -89,8 +93,12 @@ private:
   std::string mobile_ipv4_;
   VideoDataPlanePermitSource permit_source_;
   std::uint64_t active_connection_id_{};
+#if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
   std::unique_ptr<Aes256GcmProvider> aes_provider_;
   std::unique_ptr<AuthenticatedPacketSealer> packet_sealer_;
+#endif
+  std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+      authenticated_data_plane_session_;
 #if defined(VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING)
   InstallPreparationHookForTest install_preparation_hook_for_test_{};
   PublishPreLockHookForTest publish_pre_lock_hook_for_test_{};

@@ -1,5 +1,7 @@
 #include "vfdual/host_peer_handshake_transcript_signer_v1.hpp"
 #include "vfdual/host_pair_generation_pop_signer_v1.hpp"
+#include "vfdual/host_first_pairing_user_confirmation_signer_v1.hpp"
+#include "vfdual/host_activation_confirmation_signer_v1.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -885,6 +887,154 @@ void test_android_identity_signature_is_typed_and_fingerprint_bound() {
     CHECK(!malformed.proof_of_possession_valid);
 }
 
+void test_first_pairing_user_confirmations_are_role_and_identity_bound() {
+    FakeKeyStore host_adapter;
+    auto host_identity = open_development_identity(host_adapter);
+    vfdual::HostFirstPairingUserConfirmationSignerV1 signer(*host_identity);
+
+    vfdual::FirstPairingUserConfirmationFieldsV1 host_fields;
+    host_fields.role = vfdual::FirstPairingConfirmationRoleV1::host;
+    host_fields.method =
+        vfdual::FirstPairingConfirmationMethodV1::decimal_sas;
+    host_fields.attempt_id = filled_bytes<16U>(0x31U);
+    host_fields.commitment_sha256 = filled_bytes<32U>(0x42U);
+    host_fields.expires_at_epoch = 1'800'000'000ULL;
+
+    const auto host_signed =
+        signer.build_and_sign_after_local_user_confirmation(host_fields);
+    CHECK(host_signed.succeeded());
+    CHECK(host_adapter.stats->sign_calls == 1U);
+    CHECK(verify_transcript_signature(
+        host_identity->public_identity(),
+        host_signed.payload.payload_sha256,
+        host_signed.signature_der_low_s));
+
+    auto wrong_host_role = host_fields;
+    wrong_host_role.role = vfdual::FirstPairingConfirmationRoleV1::android;
+    const auto role_rejected =
+        signer.build_and_sign_after_local_user_confirmation(wrong_host_role);
+    CHECK(!role_rejected.succeeded());
+    CHECK(host_adapter.stats->sign_calls == 1U);
+
+    FakeKeyStore android_adapter;
+    auto android_identity = open_development_identity(android_adapter);
+    CHECK(android_adapter.last_key != nullptr);
+    vfdual::FirstPairingUserConfirmationFieldsV1 android_fields = host_fields;
+    android_fields.role = vfdual::FirstPairingConfirmationRoleV1::android;
+    const auto android_payload =
+        vfdual::build_first_pairing_user_confirmation_v1(android_fields);
+    CHECK(android_payload.succeeded());
+    std::array<std::uint8_t, 32U> android_digest{};
+    std::transform(
+        android_payload.payload_sha256.begin(),
+        android_payload.payload_sha256.end(),
+        android_digest.begin(),
+        [](const std::byte value) {
+            return std::to_integer<std::uint8_t>(value);
+        });
+    const auto android_raw_signature =
+        android_adapter.last_key->sign_sha256_digest(android_digest);
+    CHECK(android_raw_signature.succeeded());
+    const auto android_signature =
+        canonical_der_for_test(android_raw_signature.bytes);
+
+    const auto accepted =
+        vfdual::verify_android_first_pairing_user_confirmation_v1(
+            android_identity->public_identity().subject_public_key_info_der,
+            android_identity->public_identity().public_key_sha256,
+            android_fields,
+            android_signature);
+    CHECK(accepted.completed());
+    CHECK(accepted.proof_of_possession_valid);
+
+    auto changed = android_fields;
+    ++changed.expires_at_epoch;
+    const auto changed_rejected =
+        vfdual::verify_android_first_pairing_user_confirmation_v1(
+            android_identity->public_identity().subject_public_key_info_der,
+            android_identity->public_identity().public_key_sha256,
+            changed,
+            android_signature);
+    CHECK(changed_rejected.completed());
+    CHECK(!changed_rejected.proof_of_possession_valid);
+
+    const auto wrong_identity =
+        vfdual::verify_android_first_pairing_user_confirmation_v1(
+            host_identity->public_identity().subject_public_key_info_der,
+            android_identity->public_identity().public_key_sha256,
+            android_fields,
+            android_signature);
+    CHECK(wrong_identity.completed());
+    CHECK(!wrong_identity.proof_of_possession_valid);
+}
+
+void test_activation_confirmation_signer_binds_exact_server_payload() {
+    FakeKeyStore host_adapter;
+    auto host_identity = open_development_identity(host_adapter);
+    vfdual::HostActivationConfirmationSignerV1 signer(*host_identity);
+
+    vfdual::ActivationConfirmationProof proof{
+        .activation_mode = "activate",
+        .android_client_version = "1.0.0",
+        .android_device_code = "ANDROID-ABC",
+        .android_device_profile_sha256 = std::string(64U, '4'),
+        .android_key_sha256 = std::string(64U, '5'),
+        .challenge_id = std::string(32U, '1'),
+        .challenge_token_sha256 = std::string(64U, '6'),
+        .host_client_version = "17.8.81",
+        .host_device_code = "HOST-XYZ",
+        .host_key_sha256 =
+            host_identity->public_identity().public_key_sha256_hex,
+        .pair_id = std::string(32U, '2'),
+        .protocol_version = 2U,
+        .request_id = std::string(32U, '3'),
+        .target_entitlement_id = "",
+    };
+    const auto expected =
+        vfdual::build_activation_confirmation_payload(proof);
+    CHECK(expected.has_value());
+    const auto signed_proof =
+        signer.build_and_sign_activation_confirmation(proof);
+    CHECK(signed_proof.succeeded());
+    CHECK(signed_proof.canonical_payload == *expected);
+    CHECK(host_adapter.stats->sign_calls == 1U);
+    const auto canonical_bytes = std::span<const std::byte>{
+        reinterpret_cast<const std::byte*>(
+            signed_proof.canonical_payload.data()),
+        signed_proof.canonical_payload.size()};
+    CHECK(verify_transcript_signature(
+        host_identity->public_identity(),
+        identity_hash_as_bytes(sha256(canonical_bytes)),
+        signed_proof.signature_der_low_s));
+
+    auto changed = proof;
+    changed.request_id = std::string(32U, '8');
+    const auto changed_canonical =
+        vfdual::build_activation_confirmation_payload(changed);
+    CHECK(changed_canonical.has_value());
+    const auto changed_bytes = std::span<const std::byte>{
+        reinterpret_cast<const std::byte*>(changed_canonical->data()),
+        changed_canonical->size()};
+    CHECK(!verify_transcript_signature(
+        host_identity->public_identity(),
+        identity_hash_as_bytes(sha256(changed_bytes)),
+        signed_proof.signature_der_low_s));
+
+    auto wrong_identity = proof;
+    wrong_identity.host_key_sha256 = std::string(64U, '7');
+    const auto identity_rejected =
+        signer.build_and_sign_activation_confirmation(wrong_identity);
+    CHECK(!identity_rejected.succeeded());
+    CHECK(host_adapter.stats->sign_calls == 1U);
+
+    auto invalid = proof;
+    invalid.activation_mode = "unsupported";
+    const auto invalid_rejected =
+        signer.build_and_sign_activation_confirmation(invalid);
+    CHECK(!invalid_rejected.succeeded());
+    CHECK(host_adapter.stats->sign_calls == 1U);
+}
+
 void test_concurrent_derivation_releases_ephemeral_owner_exactly_once() {
     FakeKeyStore adapter;
     auto identity = open_development_identity(adapter);
@@ -1394,6 +1544,8 @@ void test_public_api_and_cmake_remain_restricted_foundations() {
 int main() {
     test_valid_signature_binds_every_typed_field_and_derives_once();
     test_android_identity_signature_is_typed_and_fingerprint_bound();
+    test_first_pairing_user_confirmations_are_role_and_identity_bound();
+    test_activation_confirmation_signer_binds_exact_server_payload();
     test_concurrent_derivation_releases_ephemeral_owner_exactly_once();
     test_invalid_typed_inputs_fail_before_identity_signing();
     test_provider_failures_and_invalid_provider_signatures_fail_closed();

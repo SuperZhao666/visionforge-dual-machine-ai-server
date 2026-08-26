@@ -38,6 +38,7 @@ enum class HostApplicationStartStage : std::uint8_t {
   video_initialize,
   idr_listener_start,
   mouse_button_publisher_start,
+  authenticated_presence_start,
   metrics_csv_open,
   complete,
 };
@@ -66,10 +67,10 @@ public:
   HostApplication(const HostApplication&) = delete;
   HostApplication& operator=(const HostApplication&) = delete;
 
-  [[nodiscard]] bool start(const HostRuntimeConfig& config);
-  [[nodiscard]] bool install_confirmed_peer_session(
-      const ConfirmedPeerHandshakeSessionV1& session) noexcept;
-  void clear_confirmed_peer_session() noexcept;
+  [[nodiscard]] bool start(
+      const HostRuntimeConfig& config,
+      std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+          authenticated_session = {});
   [[nodiscard]] bool publish_next();
   void stop() noexcept;
 
@@ -89,6 +90,10 @@ private:
   bool started_{};
   IdrRequestListener idr_requests_;
   HostMouseButtonPublisher mouse_button_publisher_;
+  UdpSocket presence_socket_;
+  std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+      authenticated_session_;
+  std::uint64_t last_presence_publish_us_{};
   StreamerMetricsCsv metrics_csv_;
 };
 

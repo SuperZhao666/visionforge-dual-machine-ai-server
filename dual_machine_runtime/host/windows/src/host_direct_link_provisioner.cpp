@@ -2033,6 +2033,38 @@ bool is_operational_physical_ethernet(
         adapter.transport == HostAdapterTransport::ethernet;
 }
 
+bool is_temporarily_pending_direct_link_candidate(
+    const HostNetworkAdapterProfile& adapter) noexcept {
+    const bool physical_ethernet =
+        host_adapter_has_physical_connector_identity(
+            HostAdapterIdentityFacts{
+                .hardware_interface = adapter.hardware_interface,
+                .connector_present = adapter.connector_present,
+                .filter_interface = adapter.filter_interface,
+                .endpoint_interface = adapter.endpoint_interface,
+                .software_loopback_or_tunnel = adapter.virtual_or_loopback,
+                .connection_name = adapter.connection_name,
+                .description = adapter.description,
+            }) &&
+        adapter.transport == HostAdapterTransport::ethernet &&
+        !adapter.has_default_gateway;
+    if (!physical_ethernet) return false;
+    if (!adapter.operational) return true;
+    return std::any_of(
+        adapter.ipv4_addresses.begin(), adapter.ipv4_addresses.end(),
+        [](const HostNetworkIpv4AddressProfile& address) {
+            return address.dad_state ==
+                static_cast<std::uint32_t>(IpDadStateTentative);
+        });
+}
+
+bool has_temporarily_pending_direct_link_candidate(
+    const std::vector<HostNetworkAdapterProfile>& adapters) noexcept {
+    return std::any_of(
+        adapters.begin(), adapters.end(),
+        is_temporarily_pending_direct_link_candidate);
+}
+
 bool is_compatibility_transient_manual_address(
     const HostNetworkIpv4AddressProfile& address) noexcept {
     const auto parsed = parse_ipv4(address.address);
@@ -2376,6 +2408,9 @@ HostDirectLinkProvisioningResult ensure_host_direct_link_ipv4() {
         outcome.status = plan.ambiguous_downstream
             ? HostDirectLinkStatus::ambiguous_wired_adapter
             : HostDirectLinkStatus::no_wired_adapter;
+        outcome.detection_temporarily_pending =
+            !plan.ambiguous_downstream &&
+            has_temporarily_pending_direct_link_candidate(adapters);
         return outcome;
     }
     const auto& downstream = adapters[*plan.downstream_adapter];

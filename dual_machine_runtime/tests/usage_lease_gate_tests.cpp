@@ -22,6 +22,10 @@ void require(
 
 constexpr std::uint64_t kInitialNotBefore = 1'700'000'100U;
 constexpr std::uint64_t kInitialExpires = kInitialNotBefore + 5U;
+constexpr std::uint64_t kExpectedServerAheadGraceSeconds = 2U;
+static_assert(
+    vfdual::kUsageLeaseServerAheadGraceSeconds ==
+    kExpectedServerAheadGraceSeconds);
 
 [[nodiscard]] std::string repeated(const char value, const std::size_t count) {
     return std::string(count, value);
@@ -212,6 +216,23 @@ void verify_time_boundaries_and_ttl() {
     vfdual::UsageLeaseGate early_gate(make_binding());
     CHECK(early_gate.submit_verified_ticket(
               make_initial_ticket(), kInitialNotBefore - 1U) ==
+        vfdual::UsageLeaseAdmission::staged_future);
+    CHECK(!early_gate.evaluate(
+        kInitialNotBefore - 1U).permits_data_plane);
+    CHECK(early_gate.evaluate(
+        kInitialNotBefore).permits_data_plane);
+
+    auto excessive_server_ahead = make_initial_ticket();
+    excessive_server_ahead.claims.issued_at_epoch =
+        kInitialNotBefore +
+        kExpectedServerAheadGraceSeconds + 1U;
+    excessive_server_ahead.claims.not_before_epoch =
+        excessive_server_ahead.claims.issued_at_epoch;
+    excessive_server_ahead.claims.expires_at_epoch =
+        excessive_server_ahead.claims.not_before_epoch + 5U;
+    vfdual::UsageLeaseGate excessive_server_ahead_gate(make_binding());
+    CHECK(excessive_server_ahead_gate.submit_verified_ticket(
+              excessive_server_ahead, kInitialNotBefore) ==
         vfdual::UsageLeaseAdmission::rejected_claims);
 
     vfdual::UsageLeaseGate boundary_gate(make_binding());

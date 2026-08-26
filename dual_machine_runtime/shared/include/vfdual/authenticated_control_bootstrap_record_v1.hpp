@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -31,6 +32,14 @@ enum class ControlBootstrapMessageTypeV1 : std::uint8_t {
     android_handshake_confirmation = 8U,
     host_finished = 9U,
     abort = 10U,
+    host_first_pair_offer = 11U,
+    android_first_pair_offer = 12U,
+    android_first_pair_confirmation = 13U,
+    host_first_pair_confirmation = 14U,
+    activation_proof_request = 15U,
+    host_activation_signature = 16U,
+    activation_result = 17U,
+    first_pair_complete = 18U,
 };
 
 /**
@@ -99,6 +108,65 @@ struct ControlBootstrapParseResultV1 final {
 parse_authenticated_control_bootstrap_record_v1(
     std::span<const std::byte> encoded,
     ControlBootstrapDirectionV1 expected_direction) noexcept;
+
+/**
+ * Incremental bounded decoder for the unauthenticated VFB1 TCP envelope.
+ *
+ * TCP does not preserve application write boundaries. A caller may therefore
+ * feed one byte, an arbitrary fragment, or several coalesced records. This
+ * owner consumes at most one complete record at a time and reports the exact
+ * number of source bytes consumed, so the caller can retain and feed any
+ * remainder after taking the ready record. Header rejection is terminal for
+ * the current TCP connection; malformed input can never trigger an allocation
+ * larger than the frozen VFB1 maximum.
+ */
+enum class ControlBootstrapStreamStatusV1 : std::uint8_t {
+    need_more = 1U,
+    record_ready = 2U,
+    output_pending = 3U,
+    rejected = 4U,
+    allocation_failed = 5U,
+};
+
+struct ControlBootstrapStreamFeedResultV1 final {
+    ControlBootstrapStreamStatusV1 status{
+        ControlBootstrapStreamStatusV1::rejected};
+    std::size_t consumed{};
+    ControlBootstrapParseStatusV1 rejection{
+        ControlBootstrapParseStatusV1::record_too_short};
+};
+
+class ControlBootstrapStreamDecoderV1 final {
+public:
+    explicit ControlBootstrapStreamDecoderV1(
+        ControlBootstrapDirectionV1 expected_direction) noexcept;
+    ~ControlBootstrapStreamDecoderV1();
+
+    ControlBootstrapStreamDecoderV1(
+        const ControlBootstrapStreamDecoderV1&) = delete;
+    ControlBootstrapStreamDecoderV1& operator=(
+        const ControlBootstrapStreamDecoderV1&) = delete;
+
+    [[nodiscard]] ControlBootstrapStreamFeedResultV1 feed(
+        std::span<const std::byte> source) noexcept;
+    /** Returns one complete encoded record and resets for the next record. */
+    [[nodiscard]] std::optional<std::vector<std::byte>> take_record() noexcept;
+    [[nodiscard]] bool failed() const noexcept;
+    [[nodiscard]] bool record_ready() const noexcept;
+
+private:
+    void reject(ControlBootstrapParseStatusV1 status) noexcept;
+    void reset_for_next_record() noexcept;
+
+    ControlBootstrapDirectionV1 expected_direction_{
+        ControlBootstrapDirectionV1::invalid};
+    std::vector<std::byte> encoded_;
+    std::size_t expected_record_bytes_{};
+    bool failed_{};
+    bool ready_{};
+    ControlBootstrapParseStatusV1 rejection_{
+        ControlBootstrapParseStatusV1::record_too_short};
+};
 
 enum class ControlBootstrapRoleV1 : std::uint8_t {
     invalid = 0U,

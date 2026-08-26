@@ -4,7 +4,9 @@
 The public source tree intentionally excludes proprietary model weights and
 vendor runtime binaries.  This tool consumes the repository-owned hash/size
 lock and a private artifact root supplied outside the repository.  Plaintext
-artifacts are permitted only for explicitly listed non-release variants.
+artifacts are permitted only for explicitly listed non-public variants.  The
+owner variant is an explicit, owner-only signed build and never enables the
+public release variant.
 """
 
 from __future__ import annotations
@@ -90,9 +92,24 @@ def load_lock(lock_path: Path) -> tuple[dict[str, object], tuple[Artifact, ...]]
         raise ArtifactPolicyError("release encrypted-session delivery policy must be enabled")
     if policy.get("release_plaintext_allowed") is not False:
         raise ArtifactPolicyError("release plaintext artifacts must be forbidden")
-    if policy.get("plaintext_allowed_variants") != ["debug", "qa"]:
+    configured_variants = policy.get("plaintext_allowed_variants")
+    owner_private_allowed = policy.get(
+        "owner_private_release_plaintext_allowed"
+    )
+    if configured_variants == ["debug", "qa"] and owner_private_allowed in {
+        None,
+        False,
+    }:
+        allowed_plaintext_variants = ("debug", "qa")
+    elif (
+        configured_variants == ["debug", "qa", "owner"]
+        and owner_private_allowed is True
+    ):
+        allowed_plaintext_variants = ("debug", "qa", "owner")
+    else:
         raise ArtifactPolicyError(
-            "plaintext_allowed_variants must be exactly ['debug', 'qa']"
+            "plaintext_allowed_variants must be exactly ['debug', 'qa'], or "
+            "['debug', 'qa', 'owner'] with explicit owner-private approval"
         )
     if (
         policy.get("source_root_environment")
@@ -141,12 +158,7 @@ def load_lock(lock_path: Path) -> tuple[dict[str, object], tuple[Artifact, ...]]
             or any(ch not in "0123456789abcdef" for ch in digest)
         ):
             raise ArtifactPolicyError(f"artifact SHA-256 is invalid: {artifact_id}")
-        if (
-            not isinstance(variants, list)
-            or not variants
-            or len(set(variants)) != len(variants)
-            or any(v not in {"debug", "qa"} for v in variants)
-        ):
+        if variants != list(allowed_plaintext_variants):
             raise ArtifactPolicyError(f"artifact variants are invalid: {artifact_id}")
         if row.get("license_review_required") is not True:
             raise ArtifactPolicyError(f"license review must be explicit: {artifact_id}")
@@ -236,7 +248,7 @@ def verify_artifacts(
             "release plaintext model/runtime staging is forbidden; implement reviewed "
             "encrypted session delivery before enabling a release artifact"
         )
-    if variant not in {"debug", "qa"}:
+    if variant not in {"debug", "qa", "owner"}:
         raise ArtifactPolicyError(f"unsupported Android variant: {variant}")
     try:
         root = source_root.resolve(strict=True)
@@ -279,6 +291,9 @@ def stage_artifacts(
         "variant": variant,
         "lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
         "release_plaintext_allowed": policy["release_plaintext_allowed"],
+        "owner_private_release_plaintext_allowed": policy.get(
+            "owner_private_release_plaintext_allowed", False
+        ),
         "files": [
             {
                 "id": artifact.artifact_id,
@@ -360,7 +375,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--variant", choices=("debug", "qa", "release"), required=True)
+    parser.add_argument(
+        "--variant", choices=("debug", "qa", "owner", "release"), required=True
+    )
     parser.add_argument("--verify-only", action="store_true")
     return parser
 

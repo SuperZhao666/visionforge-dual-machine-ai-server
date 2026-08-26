@@ -24,6 +24,13 @@ inline constexpr std::uint16_t kWiredVideoSourcePort = 5002;
 inline constexpr std::uint16_t kWiredAnnouncementPort = 5003;
 inline constexpr std::uint16_t kWiredProbePort = 5004;
 inline constexpr std::uint16_t kWiredMouseButtonPort = 5005;
+// Exclusive TCP endpoint for VFB1 bootstrap and subsequent VFC1 control.
+// TCP can share the numeric control port space with the existing UDP paths,
+// but a distinct value keeps firewall and packet-capture evidence unambiguous.
+inline constexpr std::uint16_t kWiredAuthenticatedControlPort = 5006;
+// Post-handshake Host presence is a VFA2-only unicast channel.  It is kept
+// separate from the unauthenticated discovery probe on 5004.
+inline constexpr std::uint16_t kWiredAuthenticatedPresencePort = 5007;
 
 // The Wi-Fi fallback is always available when CAT6 is not reachable. Android
 // announces on this administratively scoped multicast group, then all data

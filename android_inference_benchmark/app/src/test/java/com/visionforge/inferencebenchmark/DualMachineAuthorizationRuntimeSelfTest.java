@@ -14,6 +14,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
@@ -139,6 +140,7 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
         verifiesCurrentStopRetryBackoff(
                 runtime,
                 sidecar,
+                authenticated,
                 monotonicNanos);
         verifiesRetiringCancellationRetriesThroughMaintenance(
                 runtime,
@@ -180,7 +182,81 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
         verifiesMismatchedReadinessChannelBindingIsRejected(host, android);
         verifiesCrashSafePersistedActivationReconciliation(
                 host, android, rsa);
+        verifiesFirstPairingActivationDoesNotAttachDataPlane();
         System.out.println("DUAL_MACHINE_AUTHORIZATION_RUNTIME_OK");
+    }
+
+    private static void verifiesFirstPairingActivationDoesNotAttachDataPlane()
+            throws Exception {
+        KeyPair hostPair = ecKeyPair();
+        KeyPair androidPair = ecKeyPair();
+        AtomicInteger typedHostSigns = new AtomicInteger();
+        DualMachineCardAuthorizationCoordinator.IdentityBinding host =
+                DualMachineCardAuthorizationCoordinator.IdentityBinding
+                        .forFirstPairingActivation(
+                                "HOST-DEVICE",
+                                "17.8.81",
+                                DualMachinePairingIdentityCodec
+                                        .encodePublicKeyBase64(
+                                                hostPair.getPublic().getEncoded()),
+                                (proof, payload) -> {
+                                    typedHostSigns.incrementAndGet();
+                                    return DualMachinePairingIdentityCodec.sign(
+                                            hostPair.getPrivate(), payload);
+                                });
+        DualMachineCardAuthorizationCoordinator.IdentityBinding android =
+                identity("ANDROID-DEVICE", "1.0.0", androidPair);
+        ArrayDeque<String> ids = new ArrayDeque<>();
+        ids.add("91".repeat(16));
+        ids.add("92".repeat(16));
+        ids.add("93".repeat(16));
+        KeyPairGenerator rsa = KeyPairGenerator.getInstance("RSA");
+        rsa.initialize(DualMachineUsageLeaseVerifier.MINIMUM_RSA_BITS);
+        DualMachineAuthorizationRuntime runtime =
+                new DualMachineAuthorizationRuntime(
+                        new ActivationSidecar(host, android),
+                        new DualMachineFormalUsageStateMachine(),
+                        new DualMachineUsageLeaseKeyring(
+                                Collections.singletonList(
+                                        rsa.generateKeyPair().getPublic()),
+                                5),
+                        new InMemoryEntitlementStore(),
+                        new InMemoryPendingStore(),
+                        android,
+                        "visionforge-dual-machine-pairing-identity",
+                        ids::remove,
+                        System::nanoTime,
+                        (deadline, action) -> () -> { },
+                        () -> 0L);
+        AtomicBoolean completion = new AtomicBoolean();
+        try {
+            check(!runtime.hasCardActivationAuthority());
+            runtime.attachFirstPairingActivationHost(
+                    host,
+                    () -> 100L,
+                    entitlement -> completion.set(true));
+            check(runtime.hasCardActivationAuthority());
+            check(!runtime.hasAuthenticatedHost());
+            check(!runtime.snapshot().permitsDataPlane);
+            DualMachineEntitlementRecord entitlement =
+                    runtime.activateCard(CARD);
+            check(entitlement.hasActivePairSecurityBinding());
+            check(completion.get());
+            check(typedHostSigns.get() == 1);
+            check(!runtime.hasCardActivationAuthority());
+            check(!runtime.hasAuthenticatedHost());
+            check(!runtime.snapshot().permitsDataPlane);
+            try {
+                runtime.refreshStatus();
+                throw new AssertionError(
+                        "first-pair activation exposed status authority");
+            } catch (IllegalStateException expected) {
+                check(expected.getMessage().contains(
+                        "authenticated Host session"));
+            }
+        } finally {
+            runtime.close();
+        }
     }
 
     private static void
@@ -554,6 +630,7 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
     private static void verifiesCurrentStopRetryBackoff(
             DualMachineAuthorizationRuntime runtime,
             ActivationSidecar sidecar,
+            AtomicBoolean authenticated,
             AtomicLong monotonicNanos) throws Exception {
         int cancellationsBefore = sidecar.cancellations;
         sidecar.allowAmbiguousStart = true;
@@ -576,11 +653,10 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
             check(runtime.snapshot().state
                     == DualMachineFormalUsageStateMachine.State.STOPPING);
 
-            DualMachineAuthorizationRuntime.CurrentGenerationReceipt receipt =
-                    runtime.captureCurrentGenerationReceipt();
+            authenticated.set(false);
             AtomicBoolean earlyClaim = new AtomicBoolean();
-            check(runtime.beginFormalUsageLifecycleStopRetryIfCurrent(
-                    receipt,
+            check(runtime
+                    .beginFormalUsageLifecycleStopRetryWithoutAuthenticatedHost(
                     () -> {
                         earlyClaim.set(true);
                         return true;
@@ -592,8 +668,8 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
             sidecar.cancellationFailuresRemaining = 0;
             AtomicBoolean dueClaim = new AtomicBoolean();
             DualMachineAuthorizationRuntime.FormalUsageLifecycleHandle retry =
-                    runtime.beginFormalUsageLifecycleStopRetryIfCurrent(
-                            receipt,
+                    runtime
+                            .beginFormalUsageLifecycleStopRetryWithoutAuthenticatedHost(
                             () -> {
                                 dueClaim.set(true);
                                 return true;
@@ -607,6 +683,7 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
             check(runtime.snapshot().state
                     == DualMachineFormalUsageStateMachine.State.ACTIVATED_IDLE);
 
+            authenticated.set(true);
             AtomicBoolean idleClaim = new AtomicBoolean();
             check(runtime.beginFormalUsageLifecycleStopRetryIfCurrent(
                     runtime.captureCurrentGenerationReceipt(),
@@ -616,6 +693,7 @@ public final class DualMachineAuthorizationRuntimeSelfTest {
                     }) == null);
             check(!idleClaim.get());
         } finally {
+            authenticated.set(true);
             sidecar.allowAmbiguousStart = false;
             sidecar.cancellationFailuresRemaining = 0;
         }

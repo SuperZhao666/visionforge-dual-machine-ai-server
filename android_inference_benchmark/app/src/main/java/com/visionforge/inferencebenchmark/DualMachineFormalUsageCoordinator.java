@@ -57,6 +57,39 @@ public final class DualMachineFormalUsageCoordinator {
         }
     }
 
+    /** Privacy-safe monotonic timing for the latest paid-renewal attempt. */
+    public static final class RenewalTiming {
+        public final boolean attempted;
+        public final long sequence;
+        public final long proofMillis;
+        public final long sidecarMillis;
+        public final long installMillis;
+        public final long totalMillis;
+        public final String terminalPhase;
+
+        private RenewalTiming(
+                boolean attempted,
+                long sequence,
+                long proofMillis,
+                long sidecarMillis,
+                long installMillis,
+                long totalMillis,
+                String terminalPhase) {
+            this.attempted = attempted;
+            this.sequence = sequence;
+            this.proofMillis = proofMillis;
+            this.sidecarMillis = sidecarMillis;
+            this.installMillis = installMillis;
+            this.totalMillis = totalMillis;
+            this.terminalPhase = terminalPhase;
+        }
+
+        private static RenewalTiming skipped(String terminalPhase) {
+            return new RenewalTiming(
+                    false, -1L, 0L, 0L, 0L, 0L, terminalPhase);
+        }
+    }
+
     @FunctionalInterface
     public interface TimeSource {
         long nowEpochSeconds();
@@ -69,10 +102,10 @@ public final class DualMachineFormalUsageCoordinator {
 
     public interface RuntimeBoundary {
         /**
-         * Establishes runtime readiness before billing. A bounded one-shot
-         * transport presence probe may consume one video fragment, but it must
-         * not start continuous decode/QNN/control work or increment formal-use
-         * counters. Every blocking wait must observe
+         * Establishes local runtime and authenticated-control readiness before
+         * billing while both data planes remain closed. It must not wait for
+         * Host video because the Host is forbidden to emit video before the
+         * signed lease commit. Every blocking wait must observe
          * {@code cancellationRequested}; the signal remains live even when a
          * local stop wins immediately before the boundary method is entered.
          */
@@ -81,11 +114,10 @@ public final class DualMachineFormalUsageCoordinator {
                 throws IOException, GeneralSecurityException;
 
         /**
-         * Requires a fresh Host video observation immediately before a start
-         * request that may create the first paid lease. The prepared route and
-         * channel binding must still match the original readiness result. A
-         * cancellation must abort the observation without classifying the
-         * intentionally closed socket as a transport failure.
+         * Revalidates the mutually authenticated Host control channel, route,
+         * display readiness, and reservation immediately before a start request
+         * that may create the first paid lease. Continuous video remains closed
+         * until Offer/Accept/Commit completes.
          */
         void verifyFreshHostVideoBeforePotentialDebit(
                 String expectedChannelBindingSha256,
@@ -480,6 +512,8 @@ public final class DualMachineFormalUsageCoordinator {
     private long lastAndroidProgress;
     private RenewalProgressObservation lastRenewalProgressObservation =
             new RenewalProgressObservation(0L, 0L, 0L, 0L);
+    private volatile RenewalTiming lastRenewalTiming =
+            RenewalTiming.skipped("not_attempted");
     private volatile boolean dataPlaneOpen;
     private volatile PendingStart pendingStart;
     private volatile PendingStart lifecycleStart;
@@ -538,7 +572,8 @@ public final class DualMachineFormalUsageCoordinator {
     }
 
     /**
-     * The only paid start entrypoint. Invoke only after verified Host video.
+     * The only paid start entrypoint. The authenticated Host is revalidated
+     * while its data plane remains closed, then the raw lease is committed.
      */
     synchronized DataPlanePermit startAfterVerifiedHostVideo(
             StartAdmissionToken admission)
@@ -712,6 +747,8 @@ public final class DualMachineFormalUsageCoordinator {
         if (futureLeaseStaged) {
             synchronizeStagedLeaseIfDue();
             if (futureLeaseStaged) {
+                lastRenewalTiming = RenewalTiming.skipped(
+                        "future_already_staged");
                 return RenewalOutcome.FUTURE_STAGED;
             }
         }
@@ -724,6 +761,7 @@ public final class DualMachineFormalUsageCoordinator {
                 lastAndroidProgress);
         if (hostTotal <= lastHostProgress
                 || androidTotal <= lastAndroidProgress) {
+            lastRenewalTiming = RenewalTiming.skipped("no_progress");
             return RenewalOutcome.NO_PROGRESS;
         }
         DualMachineFormalUsageStateMachine.Snapshot before =
@@ -732,36 +770,141 @@ public final class DualMachineFormalUsageCoordinator {
         String requestNonce = nextDistinctId(
                 requestId, "heartbeat requestNonce");
         long sequence = Math.addExact(lastLease.sequence(), 1L);
-        DualMachineSidecarPort.HeartbeatRequest request = heartbeatRequest(
-                before.entitlement,
-                requestId,
-                requestNonce,
-                sequence,
-                hostTotal,
-                androidTotal);
+        long attemptStartedNanos = monotonicClock.nowNanos();
+        long proofStartedNanos = attemptStartedNanos;
+        long proofFinishedNanos = proofStartedNanos;
+        boolean proofSucceeded = false;
+        final DualMachineSidecarPort.HeartbeatRequest request;
+        try {
+            request = heartbeatRequest(
+                    before.entitlement,
+                    requestId,
+                    requestNonce,
+                    sequence,
+                    hostTotal,
+                    androidTotal);
+            proofSucceeded = true;
+        } finally {
+            proofFinishedNanos = monotonicClock.nowNanos();
+            recordRenewalTiming(
+                    sequence,
+                    proofSucceeded ? "proof_completed" : "proof_failed",
+                    attemptStartedNanos,
+                    proofStartedNanos,
+                    proofFinishedNanos,
+                    -1L,
+                    -1L,
+                    -1L,
+                    -1L);
+        }
         PendingHeartbeat pending = new PendingHeartbeat(
                 before, request, hostTotal, androidTotal, sequence);
         pendingHeartbeat = pending;
+        long sidecarStartedNanos = proofFinishedNanos;
+        long sidecarFinishedNanos = sidecarStartedNanos;
+        boolean sidecarSucceeded = false;
         final DualMachineSidecarPort.UsageLeaseResponse response;
         try {
             response = sidecar.heartbeat(request);
+            sidecarSucceeded = true;
         } catch (IOException networkFailure) {
             // The already installed ticket remains authoritative until its
             // monotonic expiry. The health timer will close it automatically.
             throw networkFailure;
+        } finally {
+            sidecarFinishedNanos = monotonicClock.nowNanos();
+            recordRenewalTiming(
+                    sequence,
+                    sidecarSucceeded ? "sidecar_completed" : "sidecar_failed",
+                    attemptStartedNanos,
+                    proofStartedNanos,
+                    proofFinishedNanos,
+                    sidecarStartedNanos,
+                    sidecarFinishedNanos,
+                    -1L,
+                    -1L);
         }
+        long installStartedNanos = sidecarFinishedNanos;
+        boolean installSucceeded = false;
         try {
-            return installRenewalResponse(pending, response);
+            RenewalOutcome outcome = installRenewalResponse(pending, response);
+            installSucceeded = true;
+            return outcome;
         } catch (IOException | GeneralSecurityException
                  | RuntimeException failure) {
             failClosedLocally();
             throw failure;
+        } finally {
+            long installFinishedNanos = monotonicClock.nowNanos();
+            recordRenewalTiming(
+                    sequence,
+                    installSucceeded ? "completed" : "install_failed",
+                    attemptStartedNanos,
+                    proofStartedNanos,
+                    proofFinishedNanos,
+                    sidecarStartedNanos,
+                    sidecarFinishedNanos,
+                    installStartedNanos,
+                    installFinishedNanos);
         }
+    }
+
+    /**
+     * Reconciles the Android native counter after an explicitly owned pipeline
+     * restart while preserving the session's monotonic progress total.
+     *
+     * <p>The reset sample adds no progress. Sampling it before the data plane
+     * reopens lets the next genuinely processed frame advance the session total
+     * instead of being consumed only as a reset baseline at lease expiry.</p>
+     */
+    public synchronized long reconcileKnownAndroidPipelineRestart()
+            throws IOException {
+        requireNotStopped();
+        requireRenewableSession();
+        if (pendingHeartbeat != null) {
+            throw new IllegalStateException(
+                    "pending renewal must be retried exactly");
+        }
+        return androidProgress.observe();
     }
 
     public synchronized RenewalProgressObservation
             latestRenewalProgressObservation() {
         return lastRenewalProgressObservation;
+    }
+
+    public synchronized RenewalTiming latestRenewalTiming() {
+        return lastRenewalTiming;
+    }
+
+    private void recordRenewalTiming(
+            long sequence,
+            String terminalPhase,
+            long attemptStartedNanos,
+            long proofStartedNanos,
+            long proofFinishedNanos,
+            long sidecarStartedNanos,
+            long sidecarFinishedNanos,
+            long installStartedNanos,
+            long installFinishedNanos) {
+        long finishedNanos = installFinishedNanos >= 0L
+                ? installFinishedNanos
+                : sidecarFinishedNanos >= 0L
+                ? sidecarFinishedNanos
+                : proofFinishedNanos;
+        lastRenewalTiming = new RenewalTiming(
+                true,
+                sequence,
+                elapsedMillis(proofStartedNanos, proofFinishedNanos),
+                elapsedMillis(sidecarStartedNanos, sidecarFinishedNanos),
+                elapsedMillis(installStartedNanos, installFinishedNanos),
+                elapsedMillis(attemptStartedNanos, finishedNanos),
+                terminalPhase);
+    }
+
+    private static long elapsedMillis(long startedNanos, long finishedNanos) {
+        if (startedNanos < 0L || finishedNanos < startedNanos) return 0L;
+        return TimeUnit.NANOSECONDS.toMillis(finishedNanos - startedNanos);
     }
 
     /** Replays one ambiguous heartbeat using the exact original signed body. */
@@ -773,18 +916,55 @@ public final class DualMachineFormalUsageCoordinator {
             throw new IllegalStateException(
                     "no pending renewal response");
         }
+        PendingHeartbeat pending = pendingHeartbeat;
+        long sequence = pending.sequence;
+        long attemptStartedNanos = monotonicClock.nowNanos();
+        long sidecarStartedNanos = attemptStartedNanos;
+        long sidecarFinishedNanos = sidecarStartedNanos;
+        boolean sidecarSucceeded = false;
         final DualMachineSidecarPort.UsageLeaseResponse response;
         try {
-            response = sidecar.heartbeat(pendingHeartbeat.request);
+            response = sidecar.heartbeat(pending.request);
+            sidecarSucceeded = true;
         } catch (IOException networkFailure) {
             throw networkFailure;
+        } finally {
+            sidecarFinishedNanos = monotonicClock.nowNanos();
+            recordRenewalTiming(
+                    sequence,
+                    sidecarSucceeded
+                            ? "retry_sidecar_completed"
+                            : "retry_sidecar_failed",
+                    attemptStartedNanos,
+                    -1L,
+                    -1L,
+                    sidecarStartedNanos,
+                    sidecarFinishedNanos,
+                    -1L,
+                    -1L);
         }
+        long installStartedNanos = sidecarFinishedNanos;
+        boolean installSucceeded = false;
         try {
-            return installRenewalResponse(pendingHeartbeat, response);
+            RenewalOutcome outcome = installRenewalResponse(pending, response);
+            installSucceeded = true;
+            return outcome;
         } catch (IOException | GeneralSecurityException
                  | RuntimeException failure) {
             failClosedLocally();
             throw failure;
+        } finally {
+            long installFinishedNanos = monotonicClock.nowNanos();
+            recordRenewalTiming(
+                    sequence,
+                    installSucceeded ? "completed" : "retry_install_failed",
+                    attemptStartedNanos,
+                    -1L,
+                    -1L,
+                    sidecarStartedNanos,
+                    sidecarFinishedNanos,
+                    installStartedNanos,
+                    installFinishedNanos);
         }
     }
 
@@ -1102,10 +1282,10 @@ public final class DualMachineFormalUsageCoordinator {
      * Immediate local-only kill switch for loss or replacement of the
      * authenticated Host session, CAT6 route, or secure channel binding.
      *
-     * <p>An active lease is still discarded locally because the peer route is
-     * no longer trusted. An in-flight start is different: its cancellation was
-     * already dual-signed while the attachment was valid, so that exact request
-     * is replayed before the generation is discarded.</p>
+     * <p>The exact stop for the latest verified lease and every in-flight-start
+     * cancellation are dual-signed while the attachment is still valid. Runtime
+     * loss therefore replays immutable requests and never depends on a detached
+     * Host signer.</p>
      */
     public void failCloseFromRuntimeLoss() {
         boolean firstStop = latchImmediateLocalStop();
@@ -1150,14 +1330,18 @@ public final class DualMachineFormalUsageCoordinator {
         boolean serverConfirmed = false;
         boolean serverRevoked = false;
         long remaining = before.remainingSeconds;
-        if (lastLease != null && !lastLeaseToken.isEmpty()) {
+        PendingStart stopGeneration = lifecycleGeneration != null
+                ? lifecycleGeneration : lifecycleStart;
+        DualMachineSidecarPort.StopRequest preparedStopRequest =
+                stopGeneration == null ? null
+                : stopGeneration.preparedStopRequest;
+        if (preparedStopRequest != null) {
             try {
                 DualMachineSidecarPort.StopResponse response =
-                        sidecar.stop(stopRequest(before.entitlement));
+                        sidecar.stop(preparedStopRequest);
                 serverConfirmed = validStopResponse(response, before);
                 if (serverConfirmed) remaining = response.remainingSeconds;
-            } catch (IOException | GeneralSecurityException
-                     | RuntimeException ignored) {
+            } catch (IOException | RuntimeException ignored) {
                 // Local closure is the primary user-rights guarantee.
             }
         }
@@ -1332,8 +1516,15 @@ public final class DualMachineFormalUsageCoordinator {
         }
         try {
             openDataPlaneWhileNotStopped(permit);
+            // The Host accepts a stop proof only after the exact raw lease is
+            // installed in its authenticated usage context. Pre-sign it at
+            // that point so a later transport loss can replay the immutable
+            // request without depending on a detached Host signer.
+            initialStart.preparedStopRequest = stopRequest(
+                    before.entitlement, verified, response.usageLease);
             scheduleLeaseDeadline(verified);
-        } catch (IOException | RuntimeException failure) {
+        } catch (IOException | GeneralSecurityException
+                 | RuntimeException failure) {
             boolean lifecycleCancellation = immediateStopRequested.get();
             try {
                 requestImmediateLocalStop();
@@ -1375,11 +1566,20 @@ public final class DualMachineFormalUsageCoordinator {
                         pending.before,
                         pending.sequence,
                         lastLease.tokenSha256());
+        PendingStart renewalGeneration = lifecycleStart;
+        if (renewalGeneration == null) {
+            throw new GeneralSecurityException(
+                    "formal usage generation owner is unavailable");
+        }
         DualMachineUsageLeaseGate.InstallResult installed =
                 leaseGate.install(verified);
         requireChargeAccounting(response, pending.before);
         requireNotStopped();
         applyRuntimeLease(installed, verified, response.usageLease);
+        // stageFutureLease/openDataPlane installs this exact lease in Host's
+        // authorization context; only then may Host sign its stop proof.
+        DualMachineSidecarPort.StopRequest preparedStopRequest = stopRequest(
+                pending.before.entitlement, verified, response.usageLease);
         if (installed
                 == DualMachineUsageLeaseGate.InstallResult.FUTURE_STAGED) {
             stateMachine.verifiedFutureRenewalStaged(
@@ -1400,6 +1600,7 @@ public final class DualMachineFormalUsageCoordinator {
         }
         lastHostProgress = pending.hostProgress;
         lastAndroidProgress = pending.androidProgress;
+        renewalGeneration.preparedStopRequest = preparedStopRequest;
         lastLease = verified;
         lastLeaseToken = response.usageLease;
         pendingHeartbeat = null;
@@ -1530,7 +1731,9 @@ public final class DualMachineFormalUsageCoordinator {
     }
 
     private DualMachineSidecarPort.StopRequest stopRequest(
-            DualMachineEntitlementRecord entitlement)
+            DualMachineEntitlementRecord entitlement,
+            DualMachineUsageLeaseVerifier.VerifiedLease lease,
+            String leaseToken)
             throws IOException, GeneralSecurityException {
         String requestId = nextId("stop requestId");
         String requestNonce = nextDistinctId(
@@ -1540,20 +1743,20 @@ public final class DualMachineFormalUsageCoordinator {
         value.channelBindingSha256 = channelBindingSha256;
         value.entitlementId = entitlement.entitlementId;
         value.pairId = entitlement.pairId;
-        value.previousLeaseSha256 = lastLease.tokenSha256();
+        value.previousLeaseSha256 = lease.tokenSha256();
         value.requestId = requestId;
         value.requestNonce = requestNonce;
         value.revocationVersion = entitlement.revocationVersion;
-        value.sessionId = lastLease.sessionId();
+        value.sessionId = lease.sessionId();
         DualMachineDeviceProofs.SignedProof signed = sign(
                 DualMachineUsageAuthorizationContract.usageStop(value));
         return new DualMachineSidecarPort.StopRequest(
                 usageProof(entitlement, signed),
-                lastLease.sessionId(),
+                lease.sessionId(),
                 requestId,
                 requestNonce,
                 channelBindingSha256,
-                lastLeaseToken);
+                leaseToken);
     }
 
     private DualMachineUsageLeaseVerifier.VerifiedLease verifyLeaseResponse(
@@ -1867,13 +2070,6 @@ public final class DualMachineFormalUsageCoordinator {
         scheduleLeaseBoundary(stagedNotBeforeMonotonicNanos);
     }
 
-    private boolean isBeforeStagedNotBefore() {
-        return futureLeaseStaged
-                && stagedNotBeforeMonotonicNanos >= 0L
-                && monotonicClock.nowNanos()
-                - stagedNotBeforeMonotonicNanos < 0L;
-    }
-
     private void requireIdempotentRenewalState(
             DualMachineUsageLeaseVerifier.VerifiedLease verified,
             DualMachineSidecarPort.UsageLeaseResponse response)
@@ -2051,11 +2247,6 @@ public final class DualMachineFormalUsageCoordinator {
         return immediateStopRequested.get() && pendingStart != null;
     }
 
-    private boolean hasDispatchedInitialStartRequest() {
-        PendingStart pending = pendingStart;
-        return pending != null && pending.startRequestDispatched;
-    }
-
     private boolean hasReceivedInitialStartResponse() {
         PendingStart pending = pendingStart;
         return pending != null && pending.startResponseReceived;
@@ -2126,10 +2317,19 @@ public final class DualMachineFormalUsageCoordinator {
     private void failClosedLocally() {
         immediateStopRequested.set(true);
         if (leaseGate != null) leaseGate.stop();
+        cancelScheduledDeadline();
         closeDataPlaneOnly();
         failProgressCounters();
-        finishRunningStateLocally();
-        clearGeneration();
+        DualMachineFormalUsageStateMachine.Snapshot current =
+                stateMachine.snapshot();
+        if (current.canFormalStop()) {
+            // Local capability closure is immediate, but the immutable
+            // lifecycle generation must survive in STOPPING. The service can
+            // then replay its already signed stop request even after Host
+            // authentication disappears. Finishing and clearing here used to
+            // orphan an active server session in ACTIVATED_IDLE.
+            stateMachine.closeLocalForRuntimeStop();
+        }
     }
 
     private void finishRunningStateLocally() {
@@ -2265,6 +2465,7 @@ public final class DualMachineFormalUsageCoordinator {
         volatile boolean startRequestDispatched;
         volatile boolean startResponseReceived;
         volatile String verifiedSessionId = "";
+        volatile DualMachineSidecarPort.StopRequest preparedStopRequest;
         volatile StopOutcome completedStopOutcome;
 
         PendingStart(

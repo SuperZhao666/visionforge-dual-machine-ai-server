@@ -192,6 +192,25 @@ class PlaintextModelScanTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.ScanFailure, "variant policy"):
             self.module.load_locked_digests(self.lock)
 
+    def test_explicit_owner_private_variant_does_not_weaken_public_source_scan(self) -> None:
+        payload = json.loads(self.lock.read_text(encoding="utf-8"))
+        payload["policy"]["owner_private_release_plaintext_allowed"] = True
+        payload["policy"]["plaintext_allowed_variants"] = [
+            "debug",
+            "qa",
+            "owner",
+        ]
+        payload["artifacts"][0]["allowed_variants"] = [
+            "debug",
+            "qa",
+            "owner",
+        ]
+        self.lock.write_text(json.dumps(payload), encoding="utf-8")
+
+        locked = self.module.load_locked_digests(self.lock)
+
+        self.assertIn(len(self.private_bytes), locked)
+
     def test_archive_is_scanned_by_name_and_locked_hash(self) -> None:
         archive = self.root / "app.apk"
         with zipfile.ZipFile(archive, "w") as output:

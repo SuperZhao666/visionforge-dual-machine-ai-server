@@ -107,6 +107,10 @@ private:
                     SurfaceRole surface_role = SurfaceRole::window,
                     TextRole text_role = TextRole::primary,
                     DWORD static_style = SS_LEFT);
+    HWND add_read_only_log(HWND parent, const wchar_t* text, RECT logical_bounds,
+                           FontRole font_role,
+                           SurfaceRole surface_role = SurfaceRole::panel,
+                           TextRole text_role = TextRole::muted);
     HWND add_button(HWND parent, const wchar_t* text, int id, RECT logical_bounds);
     MetricControls add_metric_row(HWND window, int logical_y, const wchar_t* title,
                                   const wchar_t* detail, TextRole accent);
@@ -211,6 +215,9 @@ private:
     bool was_running_{};
     bool mobile_reachable_{};
     bool acceptance_autostart_{};
+    // A user click made while the authenticated lease is still pending stays
+    // armed and retries after Offer/Accept/Commit opens the Host gate.
+    bool start_when_authorized_{};
     bool background_shutdown_done_{};
     HostUiPhase ui_phase_{HostUiPhase::idle};
     bool settings_panel_visible_{};

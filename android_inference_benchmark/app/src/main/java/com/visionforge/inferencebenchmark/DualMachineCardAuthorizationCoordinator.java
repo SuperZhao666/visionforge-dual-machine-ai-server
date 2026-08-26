@@ -63,6 +63,19 @@ public final class DualMachineCardAuthorizationCoordinator {
     }
 
     /**
+     * Narrow one-shot signer for a structured first-pair activation proof.
+     * It is never used for status, usage start, heartbeat, or stop payloads.
+     */
+    @FunctionalInterface
+    public interface ActivationConfirmationProofSigner {
+        byte[] signActivationConfirmation(
+                DualMachineUsageAuthorizationContract
+                        .ActivationConfirmation proof,
+                byte[] canonicalPayload)
+                throws IOException, GeneralSecurityException;
+    }
+
+    /**
      * Short-lived recovery material for an idempotent confirmation. It never
      * contains the card code or either private key.
      */
@@ -132,6 +145,8 @@ public final class DualMachineCardAuthorizationCoordinator {
         public final String keyFingerprintSha256;
         private final byte[] publicKeyDer;
         public final DualMachineDeviceProofs.ProofSigner signer;
+        private final ActivationConfirmationProofSigner
+                activationConfirmationSigner;
 
         public IdentityBinding(
                 String deviceCode,
@@ -144,7 +159,8 @@ public final class DualMachineCardAuthorizationCoordinator {
                     clientVersion,
                     identityPublicKeyBase64,
                     null,
-                    signer);
+                    signer,
+                    null);
         }
 
         public IdentityBinding(
@@ -153,6 +169,24 @@ public final class DualMachineCardAuthorizationCoordinator {
                 String identityPublicKeyBase64,
                 DualMachineAndroidDeviceProfile deviceProfile,
                 DualMachineDeviceProofs.ProofSigner signer)
+                throws GeneralSecurityException {
+            this(
+                    deviceCode,
+                    clientVersion,
+                    identityPublicKeyBase64,
+                    deviceProfile,
+                    signer,
+                    null);
+        }
+
+        private IdentityBinding(
+                String deviceCode,
+                String clientVersion,
+                String identityPublicKeyBase64,
+                DualMachineAndroidDeviceProfile deviceProfile,
+                DualMachineDeviceProofs.ProofSigner signer,
+                ActivationConfirmationProofSigner
+                        activationConfirmationSigner)
                 throws GeneralSecurityException {
             if (signer == null) {
                 throw new IllegalArgumentException("identity signer is required");
@@ -168,6 +202,30 @@ public final class DualMachineCardAuthorizationCoordinator {
             keyFingerprintSha256 = DualMachinePairingIdentityCodec
                     .fingerprintHex(publicKeyDer);
             this.signer = signer;
+            this.activationConfirmationSigner =
+                    activationConfirmationSigner;
+        }
+
+        public static IdentityBinding forFirstPairingActivation(
+                String deviceCode,
+                String clientVersion,
+                String identityPublicKeyBase64,
+                ActivationConfirmationProofSigner signer)
+                throws GeneralSecurityException {
+            if (signer == null) {
+                throw new IllegalArgumentException(
+                        "first-pair activation signer is required");
+            }
+            return new IdentityBinding(
+                    deviceCode,
+                    clientVersion,
+                    identityPublicKeyBase64,
+                    null,
+                    ignored -> {
+                        throw new GeneralSecurityException(
+                                "first-pair Host cannot sign arbitrary proofs");
+                    },
+                    signer);
         }
 
         public byte[] publicKeyDer() {
@@ -250,7 +308,9 @@ public final class DualMachineCardAuthorizationCoordinator {
                 throw new GeneralSecurityException(
                         "activation challenge response is missing");
             }
-            byte[] canonicalPayload = activationPayload(request, challenge);
+            TypedActivationPayload activation =
+                    activationPayload(request, challenge);
+            byte[] canonicalPayload = activation.canonicalPayload;
             long nowEpoch = epochClock.nowEpochSeconds();
             if (nowEpoch <= 0L
                     || challenge.expiresAtEpoch <= nowEpoch) {
@@ -262,8 +322,8 @@ public final class DualMachineCardAuthorizationCoordinator {
                 throw new GeneralSecurityException(
                         "activation challenge proof payload mismatch");
             }
-            DualMachineDeviceProofs.SignedProof proof = sign(
-                    canonicalPayload);
+            DualMachineDeviceProofs.SignedProof proof =
+                    signActivation(activation);
             PendingActivation pending = pendingActivation(
                     requestId, pairId, challenge, proof);
             pendingActivationStore.save(pending);
@@ -531,7 +591,21 @@ public final class DualMachineCardAuthorizationCoordinator {
         }
     }
 
-    private byte[] activationPayload(
+    private static final class TypedActivationPayload {
+        final DualMachineUsageAuthorizationContract.ActivationConfirmation
+                proof;
+        final byte[] canonicalPayload;
+
+        TypedActivationPayload(
+                DualMachineUsageAuthorizationContract
+                        .ActivationConfirmation proof,
+                byte[] canonicalPayload) {
+            this.proof = proof;
+            this.canonicalPayload = canonicalPayload;
+        }
+    }
+
+    private TypedActivationPayload activationPayload(
             DualMachineSidecarPort.ActivationChallengeRequest request,
             DualMachineSidecarPort.ActivationChallengeResponse challenge)
             throws GeneralSecurityException {
@@ -563,8 +637,28 @@ public final class DualMachineCardAuthorizationCoordinator {
         value.protocolVersion = request.protocolVersion;
         value.requestId = request.requestId;
         value.targetEntitlementId = challenge.targetEntitlementId;
-        return DualMachineUsageAuthorizationContract
-                .activationConfirmation(value);
+        return new TypedActivationPayload(
+                value,
+                DualMachineUsageAuthorizationContract
+                        .activationConfirmation(value));
+    }
+
+    private DualMachineDeviceProofs.SignedProof signActivation(
+            TypedActivationPayload activation)
+            throws IOException, GeneralSecurityException {
+        DualMachineDeviceProofs.ProofSigner hostSigner =
+                hostIdentity.activationConfirmationSigner == null
+                ? hostIdentity.signer
+                : payload -> hostIdentity.activationConfirmationSigner
+                        .signActivationConfirmation(
+                                activation.proof,
+                                payload);
+        return DualMachineDeviceProofs.createVerified(
+                activation.canonicalPayload,
+                hostIdentity.publicKeyDer,
+                androidIdentity.publicKeyDer,
+                hostSigner,
+                androidIdentity.signer);
     }
 
     private DualMachineDeviceProofs.SignedProof sign(byte[] payload)

@@ -15,6 +15,9 @@ class CanonicalPeerHandshakeTranscriptV1;
 class CanonicalPairGenerationChallengeRequestV1;
 class HostPeerHandshakeTranscriptSignerV1;
 class HostPairGenerationPopSignerV1;
+class HostFirstPairingUserConfirmationSignerV1;
+class HostActivationConfirmationSignerV1;
+class HostUsageAuthorizationSignerV1;
 
 /**
  * Host device identity protocol boundary.
@@ -365,8 +368,31 @@ private:
     create_pair_generation_pop_signature(
         const std::array<std::uint8_t, 32U>& payload_sha256);
 
+    /** Dedicated bridge for a typed, locally approved VFU1 confirmation. */
+    [[nodiscard]] HostIdentityBytesResult
+    create_first_pairing_user_confirmation_signature(
+        const std::array<std::uint8_t, 32U>& payload_sha256);
+
+    /** Dedicated bridge for the exact typed server activation proof. */
+    [[nodiscard]] HostIdentityBytesResult
+    create_activation_confirmation_signature(
+        const std::array<std::uint8_t, 32U>& payload_sha256);
+
+    /** Dedicated bridge for an exact typed entitlement-status proof. */
+    [[nodiscard]] HostIdentityBytesResult
+    create_entitlement_status_signature(
+        const std::array<std::uint8_t, 32U>& payload_sha256);
+
+    /** Dedicated bridge used only by the typed usage-contract signer. */
+    [[nodiscard]] HostIdentityBytesResult
+    create_usage_authorization_signature(
+        const std::array<std::uint8_t, 32U>& payload_sha256);
+
     friend class HostPeerHandshakeTranscriptSignerV1;
     friend class HostPairGenerationPopSignerV1;
+    friend class HostFirstPairingUserConfirmationSignerV1;
+    friend class HostActivationConfirmationSignerV1;
+    friend class HostUsageAuthorizationSignerV1;
 
     std::unique_ptr<CngSigningKey> key_;
     HostPublicIdentity public_identity_;

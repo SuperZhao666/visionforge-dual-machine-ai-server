@@ -1,5 +1,6 @@
 package com.visionforge.inferencebenchmark;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
@@ -20,6 +21,7 @@ final class BackgroundExecutionPolicy {
         return power != null && power.isIgnoringBatteryOptimizations(activity.getPackageName());
     }
 
+    @SuppressLint("BatteryLife")
     boolean requestExemption() {
         Intent request = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
                 .setData(Uri.parse("package:" + activity.getPackageName()));

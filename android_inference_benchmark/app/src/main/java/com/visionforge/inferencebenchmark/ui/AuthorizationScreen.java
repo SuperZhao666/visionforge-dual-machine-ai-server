@@ -139,13 +139,6 @@ final class AuthorizationScreen implements MobileScreen {
         activationCard.addView(
                 resumeActivation, VisionForgeTheme.match(context, 8));
 
-        TextView zeroCost = VisionForgeTheme.text(
-                context,
-                context.getString(R.string.authorization_zero_cost_notice),
-                12,
-                VisionForgeTheme.TEXT_MUTED);
-        zeroCost.setPadding(0, VisionForgeTheme.dp(context, 10), 0, 0);
-        activationCard.addView(zeroCost);
         page.addView(activationCard);
     }
 
@@ -174,9 +167,7 @@ final class AuthorizationScreen implements MobileScreen {
     }
 
     private void submitCard() {
-        if (!submissionEnabled) return;
         String raw = cardCode.getText().toString();
-        cardCode.getText().clear();
         final String normalized;
         try {
             normalized = DualMachineCardCode.normalizeAndValidate(raw);
@@ -186,6 +177,13 @@ final class AuthorizationScreen implements MobileScreen {
                     R.string.authorization_card_invalid));
             return;
         }
+        if (!submissionEnabled) {
+            cardCode.setError(context.getString(
+                    R.string.authorization_start_host_before_activation));
+            cardCode.requestFocus();
+            return;
+        }
+        cardCode.getText().clear();
         actions.onActivateCard(normalized);
     }
 
@@ -203,6 +201,13 @@ final class AuthorizationScreen implements MobileScreen {
         int color;
         String glyph;
         switch (authorization.status) {
+            case WAITING_FOR_HOST:
+                titleResource = R.string.authorization_waiting_for_host;
+                detailResource =
+                        R.string.authorization_waiting_for_host_detail;
+                color = VisionForgeTheme.WARNING;
+                glyph = MaterialIcons.LINK;
+                break;
             case READY_FOR_ACTIVATION:
                 titleResource = R.string.authorization_ready;
                 detailResource = R.string.authorization_ready_detail;
@@ -264,6 +269,14 @@ final class AuthorizationScreen implements MobileScreen {
                 color = VisionForgeTheme.DANGER;
                 glyph = MaterialIcons.LOCK;
                 break;
+            case SECURITY_CONFIGURATION_ERROR:
+                titleResource =
+                        R.string.authorization_security_configuration_error;
+                detailResource =
+                        R.string.authorization_security_configuration_failed;
+                color = VisionForgeTheme.DANGER;
+                glyph = MaterialIcons.WARNING;
+                break;
             case ERROR:
                 titleResource = R.string.authorization_error;
                 detailResource = R.string.authorization_error_detail;
@@ -296,12 +309,13 @@ final class AuthorizationScreen implements MobileScreen {
 
         submissionEnabled = authorization.canActivateCard();
         boolean activationVisible = authorization.isActivationCardVisible();
+        boolean cardEntryEnabled = authorization.canEnterCardCode();
         activationLabel.setVisibility(
                 activationVisible ? View.VISIBLE : View.GONE);
         activationCard.setVisibility(
                 activationVisible ? View.VISIBLE : View.GONE);
-        cardCode.setEnabled(submissionEnabled);
-        activate.setEnabled(submissionEnabled);
+        cardCode.setEnabled(cardEntryEnabled);
+        activate.setEnabled(cardEntryEnabled);
         VisionForgeTheme.setTextIfChanged(activate,
                 context.getString(R.string.action_activate_card));
         resumeActivation.setVisibility(
@@ -318,11 +332,34 @@ final class AuthorizationScreen implements MobileScreen {
             return context.getString(
                     R.string.authorization_permanent_balance);
         }
-        if (!authorization.balanceKnown) {
+        if (authorization.status == DualMachineAuthorizationUiState.Status.SECURITY_CONFIGURATION_ERROR) {
             return context.getString(
-                    R.string.authorization_balance_pending);
+                    R.string.authorization_balance_unavailable);
         }
-        return formatDuration(authorization.remainingSeconds);
+        if (!authorization.displayBalanceKnown) {
+            switch (authorization.status) {
+                case WAITING_FOR_HOST:
+                case READY_FOR_ACTIVATION:
+                    return context.getString(
+                            R.string.authorization_balance_not_activated);
+                case ACTIVATING:
+                    return context.getString(
+                            R.string.authorization_balance_activating);
+                case ACTIVATION_PENDING:
+                case REFRESHING:
+                    return context.getString(
+                            R.string.authorization_balance_verifying);
+                default:
+                    return context.getString(
+                            R.string.authorization_balance_unavailable);
+            }
+        }
+        String duration = formatDuration(authorization.remainingSeconds);
+        return authorization.balanceStale
+                ? context.getString(
+                R.string.authorization_balance_last_verified,
+                duration)
+                : duration;
     }
 
     private static String formatDuration(long totalSeconds) {

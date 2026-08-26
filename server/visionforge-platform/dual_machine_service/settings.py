@@ -50,7 +50,10 @@ class DualMachineSettings:
     bind_host: str = "127.0.0.1"
     bind_port: int = 8010
     usage_lease_ttl_seconds: int = 5
-    usage_renewal_window_seconds: int = 2
+    # A successor still starts exactly at the current lease expiry.  Issuing
+    # it earlier only gives WAN/TLS/signing latency enough time to deliver the
+    # contiguous permit before the five-second data-plane segment closes.
+    usage_renewal_window_seconds: int = 4
     admin_bridge_secret: bytes = field(default=b"", repr=False)
     admin_bridge_max_skew_seconds: int = 30
 
@@ -164,7 +167,7 @@ class DualMachineSettings:
             usage_renewal_window_seconds=int(
                 os.getenv(
                     "DUAL_MACHINE_USAGE_RENEWAL_WINDOW_SECONDS",
-                    "2",
+                    "4",
                 ),
             ),
             admin_bridge_secret=os.getenv(

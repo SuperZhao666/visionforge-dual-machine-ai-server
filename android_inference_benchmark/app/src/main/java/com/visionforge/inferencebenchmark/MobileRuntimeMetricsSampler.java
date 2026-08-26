@@ -54,14 +54,14 @@ final class MobileRuntimeMetricsSampler {
                 + " qnn_executions=" + snapshot.qnnExecutionCount
                 + " qnn_failures=" + snapshot.qnnFailures
                 + " wire_reassembly_fps=" + windowRates.reassembledFps
-                + " network_reassembly_fps=" + windowRates.freshContentFps
+                + " network_reassembly_fps=" + windowRates.reassembledFps
                 + " fresh_content_fps=" + windowRates.freshContentFps
                 + " repeated_content_fps=" + windowRates.repeatedContentFps
                 + " decoder_submit_fps=" + windowRates.decoderAcceptedFps
                 + " decoder_output_fps=" + windowRates.decodedFrameFps
                 + " fresh_decoder_fps=" + windowRates.freshDecodedFrameFps
-                + " receiver_fps=" + windowRates.freshContentFps
-                + " decoder_fps=" + windowRates.freshDecodedFrameFps
+                + " receiver_fps=" + windowRates.reassembledFps
+                + " decoder_fps=" + windowRates.decodedFrameFps
                 + " qnn_fps=" + windowRates.qnnFps
                 + " fresh_qnn_fps=" + windowRates.qnnFps
                 + " preprocess_p50=" + snapshot.preprocessP50

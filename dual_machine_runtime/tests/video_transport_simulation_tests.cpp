@@ -191,7 +191,7 @@ void run_epoch_and_corruption_matrix() {
 }  // namespace
 
 int main() {
-  static_assert(vfdual::kMaxVideoFragmentsPerAccessUnit == 1498U);
+  static_assert(vfdual::kMaxVideoFragmentsPerAccessUnit == 1561U);
   run_success_matrix();
   run_loss_and_conflict_matrix();
   run_epoch_and_corruption_matrix();

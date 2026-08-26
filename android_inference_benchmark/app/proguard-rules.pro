@@ -5,7 +5,7 @@
 # Native code receives this Class object and resolves these callbacks by their
 # literal method names and descriptors in MakcuMoveBridge.cpp.
 -keepclassmembers,includedescriptorclasses class com.visionforge.inferencebenchmark.ControlOutputMoveDispatcher {
-    static boolean offerNativeMove(int,int,long);
+    static boolean offerNativeMove(int,int,long,long);
     static boolean suspendNativeDeliveryForRecovery(long);
     static boolean resumeNativeDeliveryAfterRecovery(long);
     static boolean failClosedNativeDelivery();

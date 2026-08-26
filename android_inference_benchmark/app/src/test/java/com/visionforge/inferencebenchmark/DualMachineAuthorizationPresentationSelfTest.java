@@ -3,6 +3,9 @@ package com.visionforge.inferencebenchmark;
 import com.visionforge.inferencebenchmark.ui.DualMachineAuthorizationUiState;
 import com.visionforge.inferencebenchmark.ui.DualMachineAuthorizationUiMapper;
 
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
 import java.util.Locale;
 
 /** Dependency-free card input and authorization capability regression checks. */
@@ -13,7 +16,7 @@ public final class DualMachineAuthorizationPresentationSelfTest {
     private DualMachineAuthorizationPresentationSelfTest() {
     }
 
-    public static void main(String[] arguments) {
+    public static void main(String[] arguments) throws Exception {
         require(ISSUED_CARD.equals(
                 DualMachineCardCode.normalizeAndValidate(ISSUED_CARD)));
         require(ISSUED_CARD.equals(
@@ -32,12 +35,14 @@ public final class DualMachineAuthorizationPresentationSelfTest {
         require(!fresh.canStartFormalUse());
         require(!fresh.canStopFormalUse());
         require(fresh.isActivationCardVisible());
+        require(fresh.canEnterCardCode());
 
         DualMachineAuthorizationUiState ready =
                 DualMachineAuthorizationUiState.readyForActivation();
         require(ready.canActivateCard());
         require(!ready.canStartFormalUse());
         require(ready.isActivationCardVisible());
+        require(ready.canEnterCardCode());
 
         DualMachineAuthorizationUiState idle =
                 state(DualMachineAuthorizationUiState.Status.ACTIVE_IDLE,
@@ -48,6 +53,7 @@ public final class DualMachineAuthorizationPresentationSelfTest {
         require(idle.canStartFormalUse());
         require(!idle.canStopFormalUse());
         require(!idle.isActivationCardVisible());
+        require(!idle.canEnterCardCode());
 
         DualMachineAuthorizationUiState unknownIdle =
                 new DualMachineAuthorizationUiState(
@@ -95,6 +101,7 @@ public final class DualMachineAuthorizationPresentationSelfTest {
         require(!inUse.canRefreshStatus());
         require(!inUse.canStartFormalUse());
         require(inUse.canStopFormalUse());
+        require(!inUse.canEnterCardCode());
 
         DualMachineAuthorizationUiState exhausted =
                 state(DualMachineAuthorizationUiState.Status.EXHAUSTED,
@@ -117,6 +124,81 @@ public final class DualMachineAuthorizationPresentationSelfTest {
         require(!revoked.canStopFormalUse());
 
         verifyDomainStateMapping();
+        verifyRestartUsesCachedBalanceForDisplayOnly();
+    }
+
+    private static void verifyRestartUsesCachedBalanceForDisplayOnly()
+            throws Exception {
+        DualMachineEntitlementRecord entitlement = entitlement("11".repeat(16));
+        DualMachineFormalUsageStateMachine restored =
+                new DualMachineFormalUsageStateMachine();
+        restored.restoreBoundEntitlement(entitlement);
+        DualMachinePresentationBalance cached =
+                DualMachinePresentationBalance.fromAuthoritativeSnapshot(
+                        entitlement,
+                        86_367L,
+                        33L,
+                        1_787_540_332L);
+
+        DualMachineAuthorizationUiState mapped =
+                DualMachineAuthorizationUiMapper.map(
+                        restored.snapshot(),
+                        false,
+                        false,
+                        false,
+                        "",
+                        cached);
+        require(!mapped.balanceKnown);
+        require(mapped.displayBalanceKnown);
+        require(mapped.balanceStale);
+        require(mapped.remainingSeconds == 86_367L);
+        require(mapped.totalConsumedSeconds == 33L);
+        require(mapped.balanceSynchronizedAtEpochSeconds == 1_787_540_332L);
+        require(!mapped.canStartFormalUse());
+
+        DualMachinePresentationBalance wrongEntitlement =
+                DualMachinePresentationBalance.fromAuthoritativeSnapshot(
+                        entitlement("22".repeat(16)),
+                        1L,
+                        86_399L,
+                        1_787_540_333L);
+        DualMachineAuthorizationUiState mismatch =
+                DualMachineAuthorizationUiMapper.map(
+                        restored.snapshot(),
+                        false,
+                        false,
+                        false,
+                        "",
+                        wrongEntitlement);
+        require(!mismatch.displayBalanceKnown);
+        require(!mismatch.balanceStale);
+        require(mismatch.remainingSeconds == 0L);
+    }
+
+    private static DualMachineEntitlementRecord entitlement(String entitlementId)
+            throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+        generator.initialize(new ECGenParameterSpec("secp256r1"));
+        KeyPair host = generator.generateKeyPair();
+        String hostPublicKey = DualMachinePairingIdentityCodec
+                .encodePublicKeyBase64(host.getPublic().getEncoded());
+        return new DualMachineEntitlementRecord(
+                entitlementId,
+                "33".repeat(16),
+                "44".repeat(16),
+                1L,
+                "active",
+                DualMachineEntitlementRecord.PROTOCOL_VERSION,
+                1L,
+                DualMachinePairingIdentityCodec.fingerprintHex(
+                        host.getPublic().getEncoded()),
+                hostPublicKey,
+                "55".repeat(32),
+                "visionforge-dual-machine-pairing-identity",
+                "day",
+                "day",
+                false,
+                false);
     }
 
     private static void verifyDomainStateMapping() {
@@ -127,9 +209,26 @@ public final class DualMachineAuthorizationPresentationSelfTest {
                         stateMachine.snapshot(), false, false, "");
         require(unmapped.status
                 == DualMachineAuthorizationUiState.Status
-                .READY_FOR_ACTIVATION);
+                .WAITING_FOR_HOST);
         require(!unmapped.balanceKnown);
-        require(unmapped.canActivateCard());
+        require(!unmapped.authorizationReady);
+        require(!unmapped.activationReady);
+        require(!unmapped.canActivateCard());
+        require(unmapped.isActivationCardVisible());
+        require(unmapped.canEnterCardCode());
+
+        DualMachineAuthorizationUiState firstPairReady =
+                DualMachineAuthorizationUiMapper.map(
+                        stateMachine.snapshot(), false, true, false, "");
+        require(firstPairReady.status
+                == DualMachineAuthorizationUiState.Status
+                .READY_FOR_ACTIVATION);
+        require(!firstPairReady.authorizationReady);
+        require(firstPairReady.activationReady);
+        require(firstPairReady.canActivateCard());
+        require(firstPairReady.canEnterCardCode());
+        require(!firstPairReady.canRefreshStatus());
+        require(!firstPairReady.canStartFormalUse());
 
         DualMachineAuthorizationUiState ready =
                 DualMachineAuthorizationUiMapper.map(
@@ -155,6 +254,7 @@ public final class DualMachineAuthorizationPresentationSelfTest {
                 .ACTIVATION_PENDING);
         require(!pending.canActivateCard());
         require(pending.canResumeActivation());
+        require(!pending.canEnterCardCode());
         require(!pending.balanceKnown);
         require(pending.isActivationCardVisible());
 
@@ -163,9 +263,12 @@ public final class DualMachineAuthorizationPresentationSelfTest {
                         stateMachine.snapshot(), true, true,
                         "security_configuration_unavailable");
         require(fatal.status
-                == DualMachineAuthorizationUiState.Status.ERROR);
+                == DualMachineAuthorizationUiState.Status
+                .SECURITY_CONFIGURATION_ERROR);
         require(!fatal.balanceKnown);
+        require(!fatal.displayBalanceKnown);
         require(!fatal.authorizationReady);
+        require(!fatal.activationReady);
         require(!fatal.canActivateCard());
     }
 

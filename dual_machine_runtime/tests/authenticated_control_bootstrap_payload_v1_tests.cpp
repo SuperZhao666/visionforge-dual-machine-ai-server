@@ -315,6 +315,26 @@ void test_encoder_rejects_noncanonical_and_cross_field_values() {
         Status::unexpected_field_tag);
 }
 
+void test_generic_tlv_codec_rejects_fixed_width_first_pairing_messages() {
+    constexpr std::array first_pairing_messages{
+        Message::host_first_pair_offer,
+        Message::android_first_pair_offer,
+        Message::android_first_pair_confirmation,
+        Message::host_first_pair_confirmation,
+        Message::activation_proof_request,
+        Message::host_activation_signature,
+        Message::activation_result,
+        Message::first_pair_complete,
+    };
+    constexpr std::array encoded{std::byte{0U}};
+    for (const Message message : first_pairing_messages) {
+        CHECK(vfdual::encode_control_bootstrap_payload_v1(message, {}).status ==
+              Status::invalid_message_type);
+        CHECK(vfdual::parse_control_bootstrap_payload_v1(message, encoded).status ==
+              Status::invalid_message_type);
+    }
+}
+
 void test_credential_bound_is_exact_and_jwt_shaped() {
     std::string maximum("a.");
     maximum.append(
@@ -371,6 +391,7 @@ int main() {
     test_pair_generation_credential_fixed_cross_language_vector();
     test_parser_rejects_tag_length_value_and_trailing_confusion();
     test_encoder_rejects_noncanonical_and_cross_field_values();
+    test_generic_tlv_codec_rejects_fixed_width_first_pairing_messages();
     test_credential_bound_is_exact_and_jwt_shaped();
     std::cout << "authenticated control bootstrap payload v1 tests passed\n";
     return EXIT_SUCCESS;

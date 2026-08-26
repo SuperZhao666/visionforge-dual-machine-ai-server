@@ -1,4 +1,5 @@
 #include "vfdual/host_cng_device_identity.h"
+#include "vfdual/host_first_pairing_user_confirmation_signer_v1.hpp"
 #include "vfdual/authenticated_peer_handshake_v1.hpp"
 #include "vfdual/pair_generation_pop_v1.hpp"
 
@@ -2163,6 +2164,114 @@ HostCngDeviceIdentity::create_pair_generation_pop_signature(
     return der_signature;
 }
 
+HostIdentityBytesResult
+HostCngDeviceIdentity::create_first_pairing_user_confirmation_signature(
+    const std::array<std::uint8_t, 32U>& payload_sha256) {
+    if (key_ == nullptr || !contains_nonzero(payload_sha256)) {
+        return {{}, policy_error(
+            HostIdentityErrorCode::signature_failed,
+            "validate_first_pairing_user_confirmation_digest")};
+    }
+    HostIdentityBytesResult raw_signature =
+        key_->sign_sha256_digest(payload_sha256);
+    if (!raw_signature.succeeded()) {
+        return {std::move(raw_signature.bytes), std::move(raw_signature.error)};
+    }
+    HostIdentityBytesResult der_signature =
+        p1363_to_canonical_der(raw_signature.bytes);
+    if (!der_signature.succeeded()) return der_signature;
+    HostIdentityError verification_error =
+        verify_canonical_p256_signature_for_digest(
+            public_identity_.subject_public_key_info_der,
+            payload_sha256,
+            der_signature.bytes);
+    if (verification_error.has_error()) {
+        return {{}, std::move(verification_error)};
+    }
+    return der_signature;
+}
+
+HostIdentityBytesResult
+HostCngDeviceIdentity::create_activation_confirmation_signature(
+    const std::array<std::uint8_t, 32U>& payload_sha256) {
+    if (key_ == nullptr || !contains_nonzero(payload_sha256)) {
+        return {{}, policy_error(
+            HostIdentityErrorCode::signature_failed,
+            "validate_activation_confirmation_digest")};
+    }
+    HostIdentityBytesResult raw_signature =
+        key_->sign_sha256_digest(payload_sha256);
+    if (!raw_signature.succeeded()) {
+        return {std::move(raw_signature.bytes), std::move(raw_signature.error)};
+    }
+    HostIdentityBytesResult der_signature =
+        p1363_to_canonical_der(raw_signature.bytes);
+    if (!der_signature.succeeded()) return der_signature;
+    HostIdentityError verification_error =
+        verify_canonical_p256_signature_for_digest(
+            public_identity_.subject_public_key_info_der,
+            payload_sha256,
+            der_signature.bytes);
+    if (verification_error.has_error()) {
+        return {{}, std::move(verification_error)};
+    }
+    return der_signature;
+}
+
+HostIdentityBytesResult
+HostCngDeviceIdentity::create_entitlement_status_signature(
+    const std::array<std::uint8_t, 32U>& payload_sha256) {
+    if (key_ == nullptr || !contains_nonzero(payload_sha256)) {
+        return {{}, policy_error(
+            HostIdentityErrorCode::signature_failed,
+            "validate_entitlement_status_digest")};
+    }
+    HostIdentityBytesResult raw_signature =
+        key_->sign_sha256_digest(payload_sha256);
+    if (!raw_signature.succeeded()) {
+        return {std::move(raw_signature.bytes), std::move(raw_signature.error)};
+    }
+    HostIdentityBytesResult der_signature =
+        p1363_to_canonical_der(raw_signature.bytes);
+    if (!der_signature.succeeded()) return der_signature;
+    HostIdentityError verification_error =
+        verify_canonical_p256_signature_for_digest(
+            public_identity_.subject_public_key_info_der,
+            payload_sha256,
+            der_signature.bytes);
+    if (verification_error.has_error()) {
+        return {{}, std::move(verification_error)};
+    }
+    return der_signature;
+}
+
+HostIdentityBytesResult
+HostCngDeviceIdentity::create_usage_authorization_signature(
+    const std::array<std::uint8_t, 32U>& payload_sha256) {
+    if (key_ == nullptr || !contains_nonzero(payload_sha256)) {
+        return {{}, policy_error(
+            HostIdentityErrorCode::signature_failed,
+            "validate_usage_authorization_digest")};
+    }
+    HostIdentityBytesResult raw_signature =
+        key_->sign_sha256_digest(payload_sha256);
+    if (!raw_signature.succeeded()) {
+        return {std::move(raw_signature.bytes), std::move(raw_signature.error)};
+    }
+    HostIdentityBytesResult der_signature =
+        p1363_to_canonical_der(raw_signature.bytes);
+    if (!der_signature.succeeded()) return der_signature;
+    HostIdentityError verification_error =
+        verify_canonical_p256_signature_for_digest(
+            public_identity_.subject_public_key_info_der,
+            payload_sha256,
+            der_signature.bytes);
+    if (verification_error.has_error()) {
+        return {{}, std::move(verification_error)};
+    }
+    return der_signature;
+}
+
 HostIdentityVerificationResult verify_host_identity_proof_of_possession(
     const HostPublicIdentity& public_identity,
     const HostIdentityChallenge& challenge,
@@ -2290,6 +2399,34 @@ verify_android_pair_generation_challenge_identity_signature_v1(
         android_subject_public_key_info_der,
         challenge_request.fields().android_identity_spki_sha256,
         challenge_request.payload_sha256(),
+        signature_der_low_s);
+}
+
+HostIdentityVerificationResult
+verify_android_first_pairing_user_confirmation_v1(
+    const std::span<const std::uint8_t>
+        android_subject_public_key_info_der,
+    const std::array<std::uint8_t, 32U>&
+        expected_android_identity_spki_sha256,
+    const FirstPairingUserConfirmationFieldsV1& fields,
+    const std::span<const std::uint8_t> signature_der_low_s) noexcept {
+    if (fields.role != FirstPairingConfirmationRoleV1::android ||
+        !contains_nonzero(expected_android_identity_spki_sha256)) {
+        return {false, {}};
+    }
+    const FirstPairingUserConfirmationResultV1 payload =
+        build_first_pairing_user_confirmation_v1(fields);
+    if (!payload.succeeded()) return {false, {}};
+    PeerHandshakeSha256 expected_identity_sha256{};
+    std::transform(
+        expected_android_identity_spki_sha256.begin(),
+        expected_android_identity_spki_sha256.end(),
+        expected_identity_sha256.begin(),
+        [](const std::uint8_t value) { return std::byte{value}; });
+    return verify_android_typed_identity_signature(
+        android_subject_public_key_info_der,
+        expected_identity_sha256,
+        payload.payload_sha256,
         signature_der_low_s);
 }
 

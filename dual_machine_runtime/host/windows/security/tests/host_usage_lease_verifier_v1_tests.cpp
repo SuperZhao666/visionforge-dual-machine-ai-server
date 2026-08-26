@@ -100,15 +100,15 @@ void verifies_server_contract_and_opens_gate() {
     VFDUAL_TEST_REQUIRE(
         verified.lease->claims.lease_id == "73f2fb1866c7ddcadb15474f89d4dcd0");
 
-    std::uint64_t monotonic_seconds = 100U;
+    std::uint64_t monotonic_milliseconds = 100'000U;
     vfdual::HostDataPlaneAuthorizationGate gate(
-        [&monotonic_seconds] { return monotonic_seconds; });
+        [&monotonic_milliseconds] { return monotonic_milliseconds; });
     VFDUAL_TEST_REQUIRE(gate.install_confirmed_peer_binding(expected_binding()));
     VFDUAL_TEST_REQUIRE(gate.submit_verified_ticket(
                             *verified.lease, 1'700'000'000U) ==
                         vfdual::UsageLeaseAdmission::accepted_current);
     VFDUAL_TEST_REQUIRE(gate.permits_data_plane());
-    monotonic_seconds += 5U;
+    monotonic_milliseconds += 5'000U;
     VFDUAL_TEST_REQUIRE(!gate.permits_data_plane());
 }
 
@@ -161,11 +161,47 @@ void rejects_empty_duplicate_and_invalid_context() {
         vfdual::HostUsageLeaseVerificationErrorCodeV1::source_invalid);
 }
 
+void confirmed_peer_adopts_only_the_server_signed_session() {
+    auto verifier = make_verifier();
+    auto peer_binding = expected_binding();
+    peer_binding.session_id.clear();
+    auto verified = verifier
+        ->verify_for_confirmed_peer_with_signed_session(
+            kValidToken, peer_binding, 1'700'000'000U);
+    VFDUAL_TEST_REQUIRE(verified.succeeded());
+    VFDUAL_TEST_REQUIRE(
+        verified.lease->claims.session_id == hex('3', 32U));
+
+    // The exact-session API remains strict, and the peer API cannot be used
+    // with a caller-selected session id or a changed channel binding.
+    VFDUAL_TEST_REQUIRE(!verifier->verify(
+                             kValidToken,
+                             peer_binding,
+                             1'700'000'000U)
+                             .succeeded());
+    peer_binding.session_id = hex('3', 32U);
+    VFDUAL_TEST_REQUIRE(
+        !verifier->verify_for_confirmed_peer_with_signed_session(
+                     kValidToken,
+                     peer_binding,
+                     1'700'000'000U)
+                     .succeeded());
+    peer_binding.session_id.clear();
+    peer_binding.channel_binding_sha256 = hex('7', 64U);
+    VFDUAL_TEST_REQUIRE(
+        !verifier->verify_for_confirmed_peer_with_signed_session(
+                     kValidToken,
+                     peer_binding,
+                     1'700'000'000U)
+                     .succeeded());
+}
+
 }  // namespace
 
 int main() {
     verifies_server_contract_and_opens_gate();
     rejects_tampering_wrong_binding_and_time();
     rejects_empty_duplicate_and_invalid_context();
+    confirmed_peer_adopts_only_the_server_signed_session();
     return EXIT_SUCCESS;
 }

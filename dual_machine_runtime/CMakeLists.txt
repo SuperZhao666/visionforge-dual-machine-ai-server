@@ -29,6 +29,23 @@ set(VFDUAL_VERSION_MINOR "${CMAKE_MATCH_2}")
 set(VFDUAL_VERSION_PATCH "${CMAKE_MATCH_3}")
 set(VFDUAL_WINDOWS_FILE_VERSION "${VFDUAL_RELEASE_VERSION}.0")
 
+set(VFDUAL_RELEASE_MANIFEST_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../release/release-manifest.json")
+if(NOT EXISTS "${VFDUAL_RELEASE_MANIFEST_FILE}")
+    message(FATAL_ERROR
+        "Dual-machine release manifest is missing: ${VFDUAL_RELEASE_MANIFEST_FILE}")
+endif()
+file(READ "${VFDUAL_RELEASE_MANIFEST_FILE}" VFDUAL_RELEASE_MANIFEST_JSON)
+string(JSON VFDUAL_CLIENT_PROTOCOL_VERSION ERROR_VARIABLE
+    VFDUAL_CLIENT_PROTOCOL_VERSION_ERROR
+    GET "${VFDUAL_RELEASE_MANIFEST_JSON}" client_protocol_version)
+if(VFDUAL_CLIENT_PROTOCOL_VERSION_ERROR OR
+        NOT VFDUAL_CLIENT_PROTOCOL_VERSION MATCHES
+            "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR
+        "Dual-machine client protocol version is invalid in ${VFDUAL_RELEASE_MANIFEST_FILE}")
+endif()
+
 project(VisionForgeDualMachine VERSION "${VFDUAL_RELEASE_VERSION}" LANGUAGES CXX)
 
 option(VFDUAL_ENABLE_PRIVATE_HOST_SYMBOLS
@@ -86,6 +103,8 @@ add_library(vfdual_protocol STATIC
     shared/src/authenticated_control_record_v1.cpp
     shared/src/authenticated_data_plane_v2.cpp
     shared/src/authenticated_mouse_button_v2.cpp
+    shared/src/first_pairing_commitment_v1.cpp
+    shared/src/first_pairing_bootstrap_payload_v1.cpp
     shared/src/h264_annex_b_access_units.cpp
     shared/src/host_data_plane_authorization_gate.cpp
     shared/src/image_preprocessor.cpp
@@ -103,6 +122,12 @@ else()
 endif()
 if(WIN32)
     target_link_libraries(vfdual_protocol PRIVATE bcrypt)
+else()
+    # Portable protocol tests exercise the exact first-pairing commitment
+    # vectors. Use the runner's maintained crypto provider instead of a local
+    # handwritten SHA-256 implementation; production Windows builds keep CNG.
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(vfdual_protocol PRIVATE OpenSSL::Crypto)
 endif()
 
 # Platform-neutral App/Host domain model used as an executable architecture
@@ -344,6 +369,7 @@ if(WIN32)
         NOMINMAX
     )
     target_link_libraries(vfdual_host_cng_device_identity PUBLIC
+        vfdual_protocol
         vfdual_authenticated_peer_handshake_v1
         vfdual_pair_generation_pop_v1
         advapi32
@@ -435,6 +461,63 @@ if(WIN32)
         vfdual_pair_generation_pop_v1
     )
 
+    add_library(vfdual_host_first_pairing_user_confirmation_signer_v1 STATIC
+        host/windows/security/src/host_first_pairing_user_confirmation_signer_v1.cpp
+    )
+    target_include_directories(
+        vfdual_host_first_pairing_user_confirmation_signer_v1 PUBLIC
+        host/windows/security/include
+    )
+    target_compile_definitions(
+        vfdual_host_first_pairing_user_confirmation_signer_v1 PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    target_link_libraries(
+        vfdual_host_first_pairing_user_confirmation_signer_v1 PUBLIC
+        vfdual_host_cng_device_identity
+        vfdual_protocol
+    )
+
+    add_library(vfdual_host_activation_confirmation_signer_v1 STATIC
+        host/windows/security/src/host_activation_confirmation_signer_v1.cpp
+    )
+    target_include_directories(
+        vfdual_host_activation_confirmation_signer_v1 PUBLIC
+        host/windows/security/include
+    )
+    target_compile_definitions(
+        vfdual_host_activation_confirmation_signer_v1 PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    target_link_libraries(
+        vfdual_host_activation_confirmation_signer_v1 PUBLIC
+        vfdual_host_cng_device_identity
+        vfdual_protocol
+        bcrypt
+    )
+
+    add_library(vfdual_host_usage_authorization_signer_v1 STATIC
+        host/windows/security/src/host_usage_authorization_signer_v1.cpp
+    )
+    target_include_directories(
+        vfdual_host_usage_authorization_signer_v1 PUBLIC
+        host/windows/security/include
+        shared/include
+    )
+    target_compile_definitions(
+        vfdual_host_usage_authorization_signer_v1 PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    target_link_libraries(
+        vfdual_host_usage_authorization_signer_v1 PUBLIC
+        vfdual_host_cng_device_identity
+        vfdual_protocol
+        bcrypt
+    )
+
     add_library(vfdual_host_device_identity_runtime STATIC
         host/windows/security/src/host_device_identity_runtime.cpp
     )
@@ -447,6 +530,9 @@ if(WIN32)
     target_link_libraries(vfdual_host_device_identity_runtime PUBLIC
         vfdual_host_peer_handshake_transcript_signer_v1
         vfdual_host_pair_generation_pop_signer_v1
+        vfdual_host_first_pairing_user_confirmation_signer_v1
+        vfdual_host_activation_confirmation_signer_v1
+        vfdual_host_usage_authorization_signer_v1
     )
 
     # Exact nine-record Host cryptographic owner. It consumes the private
@@ -480,6 +566,136 @@ if(WIN32)
         bcrypt
     )
 
+    # One-shot fresh-pair owner. It can sign only the typed local user
+    # confirmation and the exact server activation proof, and its provisional
+    # result never authorizes the data plane.
+    add_library(vfdual_host_first_pairing_coordinator_v1 STATIC
+        host/windows/security/src/host_first_pairing_coordinator_v1.cpp
+    )
+    target_include_directories(
+        vfdual_host_first_pairing_coordinator_v1 PUBLIC
+        host/windows/security/include
+        shared/include
+    )
+    target_compile_definitions(
+        vfdual_host_first_pairing_coordinator_v1 PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    if(MSVC)
+        target_compile_options(
+            vfdual_host_first_pairing_coordinator_v1 PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(
+        vfdual_host_first_pairing_coordinator_v1 PUBLIC
+        vfdual_protocol
+        vfdual_authenticated_peer_handshake_v1
+        vfdual_host_device_identity_runtime
+        bcrypt
+    )
+
+    add_library(vfdual_authenticated_control_tcp_transport_v1 STATIC
+        host/windows/src/authenticated_control_tcp_transport_v1.cpp
+    )
+    target_include_directories(
+        vfdual_authenticated_control_tcp_transport_v1 PUBLIC
+        host/windows/include
+        shared/include
+    )
+    if(MSVC)
+        target_compile_options(
+            vfdual_authenticated_control_tcp_transport_v1 PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(
+        vfdual_authenticated_control_tcp_transport_v1 PUBLIC
+        vfdual_protocol
+        ws2_32
+    )
+
+    add_library(vfdual_host_first_pairing_service_v1 STATIC
+        host/windows/security/src/host_first_pairing_service_v1.cpp
+    )
+    target_include_directories(
+        vfdual_host_first_pairing_service_v1 PUBLIC
+        host/windows/include
+        host/windows/security/include
+        shared/include
+    )
+    if(MSVC)
+        target_compile_options(vfdual_host_first_pairing_service_v1 PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(vfdual_host_first_pairing_service_v1 PUBLIC
+        vfdual_host_first_pairing_coordinator_v1
+        vfdual_authenticated_control_tcp_transport_v1
+    )
+
+    add_library(vfdual_host_pair_binding_store_v1 STATIC
+        host/windows/security/src/host_pair_binding_store_v1.cpp
+    )
+    target_include_directories(vfdual_host_pair_binding_store_v1 PUBLIC
+        host/windows/security/include
+        shared/include
+    )
+    target_compile_definitions(vfdual_host_pair_binding_store_v1 PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    if(MSVC)
+        target_compile_options(vfdual_host_pair_binding_store_v1 PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(vfdual_host_pair_binding_store_v1 PUBLIC
+        vfdual_host_authenticated_control_coordinator_v1
+        bcrypt
+    )
+
+    add_library(vfdual_host_authenticated_control_service_v1 STATIC
+        host/windows/security/src/host_authenticated_control_service_v1.cpp
+    )
+    target_include_directories(
+        vfdual_host_authenticated_control_service_v1 PUBLIC
+        host/windows/include
+        host/windows/security/include
+        shared/include
+    )
+    if(MSVC)
+        target_compile_options(
+            vfdual_host_authenticated_control_service_v1 PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(
+        vfdual_host_authenticated_control_service_v1 PUBLIC
+        vfdual_host_authenticated_control_coordinator_v1
+        vfdual_host_pair_binding_store_v1
+        vfdual_authenticated_control_tcp_transport_v1
+    )
+
+    add_library(vfdual_host_runtime_authorization_coordinator STATIC
+        host/windows/security/src/host_runtime_authorization_coordinator.cpp
+    )
+    target_include_directories(
+        vfdual_host_runtime_authorization_coordinator PUBLIC
+        host/windows/include
+        host/windows/security/include
+        shared/include
+    )
+    if(MSVC)
+        target_compile_options(
+            vfdual_host_runtime_authorization_coordinator PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(
+        vfdual_host_runtime_authorization_coordinator PUBLIC
+        vfdual_protocol
+        vfdual_authenticated_control_tcp_transport_v1
+        vfdual_host_device_identity_runtime
+        vfdual_host_usage_lease_verifier_v1
+        vfdual_host_usage_authorization_signer_v1
+    )
+
     set(VFDUAL_GENERATED_RESOURCE_DIRECTORY
         "${CMAKE_CURRENT_BINARY_DIR}/generated/host")
     file(MAKE_DIRECTORY "${VFDUAL_GENERATED_RESOURCE_DIRECTORY}")
@@ -508,6 +724,7 @@ if(WIN32)
         host/windows/src/streamer_desktop_main.cpp
         host/windows/src/host_crash_diagnostics.cpp
         host/windows/src/streamer_desktop_app.cpp
+        host/windows/src/host_ui_failure_copy.cpp
         host/windows/src/host_window_layout.cpp
         host/windows/src/host_display_catalog.cpp
         host/windows/src/host_cat6_protocol.cpp
@@ -523,6 +740,7 @@ if(WIN32)
         host/windows/src/isolated_dhcp_server.cpp
         host/windows/src/host_cat6_monitor.cpp
         host/windows/src/host_runtime_service.cpp
+        host/windows/src/host_runtime_diagnostics.cpp
         host/windows/src/host_runtime_authorization.cpp
         e2e_core/src/host/infrastructure/file_epoch_reservation_store.cpp
         host/windows/src/host_runtime_facade.cpp
@@ -530,6 +748,7 @@ if(WIN32)
         host/windows/src/host_ui_telemetry.cpp
         host/windows/src/host_outbound_rate_tracker.cpp
         host/windows/src/host_application.cpp
+        host/windows/src/host_authenticated_data_plane_session_v2.cpp
         host/windows/src/host_mouse_button_publisher.cpp
         host/windows/src/host_runtime_config.cpp
         host/windows/src/idr_request_listener.cpp
@@ -545,6 +764,21 @@ if(WIN32)
         host/windows/src/udp_socket.cpp
         host/windows/src/udp_video_publisher.cpp
     )
+    # Ninja's MSVC dependency scanner keys /showIncludes lines by a localized
+    # prefix.  A mismatched console encoding can leave that database empty and
+    # fail to rebuild one translation unit after HostRuntimeService changes
+    # size.  These explicit edges prevent a stale facade/coordinator layout
+    # from overlapping the start-intent gate in the final Host executable.
+    set(VFDUAL_HOST_RUNTIME_LAYOUT_HEADER
+        "${CMAKE_CURRENT_SOURCE_DIR}/host/windows/include/vfdual/host_runtime_service.hpp")
+    set_property(SOURCE
+        host/windows/src/host_runtime_service.cpp
+        host/windows/src/host_runtime_authorization.cpp
+        host/windows/src/host_runtime_facade.cpp
+        host/windows/src/streamer_desktop_app.cpp
+        host/windows/security/src/host_runtime_authorization_coordinator.cpp
+        APPEND PROPERTY OBJECT_DEPENDS
+            "${VFDUAL_HOST_RUNTIME_LAYOUT_HEADER}")
     set_target_properties(VisionForgeHost PROPERTIES OUTPUT_NAME VFHost)
     # CMake 3.22's MSVC link wrapper tries to run mt.exe after every
     # WIN32_EXECUTABLE link.  Because the Host supplies its own repository
@@ -585,7 +819,7 @@ if(WIN32)
         host/windows
         host/windows/include
         third_party/nv-codec-headers/include)
-    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_authenticated_peer_handshake_v1 vfdual_host_usage_lease_verifier_v1 vfdual_host_device_identity_runtime vfdual_host_authenticated_control_coordinator_v1 ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
+    target_link_libraries(VisionForgeHost PRIVATE vfdual_protocol vfdual_e2e_domain_core vfdual_authenticated_peer_handshake_v1 vfdual_host_usage_lease_verifier_v1 vfdual_host_device_identity_runtime vfdual_host_authenticated_control_coordinator_v1 vfdual_host_first_pairing_service_v1 vfdual_host_pair_binding_store_v1 vfdual_host_authenticated_control_service_v1 vfdual_host_runtime_authorization_coordinator ws2_32 iphlpapi uuid advapi32 bcrypt crypt32 ncrypt tbs d3d11 dxgi
         mfplat mf mfuuid wmcodecdspuuid ole32 oleaut32 user32 gdi32 shell32 dwmapi dbghelp)
     add_test(NAME vfdual_host_device_identity_runtime_probe
         COMMAND $<TARGET_FILE:VisionForgeHost> --host-device-identity-probe)
@@ -615,11 +849,13 @@ if(WIN32)
 
     add_executable(VisionForgeDatasetReplay
         host/windows/src/dataset_h264_replayer.cpp
+        host/windows/src/host_authenticated_data_plane_session_v2.cpp
         host/windows/src/udp_socket.cpp
         host/windows/src/udp_video_publisher.cpp
     )
     target_include_directories(VisionForgeDatasetReplay PRIVATE host/windows/include)
-    target_link_libraries(VisionForgeDatasetReplay PRIVATE vfdual_protocol ws2_32)
+    target_link_libraries(VisionForgeDatasetReplay PRIVATE vfdual_protocol
+        vfdual_authenticated_peer_handshake_v1 ws2_32)
 
     add_executable(VisionForgeDatasetEvaluate
         host/windows/src/dataset_detection_evaluator.cpp
@@ -886,6 +1122,20 @@ target_link_libraries(
 add_test(NAME vfdual_authenticated_control_bootstrap_payload_v1_tests
     COMMAND vfdual_authenticated_control_bootstrap_payload_v1_tests)
 
+add_executable(vfdual_first_pairing_commitment_v1_tests
+    tests/first_pairing_commitment_v1_tests.cpp)
+target_link_libraries(
+    vfdual_first_pairing_commitment_v1_tests PRIVATE vfdual_protocol)
+add_test(NAME vfdual_first_pairing_commitment_v1_tests
+    COMMAND vfdual_first_pairing_commitment_v1_tests)
+
+add_executable(vfdual_first_pairing_bootstrap_payload_v1_tests
+    tests/first_pairing_bootstrap_payload_v1_tests.cpp)
+target_link_libraries(
+    vfdual_first_pairing_bootstrap_payload_v1_tests PRIVATE vfdual_protocol)
+add_test(NAME vfdual_first_pairing_bootstrap_payload_v1_tests
+    COMMAND vfdual_first_pairing_bootstrap_payload_v1_tests)
+
 # Compile the implementation again for this executable so the private test
 # access macro is confined to both test translation units.  Never link this
 # target to the macro-free production library: doing so would violate ODR and
@@ -969,6 +1219,8 @@ if(WIN32)
         vfdual_host_peer_signer_v1_tests PRIVATE
         vfdual_host_peer_handshake_transcript_signer_v1
         vfdual_host_pair_generation_pop_signer_v1
+        vfdual_host_first_pairing_user_confirmation_signer_v1
+        vfdual_host_activation_confirmation_signer_v1
     )
     add_test(
         NAME vfdual_host_peer_handshake_transcript_signer_v1_tests
@@ -1006,6 +1258,56 @@ if(WIN32)
     add_test(
         NAME vfdual_host_authenticated_control_coordinator_v1_tests
         COMMAND vfdual_host_auth_control_v1_tests)
+
+    add_executable(vfdual_host_first_pair_v1_tests
+        host/windows/security/tests/host_first_pairing_coordinator_v1_tests.cpp
+    )
+    add_executable(
+        vfdual_host_first_pairing_coordinator_v1_tests ALIAS
+        vfdual_host_first_pair_v1_tests)
+    target_compile_definitions(
+        vfdual_host_first_pair_v1_tests PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    if(MSVC)
+        target_compile_options(vfdual_host_first_pair_v1_tests PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(vfdual_host_first_pair_v1_tests PRIVATE
+        vfdual_host_first_pairing_coordinator_v1
+        vfdual_host_cng_device_identity
+        vfdual_authenticated_peer_handshake_v1
+        bcrypt
+    )
+    add_test(
+        NAME vfdual_host_first_pairing_coordinator_v1_tests
+        COMMAND vfdual_host_first_pair_v1_tests)
+
+    add_executable(vfdual_host_pair_binding_store_v1_tests
+        host/windows/security/tests/host_pair_binding_store_v1_tests.cpp
+    )
+    if(MSVC)
+        target_compile_options(vfdual_host_pair_binding_store_v1_tests PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(vfdual_host_pair_binding_store_v1_tests PRIVATE
+        vfdual_host_pair_binding_store_v1
+    )
+    add_test(NAME vfdual_host_pair_binding_store_v1_tests
+        COMMAND vfdual_host_pair_binding_store_v1_tests)
+
+    add_executable(vfdual_host_pair_binding_import_v1
+        host/windows/security/tools/host_pair_binding_import_v1.cpp
+    )
+    if(MSVC)
+        target_compile_options(vfdual_host_pair_binding_import_v1 PRIVATE
+            /W4 /WX /permissive-)
+    endif()
+    target_link_libraries(vfdual_host_pair_binding_import_v1 PRIVATE
+        vfdual_host_pair_binding_store_v1
+        vfdual_host_device_identity_runtime
+    )
 
     # Compile a separate object with the fixture-only keyring API. The macro
     # must never reach the production library or the Host executable. This
@@ -1101,6 +1403,7 @@ if(WIN32)
     add_executable(vfdual_desktop_video_agent_tests
         host/windows/tests/desktop_video_agent_tests.cpp
         host/windows/src/desktop_video_agent.cpp
+        host/windows/src/host_authenticated_data_plane_session_v2.cpp
         host/windows/src/hybrid_gpu_video_pipeline.cpp
         host/windows/src/d3d11_frame_bridge.cpp
         host/windows/src/dxgi_desktop_capture.cpp
@@ -1112,7 +1415,10 @@ if(WIN32)
     )
     target_include_directories(vfdual_desktop_video_agent_tests PRIVATE
         host/windows/include shared/include third_party/nv-codec-headers/include)
-    target_link_libraries(vfdual_desktop_video_agent_tests PRIVATE vfdual_protocol ws2_32 d3d11 dxgi
+    target_compile_definitions(vfdual_desktop_video_agent_tests PRIVATE
+        VFDUAL_HOST_AUTHENTICATED_DATA_PLANE_TESTING=1)
+    target_link_libraries(vfdual_desktop_video_agent_tests PRIVATE vfdual_protocol
+        vfdual_authenticated_peer_handshake_v1 ws2_32 d3d11 dxgi
         mfplat mf mfuuid wmcodecdspuuid ole32 oleaut32 user32 dwmapi)
     add_test(NAME vfdual_desktop_video_agent_tests COMMAND vfdual_desktop_video_agent_tests)
     set_tests_properties(vfdual_desktop_video_agent_tests PROPERTIES SKIP_RETURN_CODE 77)
@@ -1227,6 +1533,30 @@ if(WIN32)
     add_test(NAME vfdual_host_authorization_lifecycle_contract_tests
         COMMAND vfdual_host_authorization_lifecycle_contract_tests)
 
+    add_executable(vfdual_host_start_intent_gate_tests
+        host/windows/security/tests/host_start_intent_gate_tests.cpp
+    )
+    target_include_directories(vfdual_host_start_intent_gate_tests PRIVATE
+        host/windows/include
+    )
+    add_test(NAME vfdual_host_start_intent_gate_tests
+        COMMAND vfdual_host_start_intent_gate_tests)
+
+    add_executable(vfdual_authenticated_control_tcp_transport_v1_tests
+        host/windows/tests/authenticated_control_tcp_transport_v1_tests.cpp
+    )
+    target_include_directories(
+        vfdual_authenticated_control_tcp_transport_v1_tests PRIVATE
+        host/windows/include
+        shared/include
+    )
+    target_link_libraries(
+        vfdual_authenticated_control_tcp_transport_v1_tests PRIVATE
+        vfdual_authenticated_control_tcp_transport_v1
+    )
+    add_test(NAME vfdual_authenticated_control_tcp_transport_v1_tests
+        COMMAND vfdual_authenticated_control_tcp_transport_v1_tests)
+
     add_executable(vfdual_host_window_layout_tests
         host/windows/tests/host_window_layout_tests.cpp
         host/windows/src/host_window_layout.cpp
@@ -1262,36 +1592,46 @@ if(WIN32)
     add_executable(vfdual_idr_request_listener_tests
         host/windows/tests/idr_request_listener_tests.cpp
         host/windows/src/idr_request_listener.cpp
+        host/windows/src/host_authenticated_data_plane_session_v2.cpp
         host/windows/src/udp_socket.cpp
     )
     target_include_directories(vfdual_idr_request_listener_tests PRIVATE
         host/windows/include
         shared/include)
-    target_link_libraries(vfdual_idr_request_listener_tests PRIVATE ws2_32)
+    target_compile_definitions(vfdual_idr_request_listener_tests PRIVATE
+        VFDUAL_HOST_AUTHENTICATED_DATA_PLANE_TESTING=1)
+    target_link_libraries(vfdual_idr_request_listener_tests PRIVATE vfdual_protocol
+        vfdual_authenticated_peer_handshake_v1 ws2_32)
     add_test(NAME vfdual_idr_request_listener_tests COMMAND vfdual_idr_request_listener_tests)
 
     add_executable(vfdual_host_mouse_button_publisher_tests
         host/windows/tests/host_mouse_button_publisher_tests.cpp
         host/windows/src/host_mouse_button_publisher.cpp
+        host/windows/src/host_authenticated_data_plane_session_v2.cpp
         host/windows/src/udp_socket.cpp
     )
     target_include_directories(vfdual_host_mouse_button_publisher_tests PRIVATE
         host/windows/include
         shared/include)
     target_compile_definitions(vfdual_host_mouse_button_publisher_tests PRIVATE
-        VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING=1)
+        VFDUAL_HOST_MOUSE_BUTTON_PUBLISHER_TESTING=1
+        VFDUAL_HOST_AUTHENTICATED_DATA_PLANE_TESTING=1)
     target_link_libraries(vfdual_host_mouse_button_publisher_tests PRIVATE
-        vfdual_protocol ws2_32 user32)
+        vfdual_protocol vfdual_authenticated_peer_handshake_v1 ws2_32 user32)
     add_test(NAME vfdual_host_mouse_button_publisher_tests
         COMMAND vfdual_host_mouse_button_publisher_tests)
 
     add_executable(vfdual_udp_video_publisher_contract_tests
         host/windows/tests/udp_video_publisher_contract_tests.cpp
         host/windows/src/udp_video_publisher.cpp
+        host/windows/src/host_authenticated_data_plane_session_v2.cpp
         host/windows/src/udp_socket.cpp
     )
     target_include_directories(vfdual_udp_video_publisher_contract_tests PRIVATE host/windows/include)
-    target_link_libraries(vfdual_udp_video_publisher_contract_tests PRIVATE vfdual_protocol ws2_32)
+    target_compile_definitions(vfdual_udp_video_publisher_contract_tests PRIVATE
+        VFDUAL_HOST_AUTHENTICATED_DATA_PLANE_TESTING=1)
+    target_link_libraries(vfdual_udp_video_publisher_contract_tests PRIVATE
+        vfdual_protocol vfdual_authenticated_peer_handshake_v1 ws2_32)
     add_test(NAME vfdual_udp_video_publisher_contract_tests
         COMMAND vfdual_udp_video_publisher_contract_tests)
 

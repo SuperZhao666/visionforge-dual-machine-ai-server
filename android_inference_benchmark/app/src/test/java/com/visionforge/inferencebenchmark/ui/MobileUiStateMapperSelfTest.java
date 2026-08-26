@@ -12,6 +12,7 @@ public final class MobileUiStateMapperSelfTest {
         verifiesModelAndAimTargetAreVisibleState();
         verifiesSelectedOutputReadinessFollowsRoute();
         verifiesEffectiveMotionLimitsAreVisibleState();
+        verifiesPipelineRunningRequiresLiveVideo();
     }
 
     private static void verifiesLatencyAndObservedRateRemainDistinct() {
@@ -156,6 +157,16 @@ public final class MobileUiStateMapperSelfTest {
 
         input.maximumStepCountsPerTick = 20.0f;
         require(!state.equals(MobileUiStateMapper.map(input)));
+    }
+
+    private static void verifiesPipelineRunningRequiresLiveVideo() {
+        MobileUiStateMapper.Input input = new MobileUiStateMapper.Input();
+        input.receiverRunning = true;
+        input.qnnReady = true;
+        require(!MobileUiStateMapper.map(input).pipelineRunning());
+
+        input.videoLinkLive = true;
+        require(MobileUiStateMapper.map(input).pipelineRunning());
     }
 
     private static void require(boolean condition) {

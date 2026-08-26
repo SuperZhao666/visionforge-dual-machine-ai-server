@@ -17,7 +17,8 @@ vfdual::HostFirewallRuleSnapshot snapshot_of(
     const vfdual::HostFirewallRulePolicy& policy) {
     vfdual::HostFirewallRuleSnapshot snapshot{};
     static_cast<vfdual::HostFirewallRulePolicy&>(snapshot) = policy;
-    snapshot.protocol_number = 17L;
+    snapshot.protocol_number = policy.protocol == vfdual::HostFirewallProtocol::tcp
+        ? 6L : 17L;
     snapshot.edge_traversal_options = 0L;
     snapshot.profiles = 0x7fffffffL;
     snapshot.all_profiles = true;
@@ -34,17 +35,18 @@ int main() {
     const std::wstring executable = L"C:\\Program Files\\VF\\VFHost.exe";
     const auto policy = vfdual::build_host_firewall_policy(executable);
 
-    CHECK(policy.size() == 5U);
+    CHECK(policy.size() == 7U);
     CHECK(policy[0].name == L"VF Host CAT6 DHCP Inbound");
     CHECK(policy[1].name == L"VF Host CAT6 Announcement Inbound");
     CHECK(policy[2].name == L"VF Host CAT6 IDR Inbound");
     CHECK(policy[3].name == L"VF Host Wireless LAN Announcement Inbound");
     CHECK(policy[4].name == L"VF Host Wireless LAN IDR Inbound");
+    CHECK(policy[5].name == L"VF Host CAT6 First Pairing Inbound");
+    CHECK(policy[6].name == L"VF Host Wireless LAN First Pairing Inbound");
     for (const auto& rule : policy) {
         CHECK(rule.application_path == executable);
         CHECK(rule.grouping == L"VF Host Transport");
         CHECK(rule.interface_name.empty());
-        CHECK(rule.protocol == HostFirewallProtocol::udp);
         CHECK(rule.inbound && rule.enabled && rule.allow);
         CHECK(!rule.edge_traversal);
     }
@@ -69,8 +71,28 @@ int main() {
     CHECK(policy[4].interface_types == L"LAN,Wireless");
     CHECK(policy[4].local_port == vfdual::kWiredIdrPort);
     CHECK(policy[4].remote_port == vfdual::kWiredVideoPort);
+    for (std::size_t index = 0U; index < 5U; ++index) {
+        CHECK(policy[index].protocol == HostFirewallProtocol::udp);
+    }
+    CHECK(policy[5].protocol == HostFirewallProtocol::tcp);
+    CHECK(policy[5].interface_types == L"LAN");
+    CHECK(policy[5].local_address == vfdual::kWiredHostIpv4);
+    CHECK(policy[5].remote_addresses == vfdual::kWiredMobileIpv4);
+    CHECK(policy[5].local_port == vfdual::kWiredAuthenticatedControlPort);
+    CHECK(policy[5].remote_port == 0U);
+    CHECK(policy[6].protocol == HostFirewallProtocol::tcp);
+    CHECK(policy[6].interface_types == L"LAN,Wireless");
+    CHECK(policy[6].local_address == "*");
+    CHECK(policy[6].remote_addresses == "LocalSubnet");
+    CHECK(policy[6].local_port == vfdual::kWiredAuthenticatedControlPort);
+    CHECK(policy[6].remote_port == 0U);
+    auto current = snapshot_of(policy[6]);
+    CHECK(vfdual::host_firewall_rule_is_current(policy[6], current));
+    current.protocol = HostFirewallProtocol::udp;
+    current.protocol_number = 17L;
+    CHECK(!vfdual::host_firewall_rule_is_current(policy[6], current));
 
-    auto current = snapshot_of(policy[0]);
+    current = snapshot_of(policy[0]);
     CHECK(vfdual::host_firewall_rule_is_current(policy[0], current));
     CHECK(vfdual::host_firewall_rule_set_is_current(policy[0], {current}));
     CHECK(!vfdual::host_firewall_rule_set_is_current(policy[0], {}));

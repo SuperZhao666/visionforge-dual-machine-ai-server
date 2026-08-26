@@ -72,7 +72,9 @@ constexpr std::string_view kEmptyPreviousTicketSha256{
         claims.phase != kUsageLeaseActivePhase ||
         claims.issued_at_epoch == 0U ||
         claims.issued_at_epoch > claims.not_before_epoch ||
-        claims.issued_at_epoch > trusted_now_epoch ||
+        (claims.issued_at_epoch > trusted_now_epoch &&
+            claims.issued_at_epoch - trusted_now_epoch >
+                kUsageLeaseServerAheadGraceSeconds) ||
         claims.expires_at_epoch <= claims.not_before_epoch) {
         return false;
     }
@@ -131,13 +133,17 @@ UsageLeaseAdmission UsageLeaseGate::submit_verified_ticket(
         if (claims.previous_ticket_sha256 != kEmptyPreviousTicketSha256) {
             return UsageLeaseAdmission::rejected_previous_ticket;
         }
-        if (trusted_now_epoch < claims.not_before_epoch ||
-            trusted_now_epoch >= claims.expires_at_epoch) {
+        if (trusted_now_epoch >= claims.expires_at_epoch ||
+            (trusted_now_epoch < claims.not_before_epoch &&
+                claims.not_before_epoch - trusted_now_epoch >
+                    kUsageLeaseServerAheadGraceSeconds)) {
             return UsageLeaseAdmission::rejected_time;
         }
         current_ = StoredLease{claims, ticket.ticket_sha256};
         state_ = UsageLeaseGateState::active;
-        return UsageLeaseAdmission::accepted_current;
+        return trusted_now_epoch < claims.not_before_epoch
+            ? UsageLeaseAdmission::staged_future
+            : UsageLeaseAdmission::accepted_current;
     }
 
     if (!current_.has_value()) {

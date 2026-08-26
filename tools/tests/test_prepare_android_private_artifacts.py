@@ -89,6 +89,30 @@ class PrivateArtifactStagingTests(unittest.TestCase):
                 lock, self.source, self.output, "release", verify_only=True
             )
 
+    def test_explicit_owner_private_staging_is_allowed_without_enabling_release(self) -> None:
+        lock = self.write_lock()
+        payload = json.loads(lock.read_text(encoding="utf-8"))
+        payload["policy"]["owner_private_release_plaintext_allowed"] = True
+        payload["policy"]["plaintext_allowed_variants"] = [
+            "debug",
+            "qa",
+            "owner",
+        ]
+        payload["artifacts"][0]["allowed_variants"] = [
+            "debug",
+            "qa",
+            "owner",
+        ]
+        lock.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = self.module.stage_artifacts(
+            lock, self.source, self.output, "owner", verify_only=True
+        )
+
+        self.assertEqual("owner", result["variant"])
+        self.assertTrue(result["owner_private_release_plaintext_allowed"])
+        self.assertFalse(result["release_plaintext_allowed"])
+
     def test_hash_mismatch_does_not_replace_previous_output(self) -> None:
         lock = self.write_lock()
         self.output.mkdir()

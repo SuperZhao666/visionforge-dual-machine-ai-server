@@ -158,7 +158,8 @@ bool DesktopVideoAgent::initialize(const DesktopVideoAgentConfig& config) noexce
     if (config.local_host.empty() || config.phone_host.empty() ||
         config.phone_port == 0U || !valid_video_stream_epoch(config.stream_epoch) ||
         config.encoder.width == 0U ||
-        config.encoder.height == 0U || !config.data_plane_permit) {
+        config.encoder.height == 0U || !config.data_plane_permit ||
+        !config.authenticated_data_plane_session) {
         return fail_initialization(
             DesktopVideoInitializationStage::validate_config, E_INVALIDARG);
     }
@@ -224,6 +225,8 @@ bool DesktopVideoAgent::initialize(const DesktopVideoAgentConfig& config) noexce
                     .phone_host = config.phone_host,
                     .phone_port = config.phone_port,
                     .data_plane_permit = config.data_plane_permit,
+                    .authenticated_data_plane_session =
+                        config.authenticated_data_plane_session,
                     .transfer_mode = same_adapter_async
                         ? HybridGpuTransferMode::same_adapter_shared_texture
                         : HybridGpuTransferMode::cpu_readback,
@@ -371,7 +374,8 @@ bool DesktopVideoAgent::initialize(const DesktopVideoAgentConfig& config) noexce
         !publisher_.connect_to(
             config.phone_host, config.phone_port,
             config.local_port, config.local_host,
-            config.data_plane_permit)) {
+            config.data_plane_permit,
+            config.authenticated_data_plane_session)) {
         encoder_diagnostics_.publisher_socket_error =
             publisher_.last_socket_error();
         return fail_initialization(

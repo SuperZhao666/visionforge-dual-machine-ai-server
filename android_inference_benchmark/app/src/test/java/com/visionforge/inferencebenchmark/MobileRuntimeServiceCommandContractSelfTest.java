@@ -21,6 +21,20 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "visionforge", "inferencebenchmark", "MobileRuntimeService.java");
         String source = new String(Files.readAllBytes(servicePath), StandardCharsets.UTF_8)
                 .replace("\r\n", "\n");
+        Path pairingRuntimePath = Paths.get(
+                projectDirectory, "src", "main", "java", "com",
+                "visionforge", "inferencebenchmark",
+                "MobilePairingRuntimeCoordinator.java");
+        String pairingSource = new String(
+                Files.readAllBytes(pairingRuntimePath),
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        Path presentationBalancePath = Paths.get(
+                projectDirectory, "src", "main", "java", "com",
+                "visionforge", "inferencebenchmark",
+                "DualMachinePresentationBalanceReconciler.java");
+        String presentationBalanceSource = new String(
+                Files.readAllBytes(presentationBalancePath),
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         Path gradlePath = Paths.get(projectDirectory, "build.gradle");
         String gradleSource = new String(
                 Files.readAllBytes(gradlePath), StandardCharsets.UTF_8);
@@ -115,6 +129,30 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "HOST_VIDEO_PREFLIGHT_TIMEOUT_MILLIS = 8_000L"));
         require(source.contains(
                 "HOST_VIDEO_REVALIDATION_TIMEOUT_MILLIS = 2_000L"));
+        require(source.contains(
+                "AUTHORIZATION_RENEWAL_WINDOW_SECONDS = 4L"));
+        require(source.contains(
+                "AUTHORIZATION_RENEWAL_WINDOW_GUARD_MILLIS =\n"
+                        + "            500L"));
+        require(source.contains(
+                "AUTHORIZATION_RENEWAL_MIN_INTERVAL_MILLIS =\n"
+                        + "            500L"));
+        require(source.contains(
+                "private final ScheduledExecutorService "
+                        + "authorizationHealthExecutor ="));
+        require(source.contains(
+                "authorizationHealthExecutor.scheduleWithFixedDelay(\n"
+                        + "                this::runPeriodicAuthorizationMaintenance"));
+        require(!source.contains(
+                "healthExecutor.scheduleWithFixedDelay(\n"
+                        + "                this::runPeriodicAuthorizationMaintenance"));
+        require(!source.contains("scheduleAtFixedRate("));
+        require(source.contains(
+                ".AUTHORIZATION_HEALTH_EXECUTOR_SHUTDOWN"));
+        require(source.contains(
+                "shutdownExecutor(\n"
+                        + "                        authorizationHealthExecutor, "
+                        + "\"authorization_health\")"));
         Path ethernetDiagnosticsPath = Paths.get(projectDirectory, "src", "main", "java",
                 "com", "visionforge", "inferencebenchmark",
                 "EthernetNetworkDiagnostics.java");
@@ -448,7 +486,8 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(makcuController.contains("context.unregisterReceiver(usbReceiver);"));
         require(makcuController.contains("writer.shutdownNow();"));
         require(makcuController.contains("reader.shutdownNow();"));
-        require(makcuController.contains("if (instance == this) instance = null;"));
+        require(!makcuController.contains(
+                "private static volatile MakcuSerialController instance;"));
         require(!source.contains("getBoolean(PREF_PIPELINE_DESIRED, false)"));
         require(source.contains("clearLegacyPipelineRestoreFlag();"));
         require(!source.contains("persistPipelineDesired("));
@@ -487,6 +526,29 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "private void runPeriodicAuthorizationMaintenance()");
         require(authorizationMaintenanceScheduler.contains(
                 "ensureAuthorizationStatusRetryScheduled();"));
+        String boundControlFailure = methodSlice(
+                pairingSource,
+                "private void handleAuthenticatedControlFailure(",
+                "AndroidBoundAuthenticatedControlCoordinatorV1 "
+                        + "authenticatedControl()");
+        int failureStageCapture = boundControlFailure.indexOf(
+                "String failureStage = coordinator == null");
+        int failedCoordinatorClose = boundControlFailure.indexOf(
+                "if (coordinator != null) coordinator.close();");
+        require(failureStageCapture >= 0);
+        require(failedCoordinatorClose > failureStageCapture);
+        require(boundControlFailure.contains(
+                "dual_machine_bound_peer_handshake_failed"));
+        require(pairingSource.contains("replayPolicy.begin("));
+        require(boundControlFailure.contains("replayPolicy.challengeIssued("));
+        require(boundControlFailure.contains("replayPolicy.failed("));
+        require(pairingSource.contains("replayPolicy.succeeded("));
+        int challengeReplayCapture = boundControlFailure.indexOf(
+                "replayPolicy.challengeIssued(");
+        require(challengeReplayCapture > failureStageCapture);
+        require(failedCoordinatorClose > challengeReplayCapture);
+        require(boundControlFailure.contains(
+                "\" handshake_stage=\" + failureStage"));
         require(source.contains(
                 "private void ensureAuthorizationStatusRetryScheduled()"));
         require(source.contains(
@@ -625,8 +687,17 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(!hostProgressMethod.contains(".qnnExecutionCount"));
         require(androidProgressMethod.contains(
                 "QnnHtpBridge.getNativeH264DecoderReport()"));
-        require(androidProgressMethod.contains(".qnnExecutionCount"));
+        require(androidProgressMethod.contains(".renderedFrameCount"));
+        require(!androidProgressMethod.contains(".qnnExecutionCount"));
         require(!androidProgressMethod.contains(".reassembledAccessUnits"));
+        require(activity.contains(
+                "input.accessUnitFps = rates.reassembledFps;"));
+        require(activity.contains(
+                "input.decodedFrameFps = rates.decodedFrameFps;"));
+        require(!activity.contains(
+                "input.accessUnitFps = rates.freshContentFps;"));
+        require(!activity.contains(
+                "input.decodedFrameFps = rates.freshDecodedFrameFps;"));
         String noProgressDetailMethod = methodSlice(
                 source,
                 "private String noProgressRenewalDetail(",
@@ -642,6 +713,14 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "final class RenewalProgressObservation"));
         require(authorizationRuntime.contains(
                 "latestRenewalProgressObservation("));
+        require(formalCoordinator.contains("final class RenewalTiming"));
+        require(authorizationRuntime.contains("latestRenewalTiming("));
+        require(source.contains("\"dual_machine_formal_renewal_timing\""));
+        require(source.contains("proof_ms="));
+        require(source.contains("sidecar_ms="));
+        require(source.contains("install_ms="));
+        require(source.contains("total_ms="));
+        require(source.contains("terminal_phase="));
         String startFormalUsageMethod = methodSlice(
                 authorizationRuntime,
                 "startFormalUsage()",
@@ -769,6 +848,16 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(authorizationRuntime.contains(
                 "beginFormalUsageLifecycleStopRetryIfCurrent("));
         require(authorizationRuntime.contains(
+                "beginFormalUsageLifecycleStopRetryWithoutAuthenticatedHost("));
+        String stopRetryPolicyUpdateMethod = methodSlice(
+                authorizationRuntime,
+                "private void updateFormalStopRetryPolicy(",
+                "private long monotonicNowNanos()");
+        require(stopRetryPolicyUpdateMethod.contains(
+                "outcome.definitelyNotStarted"));
+        require(!stopRetryPolicyUpdateMethod.contains(
+                "hasPendingStartCancellation()"));
+        require(authorizationRuntime.contains(
                 "if (!isCurrentReceipt(receipt)"));
         String authorizationScheduleMethod = methodSlice(
                 source,
@@ -872,6 +961,31 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "DualMachineFormalUsageStateMachine.State.STOPPING"));
         require(potentiallyBilledFailureMethod.contains(
                 "requestFormalUsageStop(reason);"));
+        String authorizationMaintenanceMethod = methodSlice(
+                source,
+                "private void scheduleAuthorizationMaintenance()",
+                "private void runPeriodicAuthorizationMaintenance()");
+        String unauthenticatedHostBranch = methodSlice(
+                authorizationMaintenanceMethod,
+                "if (!currentRuntime.hasAuthenticatedHost())",
+                "generationReceipt = currentRuntime");
+        require(unauthenticatedHostBranch.contains(
+                "unavailableHostSnapshot"));
+        require(unauthenticatedHostBranch.contains(
+                ".canFormalStop()"));
+        require(unauthenticatedHostBranch.contains(
+                ".STOPPING"));
+        require(unauthenticatedHostBranch.contains(
+                "retryFormalUsageStopWithoutAuthenticatedHostIfDue("));
+        int unauthenticatedHostStopIndex = unauthenticatedHostBranch.indexOf(
+                "requestFormalUsageStop(");
+        int unauthenticatedHostReasonIndex = unauthenticatedHostBranch.indexOf(
+                "\"authenticated_host_unavailable\"");
+        require(unauthenticatedHostStopIndex >= 0);
+        require(unauthenticatedHostReasonIndex > unauthenticatedHostStopIndex);
+        require(unauthenticatedHostStopIndex
+                < unauthenticatedHostBranch.indexOf(
+                "publishMappedAuthorizationState(\"\")"));
         String maintainAuthorizationMethod = methodSlice(
                 source,
                 "private void maintainAuthorizationRuntime(",
@@ -961,12 +1075,8 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "log_policy=state_change_or_heartbeat"));
         require(automaticStartMethod.contains(
                 "automaticHostWaitLogPolicy.clearFailure()"));
-        String recordHostVideoObservationMethod = methodSlice(
-                source,
-                "private void recordHostVideoObservation(",
-                "private void recordLatestHostFrameFromNative()");
-        require(recordHostVideoObservationMethod.contains(
-                "automaticHostWaitLogPolicy.clearFailure();"));
+        require(countOccurrences(
+                source, "recordHostVideoObservation(") == 0);
         require(automaticStartMethod.contains("billing_started=false"));
         require(automaticStartMethod.contains(
                 "runtime.retryPendingFormalStart(generationReceipt);"));
@@ -1035,6 +1145,17 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "automaticUsageGuard.shouldStopAfterNoProgress("));
         require(inferenceStallMethod.contains(
                 "progress_was_previously_renewed=true"));
+        String maintainFormalRuntimeMethod = methodSlice(
+                source,
+                "private void maintainAuthorizationRuntime(",
+                "private String noProgressRenewalDetail(");
+        int renewalSuccessBranchIndex = maintainFormalRuntimeMethod.indexOf(
+                "if (outcome == DualMachineFormalUsageCoordinator\n"
+                        + "                            .RenewalOutcome.NO_PROGRESS)");
+        int renewalWindowRescheduleIndex = maintainFormalRuntimeMethod.indexOf(
+                "if (!deferRenewalUntilWindow(runtime, now))");
+        require(renewalSuccessBranchIndex >= 0);
+        require(renewalWindowRescheduleIndex > renewalSuccessBranchIndex);
         String recoverPendingStartMethod = methodSlice(
                 source,
                 "private boolean recoverPendingFormalStart(",
@@ -1098,9 +1219,10 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "pipelinePreparationAttempted = true;");
         int channelBindingIndex = formalBoundary.indexOf(
                 "formalSessionChannelBinding = channelBinding;");
-        require(hostVideoProbeIndex >= 0);
-        require(pipelineStartingStatusIndex > hostVideoProbeIndex);
-        require(qnnPrepareIndex > hostVideoProbeIndex);
+        // Host video is intentionally impossible before the Host has
+        // independently verified and committed the signed usage lease.
+        require(hostVideoProbeIndex < 0);
+        require(pipelineStartingStatusIndex >= 0);
         require(preparationAttemptedIndex > pipelineStartingStatusIndex);
         require(qnnPrepareIndex > preparationAttemptedIndex);
         require(channelBindingIndex > qnnPrepareIndex);
@@ -1118,7 +1240,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "\n        stopPreparedPipeline();"));
         require(countOccurrences(
                 formalBoundary,
-                "hostVideoPresenceProbe.awaitValidHostVideo(") >= 1);
+                "hostVideoPresenceProbe.awaitValidHostVideo(") == 0);
         require(formalBoundary.contains(
                 "verifyFreshHostVideoBeforePotentialDebit("));
         require(formalBoundary.contains(
@@ -1146,15 +1268,25 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "pipeline.openPreparedDataPlane(");
         require(runtimeLockAcquireIndex >= 0);
         require(preparedDataPlaneOpenIndex > runtimeLockAcquireIndex);
+        require(formalOpenDataPlaneMethod.contains(
+                "nextFormalRenewalAttemptElapsedMillis.set(0L);"));
+        require(!formalOpenDataPlaneMethod.contains(
+                "+ AUTHORIZATION_RENEWAL_MIN_INTERVAL_MILLIS"));
         int automaticSessionOpenIndex = formalOpenDataPlaneMethod.indexOf(
                 "markAutomaticFormalSessionOpened(");
         require(automaticSessionOpenIndex >= 0);
-        require(formalOpenDataPlaneMethod.indexOf(
-                "MobileTransportEndpoint endpoint")
-                > automaticSessionOpenIndex);
+        int endpointValidationIndex = formalOpenDataPlaneMethod.indexOf(
+                "MobileTransportEndpoint endpoint");
+        int hostLeaseCommitIndex = formalOpenDataPlaneMethod.indexOf(
+                "control.installVerifiedUsageLease(permit);");
+        require(endpointValidationIndex >= 0);
+        require(hostLeaseCommitIndex > endpointValidationIndex);
+        require(automaticSessionOpenIndex > hostLeaseCommitIndex);
         require(formalOpenDataPlaneMethod.indexOf(
                 "installActiveRuntimePermitLocked(")
                 > automaticSessionOpenIndex);
+        require(formalOpenDataPlaneMethod.contains(
+                "dual_machine_host_usage_lease_committed"));
         require(preparedDataPlaneOpenIndex > automaticSessionOpenIndex);
         require(formalOpenDataPlaneMethod.indexOf(
                 "endpoint, activeModel", preparedDataPlaneOpenIndex)
@@ -1300,7 +1432,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         String closedPersistenceMethod = methodSlice(
                 source,
                 "private void persistClosedAutomaticUsageGeneration(",
-                "private void recordHostVideoObservation(");
+                "private void recordLatestHostFrameFromNative()");
         require(closedPersistenceMethod.contains(
                 "persistAutomaticUsageBlock(true);"));
         String checkpointMethod = methodSlice(
@@ -1345,16 +1477,23 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "private void attemptAutomaticFormalUsageStart(");
         int hostAbsenceIndex = rearmMethod.indexOf(
                 "automaticUsageGuard.recordHostAbsent(");
-        int newStreamIndex = rearmMethod.indexOf(".NEW_STREAM_REARMED");
+        int authenticatedClaimIndex = rearmMethod.indexOf(
+                "coordinator.claimHostStartIntent()");
+        int authenticatedRearmIndex = rearmMethod.indexOf(
+                ".NEW_START_INTENT_REARMED");
         int clearBlockedIndex = rearmMethod.indexOf(
                 "clearPersistedAutomaticUsageBlock();");
-        require(rearmMethod.contains(
+        require(!rearmMethod.contains(
                 "hostVideoPresenceProbe.pollValidHostVideo("));
         require(rearmMethod.contains("AUTOMATIC_REARM_HOST_ABSENCE_MILLIS"));
         require(hostAbsenceIndex >= 0);
-        require(newStreamIndex > hostAbsenceIndex);
-        require(clearBlockedIndex > newStreamIndex);
-        require(source.contains(".RESTART_CANDIDATE_RECORDED"));
+        require(authenticatedClaimIndex > hostAbsenceIndex);
+        require(authenticatedRearmIndex > authenticatedClaimIndex);
+        require(clearBlockedIndex > authenticatedRearmIndex);
+        require(rearmMethod.contains("one_shot_claim=true"));
+        require(rearmMethod.contains("prelease_video=false"));
+        require(rearmMethod.contains(
+                "catch (IOException | GeneralSecurityException failure)"));
         String quietHostVideoProbeMethod = methodSlice(
                 hostVideoPresenceProbeSource,
                 "HostVideoObservation pollValidHostVideo(",
@@ -1364,11 +1503,6 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 .matcher(quietHostVideoProbeMethod).find());
         require(!quietHostVideoProbeMethod.contains(
                 "catch (HostVideoProbeCancelledException"));
-        require(rearmMethod.contains(
-                "HostVideoPresenceProbe.HostVideoProbeCancelledException"));
-        require(rearmMethod.indexOf(
-                "HostVideoPresenceProbe.HostVideoProbeCancelledException")
-                < rearmMethod.indexOf("catch (IOException failure)"));
         String billableHostVideoProbeMethod = methodSlice(
                 hostVideoPresenceProbeSource,
                 "HostVideoObservation awaitValidHostVideo(",
@@ -1458,10 +1592,15 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 source,
                 "public void openDataPlane(",
                 "public void closeDataPlane()");
-        require(openDataPlaneMethod.indexOf(
-                "markAutomaticFormalSessionOpened(")
-                < openDataPlaneMethod.indexOf(
-                "if (!isWirelessForegroundDisplayReady(endpoint))"));
+        int openDisplayGuardIndex = openDataPlaneMethod.indexOf(
+                "if (!isWirelessForegroundDisplayReady(endpoint))");
+        int openHostLeaseCommitIndex = openDataPlaneMethod.indexOf(
+                "control.installVerifiedUsageLease(permit);");
+        int openReservationIndex = openDataPlaneMethod.indexOf(
+                "markAutomaticFormalSessionOpened(");
+        require(openDisplayGuardIndex >= 0);
+        require(openHostLeaseCommitIndex > openDisplayGuardIndex);
+        require(openReservationIndex > openHostLeaseCommitIndex);
         String foregroundAutomaticStartMethod = methodSlice(
                 source,
                 "private void attemptAutomaticFormalUsageStart(",
@@ -1577,27 +1716,39 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "private void closeControlAndAuthorizationResources(",
                 "private void closeTransportResources(");
         require(countOccurrences(
-                closeAuthorizationResourcesMethod, "cleanup.run(") == 7);
+                closeAuthorizationResourcesMethod, "cleanup.run(") == 9);
         require(closeAuthorizationResourcesMethod.contains(
                 "requestFormalUsageStop(\"service_destroyed\")"));
         require(closeAuthorizationResourcesMethod.contains(
                 "authorizationExecutor, \"authorization\""));
+        require(closeAuthorizationResourcesMethod.contains(
+                "pairingRuntime.executor(), \"first_pairing\""));
         require(closeAuthorizationResourcesMethod.contains(
                 "startCancellationExecutor, \"start_cancellation\""));
         require(closeAuthorizationResourcesMethod.contains(
                 "this::closePublishedAuthorizationRuntime"));
         int destroyFormalStopIndex = closeAuthorizationResourcesMethod.indexOf(
                 ".FORMAL_USAGE_STOP");
+        int destroyAuthorizationHealthShutdownIndex =
+                closeAuthorizationResourcesMethod.indexOf(
+                        ".AUTHORIZATION_HEALTH_EXECUTOR_SHUTDOWN");
         int destroyAuthorizationShutdownIndex = closeAuthorizationResourcesMethod.indexOf(
                 ".AUTHORIZATION_EXECUTOR_SHUTDOWN");
+        int destroyFirstPairingShutdownIndex =
+                closeAuthorizationResourcesMethod.indexOf(
+                        ".FIRST_PAIRING_EXECUTOR_SHUTDOWN");
         int destroyCancellationShutdownIndex = closeAuthorizationResourcesMethod.indexOf(
                 ".START_CANCELLATION_EXECUTOR_SHUTDOWN");
         int destroyAuthorizationCloseIndex = closeAuthorizationResourcesMethod.indexOf(
                 ".AUTHORIZATION_RUNTIME_CLOSE");
         require(destroyFormalStopIndex >= 0);
-        require(destroyAuthorizationShutdownIndex > destroyFormalStopIndex);
-        require(destroyCancellationShutdownIndex
+        require(destroyAuthorizationHealthShutdownIndex > destroyFormalStopIndex);
+        require(destroyAuthorizationShutdownIndex
+                > destroyAuthorizationHealthShutdownIndex);
+        require(destroyFirstPairingShutdownIndex
                 > destroyAuthorizationShutdownIndex);
+        require(destroyCancellationShutdownIndex
+                > destroyFirstPairingShutdownIndex);
         require(destroyAuthorizationCloseIndex
                 > destroyCancellationShutdownIndex);
         String closeTransportResourcesMethod = methodSlice(
@@ -1714,7 +1865,12 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "MobileServiceDestroyCleanup.rethrowFailure(primaryFailure);"));
         require(source.contains(
                 "current.balanceKnown,\n"
+                        + "                        current.displayBalanceKnown,\n"
+                        + "                        current.balanceStale,\n"
+                        + "                        current.balanceSynchronizedAtEpochSeconds,\n"
                         + "                        current.permanent,"));
+        require(presentationBalanceSource.contains(
+                "formal_authority_restored=false"));
         String queueStopMethod = methodSlice(
                 source,
                 "private void queueClaimedFormalUsageStop(",
@@ -1854,29 +2010,21 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         String formalTransportSelection = methodSlice(
                 source,
                 "private void selectPreferredTransportForFormalStart()",
-                "private HostVideoPresenceProbe.HostVideoObservation");
+                "private static void requireFormalStartNotCancelled(");
         require(!formalTransportSelection.contains(
                 "resetSelectedWirelessHostDiscovery"));
         require(formalTransportSelection.contains(
                 "discovered_host_preserved=true"));
-        String formalHostVideoPreflight = methodSlice(
-                source,
-                "private HostVideoPresenceProbe.HostVideoObservation",
-                "private void resetStaleWirelessHostDiscovery(");
-        require(formalHostVideoPreflight.contains(
-                "HostVideoNotObservedException"));
-        require(formalHostVideoPreflight.contains(
-                "resetStaleWirelessHostDiscovery(endpoint);"));
-        String staleWirelessReset = methodSlice(
-                source,
-                "private void resetStaleWirelessHostDiscovery(",
-                "private void releaseFormalTransportPinAfterSession(");
-        require(staleWirelessReset.contains(
-                "resetWirelessHostDiscoveryIfSelectedRoute(failedEndpoint)"));
-        require(staleWirelessReset.contains(
-                "formal_preflight_host_not_observed"));
         require(countOccurrences(
-                formalBoundary, "awaitFormalPreparationHostVideo(") == 2);
+                source, "awaitFormalPreparationHostVideo(") == 0);
+        require(countOccurrences(
+                source, "resetStaleWirelessHostDiscovery(") == 0);
+        require(countOccurrences(
+                source, "defaultSkeletonDirectory(") == 0);
+        require(countOccurrences(
+                formalBoundary, "awaitFormalPreparationHostVideo(") == 0);
+        require(formalBoundary.contains(
+                "host_video_wait_deferred_until_lease_commit=true"));
         require(formalBoundary.contains(
                 "transportCatalog.pinForFormalSession("));
         require(formalBoundary.contains(
@@ -1902,7 +2050,7 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(strings.contains(
                 "<string name=\"runtime_log_export_filename\">"
                         + "VFMobile-runtime-log.jsonl</string>"));
-        require(strings.contains("导入 VF 轨迹画像 JSON"));
+        require(!strings.contains("导入 VF 轨迹画像 JSON"));
         require(strings.contains("请允许 VF Mobile 不受电池优化限制"));
         require(strings.contains("请在应用信息中允许 VF Mobile 通知"));
         require(bluetoothHidStrings.contains("“VF 无线鼠标”"));
@@ -2316,6 +2464,16 @@ final class MobileRuntimeServiceCommandContractSelfTest {
         require(linkStatusSection.contains("state.phoneProcessingP50"));
         require(linkStatusSection.contains("state.qnnP50"));
         require(linkStatusSection.contains("state.qnnFailures"));
+        require(linkStatusSection.contains(
+                "boolean pipelineRunning = state.pipelineRunning();"));
+        require(linkStatusSection.contains(
+                "pipelineRunning ? R.string.state_running : R.string.state_waiting"));
+        require(linkStatusSection.contains(
+                "pipelineRunning ? state.phoneProcessingP50 : unavailableMetric"));
+        require(linkStatusSection.contains(
+                "pipelineRunning ? state.qnnP50 : unavailableMetric"));
+        require(linkStatusSection.contains(
+                "pipelineRunning ? state.qnnFailures : unavailableMetric"));
         require(controlScreen.contains("root.setContentDescription(UiAutomationIds.SCROLL_CONTROL);"));
         require(!controlScreen.contains("createSafetyCard()"));
         require(!controlScreen.contains("UiAutomationIds.CONTROL_OUTPUT"));

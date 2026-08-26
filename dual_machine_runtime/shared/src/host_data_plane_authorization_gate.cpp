@@ -17,11 +17,11 @@ namespace {
 }  // namespace
 
 HostDataPlaneAuthorizationGate::HostDataPlaneAuthorizationGate()
-    : HostDataPlaneAuthorizationGate(&default_monotonic_seconds) {}
+    : HostDataPlaneAuthorizationGate(&default_monotonic_milliseconds) {}
 
 HostDataPlaneAuthorizationGate::HostDataPlaneAuthorizationGate(
-    MonotonicSecondsSource monotonic_seconds)
-    : monotonic_seconds_(std::move(monotonic_seconds)) {}
+    MonotonicMillisecondsSource monotonic_milliseconds)
+    : monotonic_milliseconds_(std::move(monotonic_milliseconds)) {}
 
 bool HostDataPlaneAuthorizationGate::install_confirmed_peer_binding(
     UsageLeaseBinding binding) {
@@ -60,12 +60,13 @@ UsageLeaseAdmission HostDataPlaneAuthorizationGate::submit_verified_ticket(
     }
 
     if (trusted_time_anchored_) {
-        if (monotonic_now < anchor_.monotonic_seconds) {
+        if (monotonic_now < anchor_.monotonic_milliseconds) {
             monotonic_clock_rollback_ = true;
             revoke_locked();
             return UsageLeaseAdmission::rejected_gate_closed;
         }
-        const std::uint64_t elapsed = monotonic_now - anchor_.monotonic_seconds;
+        const std::uint64_t elapsed =
+            (monotonic_now - anchor_.monotonic_milliseconds) / 1'000U;
         if (elapsed > (std::numeric_limits<std::uint64_t>::max)() -
                 anchor_.trusted_epoch) {
             revoke_locked();
@@ -119,18 +120,18 @@ void HostDataPlaneAuthorizationGate::reset() noexcept {
     monotonic_clock_rollback_ = false;
 }
 
-std::uint64_t HostDataPlaneAuthorizationGate::default_monotonic_seconds()
+std::uint64_t HostDataPlaneAuthorizationGate::default_monotonic_milliseconds()
     noexcept {
     return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 bool HostDataPlaneAuthorizationGate::read_monotonic_locked(
     std::uint64_t& destination) noexcept {
-    if (!monotonic_seconds_) return false;
+    if (!monotonic_milliseconds_) return false;
     try {
-        destination = monotonic_seconds_();
+        destination = monotonic_milliseconds_();
         return true;
     } catch (...) {
         destination = 0U;
@@ -147,12 +148,13 @@ bool HostDataPlaneAuthorizationGate::derive_trusted_now_locked(
         revoke_locked();
         return false;
     }
-    if (monotonic_now < anchor_.monotonic_seconds) {
+    if (monotonic_now < anchor_.monotonic_milliseconds) {
         monotonic_clock_rollback_ = true;
         revoke_locked();
         return false;
     }
-    const std::uint64_t elapsed = monotonic_now - anchor_.monotonic_seconds;
+    const std::uint64_t elapsed =
+        (monotonic_now - anchor_.monotonic_milliseconds) / 1'000U;
     if (elapsed > (std::numeric_limits<std::uint64_t>::max)() -
             anchor_.trusted_epoch) {
         revoke_locked();

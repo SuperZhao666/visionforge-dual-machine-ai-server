@@ -125,18 +125,6 @@ final class QnnHtpBridge {
     /** Closes native delivery after a transport trip while preserving the active video generation. */
     static native void failClosedNativeMakcuOutput();
 
-    /** Stable JNI callback wrapper; the native bridge binds ControlOutputMoveDispatcher. */
-    static boolean offerNativeMove(int deltaX, int deltaY, long ticket) {
-        return offerNativeMove(
-                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
-    }
-
-    static boolean offerNativeMove(
-            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
-        return ControlOutputMoveDispatcher.offerNativeMove(
-                deltaX, deltaY, ticket, remainingBudgetUs);
-    }
-
     /** Firmware echo + prompt result for the exact native move ticket. */
     static native void reportNativeMakcuMoveResult(
             long ticket, boolean deviceAcknowledged, long acknowledgementMicros);

@@ -14,6 +14,8 @@ inline constexpr std::string_view kUsageStartChallengeDomain{
     "visionforge-dual-machine-usage-start-challenge-v1"};
 inline constexpr std::string_view kUsageStartDomain{
     "visionforge-dual-machine-usage-start-v1"};
+inline constexpr std::string_view kUsageStartCancelDomain{
+    "visionforge-dual-machine-usage-start-cancel-v1"};
 inline constexpr std::string_view kUsageHeartbeatDomain{
     "visionforge-dual-machine-usage-heartbeat-v1"};
 inline constexpr std::string_view kUsageStopDomain{
@@ -69,6 +71,17 @@ struct UsageStartProof final {
     std::string start_challenge_token_sha256;
 };
 
+struct UsageStartCancelProof final {
+    std::string channel_binding_sha256;
+    std::string entitlement_id;
+    std::string pair_id;
+    std::uint32_t protocol_version{kUsageAuthorizationProtocolVersion};
+    std::string request_id;
+    std::string request_nonce;
+    std::uint64_t revocation_version{};
+    std::string start_request_id;
+};
+
 struct UsageHeartbeatProof final {
     std::uint64_t android_frames_total{};
     std::string channel_binding_sha256;
@@ -117,6 +130,8 @@ build_usage_start_challenge_payload(
     const UsageStartChallengeProof& proof);
 [[nodiscard]] std::optional<std::string> build_usage_start_payload(
     const UsageStartProof& proof);
+[[nodiscard]] std::optional<std::string> build_usage_start_cancel_payload(
+    const UsageStartCancelProof& proof);
 [[nodiscard]] std::optional<std::string> build_usage_heartbeat_payload(
     const UsageHeartbeatProof& proof);
 [[nodiscard]] std::optional<std::string> build_usage_stop_payload(

@@ -3,6 +3,7 @@
 #include "vfdual/host_direct_link_provisioner.hpp"
 #include "vfdual/host_runtime_service.hpp"
 #include "vfdual/host_release_version.hpp"
+#include "vfdual/host_ui_failure_copy.hpp"
 #include "vfdual/host_window_layout.hpp"
 #include "vfdual/h264_encoder_config.hpp"
 #include "vfdual/model_contract.hpp"
@@ -52,6 +53,7 @@ constexpr UINT kMobileRefreshCompletedMessage = WM_APP + 2;
 constexpr UINT kAcceptanceAutostartMessage = WM_APP + 3;
 constexpr auto kCat6EndpointDiscoveryTimeout = std::chrono::seconds(45);
 constexpr auto kWirelessLanDiscoveryTimeout = std::chrono::seconds(8);
+constexpr std::size_t kRecentEventLimit = 8U;
 
 void schedule_autostart_retry(HWND window, bool acceptance_autostart) {
     // A failed or not-yet-possible acceptance start retries on its own
@@ -194,56 +196,22 @@ COLORREF host_ui_phase_color(HostUiPhase phase) noexcept {
     return kStateIdle;
 }
 
-std::wstring widen_ascii(std::string_view value) {
+std::wstring compact_recent_event(std::wstring_view value) {
     std::wstring result;
     result.reserve(value.size());
-    for (const unsigned char character : value) {
-        result.push_back(character < 0x80U ? static_cast<wchar_t>(character) : L'?');
+    bool previous_was_space = false;
+    for (const wchar_t character : value) {
+        const bool is_space = character == L' ' || character == L'\t' ||
+            character == L'\r' || character == L'\n';
+        if (is_space) {
+            if (!result.empty() && !previous_was_space) result.push_back(L' ');
+            previous_was_space = true;
+        } else {
+            result.push_back(character);
+            previous_was_space = false;
+        }
     }
     return result;
-}
-
-std::wstring friendly_host_failure(std::string_view error) {
-    if (error.find("ambiguous_same_name_rule") != std::string_view::npos) {
-        return L"\u68c0\u6d4b\u5230\u51b2\u7a81\u7684\u65e7\u7248 Windows \u9632\u706b\u5899\u89c4\u5219";
-    }
-    if (error.find("wireless_firewall_status=failed") !=
-            std::string_view::npos ||
-        error.find("failure_stage=firewall") != std::string_view::npos ||
-        error.find("CAT6 firewall provisioning failed") !=
-            std::string_view::npos) {
-        return L"Windows \u9632\u706b\u5899\u6700\u5c0f\u653e\u884c\u89c4\u5219\u914d\u7f6e\u5931\u8d25";
-    }
-    if (error.find("Automatic wireless-LAN UDP fallback was unavailable") !=
-            std::string_view::npos ||
-        error.find("wireless_discovery={") != std::string_view::npos) {
-        return L"\u65e0\u7ebf\u5c40\u57df\u7f51\u672a\u53d1\u73b0 VF Mobile";
-    }
-    if (error.find("Host DHCP received zero packets") != std::string_view::npos ||
-        error.find("not exposing an app-usable IPv4") != std::string_view::npos) {
-        return L"\u624b\u673a\u6709\u7ebf\u7f51\u672a\u83b7\u5f97 10.57.23.2/24 IPv4";
-    }
-    if (error.find("failure_stage=mobile_ready_timeout") != std::string_view::npos ||
-        error.find("heartbeat") != std::string_view::npos) {
-        return L"\u672a\u6536\u5230\u624b\u673a CAT6 \u5fc3\u8df3";
-    }
-    if (error.find("failure_stage=dhcp") != std::string_view::npos ||
-        error.find("CAT6 DHCP bootstrap failed") != std::string_view::npos) {
-        return L"CAT6 DHCP \u542f\u52a8\u5931\u8d25";
-    }
-    if (error.find("direct-link") != std::string_view::npos ||
-        error.find("wired") != std::string_view::npos) {
-        return L"CAT6 \u6709\u7ebf\u63a5\u53e3\u81ea\u52a8\u914d\u7f6e\u5931\u8d25";
-    }
-    if (error.find("display") != std::string_view::npos ||
-        error.find("DXGI") != std::string_view::npos) {
-        return L"\u684c\u9762\u6355\u83b7\u521d\u59cb\u5316\u5931\u8d25";
-    }
-    if (error.find("H.264") != std::string_view::npos ||
-        error.find("UDP") != std::string_view::npos) {
-        return L"\u7f16\u7801\u6216 CAT6 \u53d1\u9001\u521d\u59cb\u5316\u5931\u8d25";
-    }
-    return L"\u4e3b\u673a\u4f20\u8f93\u542f\u52a8\u5931\u8d25";
 }
 
 bool set_window_text_if_changed(HWND control, std::wstring_view text) {
@@ -837,15 +805,6 @@ LRESULT StreamerDesktopApp::handle_message(HWND window, UINT message, WPARAM w_p
                 draw_icon_circle(context, icon(role), center.left, center.top, 48,
                                  layout_scale_, phase_color);
             }
-            if (!settings_panel_visible_) {
-                const int visible_event_count = static_cast<int>((std::min)(recent_events_.size(), std::size_t{5}));
-                for (int row = 0; row < visible_event_count; ++row) {
-                    const RECT event_icon = transform_rect(RECT{670, 662 + row * 24, 686, 678 + row * 24});
-                    DrawIconEx(context, event_icon.left, event_icon.top, icon(IconRole::check),
-                               event_icon.right - event_icon.left, event_icon.bottom - event_icon.top,
-                               0, nullptr, DI_NORMAL);
-                }
-            }
             if (context == buffer_context) {
                 BitBlt(target_context, 0, 0, client.right - client.left,
                        client.bottom - client.top, buffer_context, 0, 0, SRCCOPY);
@@ -929,23 +888,53 @@ LRESULT StreamerDesktopApp::handle_message(HWND window, UINT message, WPARAM w_p
             if (!result->started) {
                 retry_not_before_ =
                     std::chrono::steady_clock::now() + std::chrono::seconds(2);
-                schedule_autostart_retry(window_, acceptance_autostart_);
-                set_ui_phase(HostUiPhase::failed);
+                const bool authorization_pending =
+                    host_failure_is_authorization_pending(result->error);
+                start_when_authorized_ = authorization_pending;
+                if (authorization_pending) {
+                    // Recovering phase already owns a 400 ms read-only refresh
+                    // timer. Do not execute the complete Host bootstrap every
+                    // three seconds while the phone/server authorization gate
+                    // is still closed.
+                    KillTimer(window_, kAutostartRetryTimerId);
+                } else {
+                    schedule_autostart_retry(window_, acceptance_autostart_);
+                }
+                set_ui_phase(authorization_pending
+                    ? HostUiPhase::recovering : HostUiPhase::failed);
                 clear_runtime_metrics();
-                update_action_state(false, false);
+                update_action_state(false, authorization_pending);
                 const std::wstring summary = friendly_host_failure(result->error);
                 const std::wstring technical = widen_ascii(result->error);
                 SetWindowTextW(mobile_state_text_, summary.c_str());
-                SetWindowTextW(ready_state_text_, L"\u4e3b\u673a\u4f20\u8f93\u672a\u542f\u52a8");
+                SetWindowTextW(ready_state_text_, authorization_pending
+                    ? L"\u7b49\u5f85\u624b\u673a\u7aef\u5b8c\u6210\u6388\u6743"
+                    : L"\u4e3b\u673a\u4f20\u8f93\u672a\u542f\u52a8");
                 SetWindowTextW(ready_detail_text_, summary.c_str());
-                SetWindowTextW(phone_state_text_, L"VF Mobile\u00b7 \u72b6\u6001\u672a\u5224\u5b9a");
-                set_status(summary + (technical.empty() ? L"" : L"\u3002\u6280\u672f\u539f\u56e0\uff1a" + technical));
-                append_event(L"\u542f\u52a8\u5931\u8d25\uff1a" + summary);
+                SetWindowTextW(phone_state_text_, authorization_pending
+                    ? L"VF Mobile\u00b7 \u7b49\u5f85\u6fc0\u6d3b\u4e0e\u8ba4\u8bc1"
+                    : L"VF Mobile\u00b7 \u72b6\u6001\u672a\u5224\u5b9a");
+                SetWindowTextW(start_button_, authorization_pending
+                    ? L"\u91cd\u65b0\u68c0\u67e5\u6388\u6743\u5e76\u5f00\u59cb"
+                    : L"\u5f00\u59cb\u4f20\u8f93");
+                SetWindowTextW(stop_button_, authorization_pending
+                    ? L"\u53d6\u6d88\u7b49\u5f85"
+                    : L"\u505c\u6b62\u4f20\u8f93");
+                set_status(summary + L"\u3002\u8be6\u7ec6\u539f\u56e0\u89c1\u53f3\u4fa7\u53ef\u6eda\u52a8\u65e5\u5fd7\u3002");
+                log_host_runtime_event(
+                    "host_gui_start_failed_detail", result->error);
+                append_event((authorization_pending
+                    ? L"\u7b49\u5f85\u6388\u6743\uff1a" : L"\u542f\u52a8\u5931\u8d25\uff1a") + summary);
+                if (!technical.empty() && !authorization_pending) {
+                    append_event(L"\u6280\u672f\u539f\u56e0\uff1a" + technical);
+                }
                 return 0;
             }
             was_running_ = true;
+            start_when_authorized_ = false;
             retry_not_before_ = {};
             mobile_reachable_ = true;
+            SetWindowTextW(stop_button_, L"\u505c\u6b62\u4f20\u8f93");
             set_ui_phase(HostUiPhase::streaming);
             update_action_state(true, false);
             SetWindowTextW(mobile_state_text_, L"VF Mobile \u94fe\u8def\u5df2\u54cd\u5e94");
@@ -960,7 +949,8 @@ LRESULT StreamerDesktopApp::handle_message(HWND window, UINT message, WPARAM w_p
             if (w_param == kRefreshTimerId) refresh_status();
             if (w_param == kAutostartRetryTimerId) {
                 KillTimer(window, kAutostartRetryTimerId);
-                if (acceptance_autostart_ && !starting_ &&
+                if (acceptance_autostart_ &&
+                    !starting_ &&
                     !runtime_facade_.is_running()) {
                     start_streamer(window);
                 }
@@ -996,6 +986,11 @@ LRESULT StreamerDesktopApp::handle_message(HWND window, UINT message, WPARAM w_p
             // second full-window erase that made resize/settings transitions flash.
             return 1;
         }
+        case WM_CTLCOLOREDIT:
+            SetTextColor(reinterpret_cast<HDC>(w_param), kMutedText);
+            SetBkColor(reinterpret_cast<HDC>(w_param), kPanelBackground);
+            SetBkMode(reinterpret_cast<HDC>(w_param), OPAQUE);
+            return reinterpret_cast<LRESULT>(panel_background_brush_);
         case WM_CTLCOLORSTATIC:
             SetTextColor(reinterpret_cast<HDC>(w_param), kText);
             SetBkMode(reinterpret_cast<HDC>(w_param), TRANSPARENT);
@@ -1180,12 +1175,13 @@ void StreamerDesktopApp::create_controls(HWND window) {
                               logical_rect(48, 780, 540, 26), FontRole::small,
                               SurfaceRole::transparent, TextRole::muted);
 
-    events_title_text_ = add_static(window, L"\u6700\u8fd1\u4e8b\u4ef6 (0)", logical_rect(670, 624, 220, 28),
+    events_title_text_ = add_static(window, L"\u6700\u8fd1\u4e8b\u4ef6 (0) \u00b7 \u53ef\u6eda\u52a8\u67e5\u770b\u5b8c\u6574\u5185\u5bb9", logical_rect(670, 624, 420, 28),
                                     FontRole::section, SurfaceRole::transparent);
     clear_events_button_ = add_button(window, L"\u6e05\u7a7a", kClearEventsButtonId,
                                       logical_rect(1102, 619, 88, 34));
-    events_text_ = add_static(window, L"", logical_rect(698, 661, 484, 124), FontRole::small,
-                              SurfaceRole::transparent, TextRole::muted);
+    events_text_ = add_read_only_log(
+        window, L"", logical_rect(670, 650, 520, 180), FontRole::small,
+        SurfaceRole::transparent, TextRole::muted);
     event_panel_controls_ = {events_title_text_, clear_events_button_, events_text_};
 
     settings_title_text_ = add_static(window, L"设置与手机连接", logical_rect(670, 624, 300, 28),
@@ -1261,6 +1257,25 @@ HWND StreamerDesktopApp::add_static(HWND parent, const wchar_t* text, RECT logic
     }
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     control_placements_.push_back(ControlPlacement{control, logical_bounds, font_role, surface_role, text_role});
+    return control;
+}
+
+HWND StreamerDesktopApp::add_read_only_log(
+        HWND parent, const wchar_t* text, RECT logical_bounds,
+        FontRole font_role, SurfaceRole surface_role, TextRole text_role) {
+    HWND control = CreateWindowExW(
+        0, L"EDIT", text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
+            ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL |
+            ES_NOHIDESEL,
+        0, 0, 1, 1, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HFONT font = font_role == FontRole::small ? small_font_ : regular_font_;
+    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    SendMessageW(
+        control, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+        MAKELPARAM(8, 8));
+    control_placements_.push_back(
+        ControlPlacement{control, logical_bounds, font_role, surface_role, text_role});
     return control;
 }
 
@@ -1825,6 +1840,8 @@ void StreamerDesktopApp::start_streamer(HWND window) {
 }
 
 void StreamerDesktopApp::stop_streamer() {
+    start_when_authorized_ = false;
+    KillTimer(window_, kAutostartRetryTimerId);
     const bool had_active_runtime = starting_ || was_running_ || runtime_facade_.is_running();
     if (start_after_mobile_refresh_cancel_) {
         start_after_mobile_refresh_cancel_ = false;
@@ -1866,18 +1883,40 @@ void StreamerDesktopApp::stop_streamer() {
 }
 
 void StreamerDesktopApp::refresh_status() {
+    if (start_when_authorized_ && !starting_ && !runtime_facade_.is_running()) {
+        const auto authorization = runtime_facade_.authorization_read_model();
+        if (authorization.permits_data_plane) {
+            // A real authorization state transition, rather than a periodic
+            // retry, is the only trigger that may resume this user request.
+            start_when_authorized_ = false;
+            retry_not_before_ = {};
+            append_event(L"\u624b\u673a\u6388\u6743\u5df2\u751f\u6548\uff1a\u5f00\u59cb\u4e00\u6b21\u6b63\u5f0f\u4f20\u8f93\u542f\u52a8");
+            log_host_runtime_event(
+                "host_gui_authorization_ready_starting_once",
+                "data_plane_open=true trigger=authorization_state_change");
+            start_streamer(window_);
+            return;
+        }
+    }
     if (!runtime_facade_.is_running()) {
         if (was_running_) {
             was_running_ = false;
             runtime_facade_.restore_direct_link_on_clean_shutdown();
-            set_ui_phase(HostUiPhase::failed);
-            clear_runtime_metrics();
-            update_action_state(false, false);
             const std::string error = runtime_facade_.last_error();
+            const bool authorization_pending =
+                host_failure_is_authorization_pending(error);
+            start_when_authorized_ = authorization_pending;
+            set_ui_phase(authorization_pending
+                ? HostUiPhase::recovering : HostUiPhase::failed);
+            clear_runtime_metrics();
+            update_action_state(false, authorization_pending);
             const std::wstring summary = friendly_host_failure(error);
             const std::wstring technical = widen_ascii(error);
-            SetWindowTextW(mobile_state_text_, L"\u4e3b\u673a\u4f20\u8f93\u5f02\u5e38\u505c\u6b62");
-            SetWindowTextW(ready_state_text_, L"\u4e3b\u673a\u4f20\u8f93\u5f02\u5e38\u505c\u6b62");
+            SetWindowTextW(mobile_state_text_, authorization_pending
+                ? L"短时租约续签中" : L"\u4e3b\u673a\u4f20\u8f93\u5f02\u5e38\u505c\u6b62");
+            SetWindowTextW(ready_state_text_, authorization_pending
+                ? L"主机已安全停流，等待自动恢复"
+                : L"\u4e3b\u673a\u4f20\u8f93\u5f02\u5e38\u505c\u6b62");
             SetWindowTextW(ready_detail_text_, summary.c_str());
             SetWindowTextW(phone_state_text_, mobile_reachable_
                 ? L"VF Mobile\u00b7 \u4e0a\u6b21\u5fc3\u8df3\u6b63\u5e38"
@@ -1887,8 +1926,20 @@ void StreamerDesktopApp::refresh_status() {
                 ? L"\u4e0a\u6b21\u53ef\u8fbe" : L"\u5fc3\u8df3\u8d85\u65f6");
             SetWindowTextW(route_capture_latency_text_, L"-- ms");
             SetWindowTextW(route_network_latency_text_, L"-- ms");
-            set_status(summary + (technical.empty() ? L"" : L"\u3002\u6280\u672f\u539f\u56e0\uff1a" + technical));
-            append_event(L"\u4e3b\u673a\u4f20\u8f93\u5f02\u5e38\u505c\u6b62\uff1a" + summary);
+            SetWindowTextW(stop_button_, authorization_pending
+                ? L"取消等待" : L"停止传输");
+            set_status(summary + (authorization_pending
+                ? L"。新租约生效后将自动重新启动。"
+                : L"\u3002\u8be6\u7ec6\u539f\u56e0\u89c1\u53f3\u4fa7\u53ef\u6eda\u52a8\u65e5\u5fd7\u3002"));
+            append_event((authorization_pending
+                ? L"授权短暂中断：" : L"\u4e3b\u673a\u4f20\u8f93\u5f02\u5e38\u505c\u6b62\uff1a") + summary);
+            if (authorization_pending) {
+                log_host_runtime_event(
+                    "host_gui_authorization_interruption_waiting_renewal",
+                    "data_plane_open=false action=wait_for_verified_successor");
+            } else if (!technical.empty()) {
+                append_event(L"\u6280\u672f\u539f\u56e0\uff1a" + technical);
+            }
         }
         return;
     }
@@ -2038,8 +2089,9 @@ void StreamerDesktopApp::append_event(const std::wstring& event) {
     GetLocalTime(&time);
     wchar_t prefix[16]{};
     swprintf_s(prefix, L"%02u:%02u:%02u  ", time.wHour, time.wMinute, time.wSecond);
-    recent_events_.push_front(std::wstring{prefix} + event);
-    while (recent_events_.size() > 5U) recent_events_.pop_back();
+    recent_events_.push_back(
+        compact_recent_event(std::wstring{prefix} + event));
+    while (recent_events_.size() > kRecentEventLimit) recent_events_.pop_front();
     update_event_text();
 }
 
@@ -2051,15 +2103,16 @@ void StreamerDesktopApp::update_event_text() {
         text += event;
     }
     bool changed = set_window_text_if_changed(events_text_, text);
-    if (events_title_text_ != nullptr) {
-        const std::wstring title = L"\u6700\u8fd1\u4e8b\u4ef6 (" + std::to_wstring(recent_events_.size()) + L")";
-        changed = set_window_text_if_changed(events_title_text_, title) || changed;
+    if (changed) {
+        const auto end = static_cast<WPARAM>(text.size());
+        SendMessageW(events_text_, EM_SETSEL, end, end);
+        SendMessageW(events_text_, EM_SCROLLCARET, 0, 0);
     }
-    if (changed && window_ != nullptr) {
-        // Check icons are drawn by the parent, so invalidate only their small
-        // event-panel strip.  Live metric refreshes never invalidate the parent.
-        const RECT event_icons = transform_rect(RECT{650, 646, 700, 800});
-        InvalidateRect(window_, &event_icons, FALSE);
+    if (events_title_text_ != nullptr) {
+        const std::wstring title = L"\u6700\u8fd1\u4e8b\u4ef6 (" +
+            std::to_wstring(recent_events_.size()) +
+            L") \u00b7 \u53ef\u6eda\u52a8\u67e5\u770b\u5b8c\u6574\u5185\u5bb9";
+        changed = set_window_text_if_changed(events_title_text_, title) || changed;
     }
 }
 

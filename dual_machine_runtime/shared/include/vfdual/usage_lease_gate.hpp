@@ -10,6 +10,7 @@ namespace vfdual {
 
 inline constexpr std::uint32_t kUsageLeaseProtocolVersion = 2U;
 inline constexpr std::uint64_t kMaximumUsageLeaseTtlSeconds = 10U;
+inline constexpr std::uint64_t kUsageLeaseServerAheadGraceSeconds = 2U;
 inline constexpr std::string_view kUsageLeaseType{
     "vf-dual-machine-usage-lease-v1"};
 inline constexpr std::string_view kUsageLeaseIssuer{

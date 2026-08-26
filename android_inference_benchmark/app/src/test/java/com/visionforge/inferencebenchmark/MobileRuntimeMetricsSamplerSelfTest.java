@@ -20,12 +20,14 @@ final class MobileRuntimeMetricsSamplerSelfTest {
         String next = sampler.sampleIfDue(
                 liveSnapshotWithCounters(342, 110, 340, 230, 230), 6_000);
         require(next != null && next.contains("wire_reassembly_fps=60.0 FPS")
-                && next.contains("network_reassembly_fps=40.0 FPS")
+                && next.contains("network_reassembly_fps=60.0 FPS")
                 && next.contains("fresh_content_fps=40.0 FPS")
                 && next.contains("repeated_content_fps=20.0 FPS")
                 && next.contains("decoder_submit_fps=60.0 FPS")
                 && next.contains("decoder_output_fps=60.0 FPS")
                 && next.contains("fresh_decoder_fps=40.0 FPS")
+                && next.contains("receiver_fps=60.0 FPS")
+                && next.contains("decoder_fps=60.0 FPS")
                 && next.contains("qnn_fps=40.0 FPS"));
         MobileRuntimeSnapshot idle =
                 liveSnapshotWithCounters(342, 110, 340, 230, 230);

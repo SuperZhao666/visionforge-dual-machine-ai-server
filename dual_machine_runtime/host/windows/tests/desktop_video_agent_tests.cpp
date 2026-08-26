@@ -2,6 +2,7 @@
 #include "vfdual/host_display_catalog.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <iostream>
@@ -10,6 +11,40 @@
 #include <vector>
 
 namespace {
+constexpr std::uint64_t kTestConnectionId = 0x1020'3040'5060'7080ULL;
+
+struct TestKey {
+    std::array<std::byte, vfdual::kAes256KeyBytes> key{};
+    std::array<std::byte, vfdual::kGcmNoncePrefixBytes> prefix{};
+
+    vfdual::PeerHandshakeDataPlaneKeyView view() const noexcept {
+        return {key, prefix};
+    }
+};
+
+TestKey test_key(const std::uint8_t seed) {
+    TestKey result;
+    for (std::size_t index = 0; index < result.key.size(); ++index) {
+        result.key[index] = std::byte{static_cast<std::uint8_t>(seed + index)};
+    }
+    for (std::size_t index = 0; index < result.prefix.size(); ++index) {
+        result.prefix[index] =
+            std::byte{static_cast<std::uint8_t>(seed ^ (0xa0U + index))};
+    }
+    return result;
+}
+
+std::shared_ptr<vfdual::HostAuthenticatedDataPlaneSessionV2>
+test_authenticated_session() {
+    const TestKey video = test_key(0x11U);
+    const TestKey presence = test_key(0x22U);
+    const TestKey idr = test_key(0x33U);
+    const TestKey mouse = test_key(0x44U);
+    return vfdual::HostAuthenticatedDataPlaneSessionV2::create_for_test(
+        kTestConnectionId, video.view(), presence.view(), idr.view(),
+        mouse.view());
+}
+
 bool parse_argument(int argc, char** argv, int index, std::uint32_t& value) {
     if (argc <= index) return true;
     const std::string_view text{argv[index]};
@@ -49,6 +84,9 @@ int main(int argc, char** argv) {
         invalid_config.encoder.width = vfdual::kAiCaptureEdge;
         invalid_config.encoder.height = vfdual::kAiCaptureEdge;
         invalid_config.data_plane_permit = []() noexcept { return true; };
+        invalid_config.authenticated_data_plane_session =
+            test_authenticated_session();
+        if (!invalid_config.authenticated_data_plane_session) return 15;
         invalid_config.adapter_index =
             (std::numeric_limits<std::uint32_t>::max)();
         if (invalid_agent.initialize(invalid_config)) return 13;
@@ -105,6 +143,8 @@ int main(int argc, char** argv) {
     config.phone_port = 5600;
     config.stream_epoch = 1U;
     config.data_plane_permit = []() noexcept { return true; };
+    config.authenticated_data_plane_session = test_authenticated_session();
+    if (!config.authenticated_data_plane_session) return 15;
     if (!agent.initialize(config)) {
         std::cerr << "initialize_failed adapter=" << config.adapter_index
                   << " output=" << config.output_index << '\n';

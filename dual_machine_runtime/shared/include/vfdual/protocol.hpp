@@ -24,7 +24,9 @@ constexpr std::uint32_t kVideoPacketMagic = 0x56463247U;          // "VF2G"
 constexpr std::uint32_t kVideoRepeatedPacketMagic = 0x56463252U;  // "VF2R"
 constexpr std::uint64_t kVideoStreamEpochMax = 0x7fff'ffff'ffff'ffffULL;
 constexpr std::size_t kVideoPacketHeaderBytes = 20U;
-constexpr std::size_t kVideoPacketPayloadBytes = 1400U;
+// VFP2 is the inner video fragment.  1344 + the 20-byte VFP2 header fits in
+// one 1364-byte VFA2 plaintext, whose authenticated outer datagram is 1412.
+constexpr std::size_t kVideoPacketPayloadBytes = 1344U;
 constexpr std::size_t kMaxDatagramBytes =
     kVideoPacketHeaderBytes + kVideoPacketPayloadBytes;
 constexpr std::size_t kMaxAccessUnitBytes = 2U * 1024U * 1024U;

@@ -9,11 +9,15 @@ package com.visionforge.inferencebenchmark.runtime;
 public interface MobileRuntimeCommandPort {
     void setAuthorizationObserver(MobileRuntimeAuthorizationObserver observer);
 
+    void setFirstPairingObserver(MobileFirstPairingObserver observer);
+
     void setActivityForeground(boolean foreground);
 
     void activateCard(String cardCode);
 
     void resumePendingActivation();
+
+    void confirmFirstPairing(boolean matchingCodes);
 
     void refreshAuthorization();
 

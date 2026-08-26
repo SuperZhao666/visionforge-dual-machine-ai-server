@@ -34,6 +34,8 @@ struct HybridGpuVideoPipelineConfig {
     std::string phone_host;
     std::uint16_t phone_port{};
     VideoDataPlanePermitSource data_plane_permit;
+    std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+        authenticated_data_plane_session;
     HybridGpuTransferMode transfer_mode{HybridGpuTransferMode::cpu_readback};
 };
 

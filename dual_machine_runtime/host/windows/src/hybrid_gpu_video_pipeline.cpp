@@ -384,7 +384,8 @@ struct HybridGpuVideoPipeline::State final {
         if (!publisher.connect_to(
                 config.phone_host, config.phone_port,
                 config.local_port, config.local_host,
-                config.data_plane_permit)) {
+            config.data_plane_permit,
+            config.authenticated_data_plane_session)) {
             record_fatal(
                 HybridGpuFatalStage::publisher_connect,
                 static_cast<std::int32_t>(publisher.last_socket_error()), 0);

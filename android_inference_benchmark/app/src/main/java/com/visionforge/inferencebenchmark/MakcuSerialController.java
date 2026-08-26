@@ -1,5 +1,6 @@
 package com.visionforge.inferencebenchmark;
 
+import android.annotation.SuppressLint;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -11,6 +12,7 @@ import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -42,7 +44,6 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
             "com.visionforge.inferencebenchmark.MAKCU_ATTEMPT_GENERATION";
     private static final String EXTRA_EXPECTED_DEVICE_NAME =
             "com.visionforge.inferencebenchmark.MAKCU_EXPECTED_DEVICE_NAME";
-    private static volatile MakcuSerialController instance;
 
     private final Context context;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -128,12 +129,25 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
         IntentFilter usbFilter = new IntentFilter(USB_PERMISSION_ACTION);
         usbFilter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
         usbFilter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
-        context.registerReceiver(usbReceiver, usbFilter, Context.RECEIVER_NOT_EXPORTED);
-        instance = this;
+        registerUsbReceiver(usbFilter);
         if (!QnnHtpBridge.bindNativeMakcuMoveBridge(ControlOutputMoveDispatcher.class)) {
             lastStatus = "Native MAKCU bridge binding failed; output is disabled";
             events.write("makcu_native_bridge_failed", "output_disabled=true");
         }
+    }
+
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    @SuppressWarnings("deprecation")
+    private void registerUsbReceiver(IntentFilter filter) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(
+                    usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            return;
+        }
+        // Before API 33 there is no not-exported flag. The permission result
+        // PendingIntent is package-scoped and every result is generation- and
+        // device-bound before it can mutate the connection state.
+        context.registerReceiver(usbReceiver, filter);
     }
 
     @Override
@@ -426,18 +440,6 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
                     device.getVendorId(), device.getProductId())) return device;
         }
         return null;
-    }
-
-    static boolean offerNativeMove(int deltaX, int deltaY, long ticket) {
-        return offerNativeMove(
-                deltaX, deltaY, ticket, ControlMoveDeadline.DEFAULT_BUDGET_US);
-    }
-
-    static boolean offerNativeMove(
-            int deltaX, int deltaY, long ticket, long remainingBudgetUs) {
-        MakcuSerialController controller = instance;
-        return controller != null && controller.offerMove(
-                deltaX, deltaY, ticket, remainingBudgetUs);
     }
 
     @Override
@@ -1112,7 +1114,6 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
         }
         writer.shutdownNow();
         reader.shutdownNow();
-        if (instance == this) instance = null;
     }
 
     private void cancelAttemptsAndClose() {
@@ -1209,26 +1210,6 @@ final class MakcuSerialController implements MakcuConnection, MakcuButtonInput, 
             ReconnectListener listener = reconnectListener;
             if (listener != null) listener.onReconnectResult(false);
         });
-    }
-
-    /** Called by native recovery before its suspend operation returns. */
-    private static boolean suspendNativeDeliveryForRecovery(long generation) {
-        MakcuSerialController controller = instance;
-        return controller != null && controller.suspendDeliveryForRecovery(generation);
-    }
-
-    /** Called only after native validates the matching recovery generation. */
-    private static boolean resumeNativeDeliveryAfterRecovery(long generation) {
-        MakcuSerialController controller = instance;
-        return controller != null && controller.resumeDeliveryAfterRecovery(generation);
-    }
-
-    /** Native fail-close uses this boundary to synchronously drain old moves. */
-    private static boolean failClosedNativeDelivery() {
-        MakcuSerialController controller = instance;
-        if (controller == null) return false;
-        controller.failClosedDelivery();
-        return true;
     }
 
     @Override

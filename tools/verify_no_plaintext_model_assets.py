@@ -85,7 +85,21 @@ def load_locked_digests(lock_path: Path) -> LockedArtifactDigests:
         raise ScanFailure("private-artifact secure release policy is disabled")
     if policy.get("release_plaintext_allowed") is not False:
         raise ScanFailure("private-artifact release plaintext policy is invalid")
-    if policy.get("plaintext_allowed_variants") != ["debug", "qa"]:
+    configured_variants = policy.get("plaintext_allowed_variants")
+    owner_private_allowed = policy.get(
+        "owner_private_release_plaintext_allowed"
+    )
+    if configured_variants == ["debug", "qa"] and owner_private_allowed in {
+        None,
+        False,
+    }:
+        allowed_plaintext_variants = ["debug", "qa"]
+    elif (
+        configured_variants == ["debug", "qa", "owner"]
+        and owner_private_allowed is True
+    ):
+        allowed_plaintext_variants = ["debug", "qa", "owner"]
+    else:
         raise ScanFailure("private-artifact plaintext variant policy is invalid")
     if (
         policy.get("source_root_environment")
@@ -115,7 +129,7 @@ def load_locked_digests(lock_path: Path) -> LockedArtifactDigests:
             raise ScanFailure("private-artifact public-repository policy is invalid")
         if row.get("license_review_required") is not True:
             raise ScanFailure("private-artifact license-review policy is invalid")
-        if row.get("allowed_variants") != ["debug", "qa"]:
+        if row.get("allowed_variants") != allowed_plaintext_variants:
             raise ScanFailure("private-artifact row variants are invalid")
         if public_repository_allowed:
             target_value = row.get("target_path")
