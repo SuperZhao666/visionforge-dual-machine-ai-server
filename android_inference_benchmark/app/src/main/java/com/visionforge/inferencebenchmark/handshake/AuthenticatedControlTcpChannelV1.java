@@ -30,7 +30,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * attachment.</p>
  */
 public final class AuthenticatedControlTcpChannelV1 implements AutoCloseable {
-    public static final int DEFAULT_PORT = 5006;
+    public static final int FIRST_PAIRING_PORT = 5006;
+    public static final int AUTHENTICATED_CONTROL_PORT = 5008;
     private static final int READ_BUFFER_BYTES = 4096;
     private static final int MAXIMUM_TIMEOUT_MILLIS = 60_000;
 

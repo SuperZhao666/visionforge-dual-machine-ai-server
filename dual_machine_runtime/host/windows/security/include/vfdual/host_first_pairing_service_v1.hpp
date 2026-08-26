@@ -16,10 +16,10 @@ namespace vfdual {
 /**
  * Production socket owner for fresh pairing only.
  *
- * It listens on the authenticated-control TCP port, commits the actual socket
- * route into VFP1, asks the local Host user to compare the SAS, and carries
- * only the typed activation records. A successful result remains provisional;
- * this service never opens or authorizes the data plane.
+ * It listens on the dedicated first-pairing TCP port, commits the actual
+ * authenticated-control route into VFP1, asks the local Host user to compare
+ * the SAS, and carries only the typed activation records. A successful result
+ * remains provisional; this service never opens or authorizes the data plane.
  */
 class HostFirstPairingServiceV1 final {
 public:

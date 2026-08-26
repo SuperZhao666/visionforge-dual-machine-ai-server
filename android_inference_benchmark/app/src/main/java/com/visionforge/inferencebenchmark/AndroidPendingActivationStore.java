@@ -26,10 +26,13 @@ import javax.crypto.spec.GCMParameterSpec;
 /**
  * AndroidKeyStore-sealed recovery store for one pending card confirmation.
  *
- * <p>The card code and private keys are never persisted. The short-lived
- * challenge token and already-created signatures are AES-256-GCM protected so
- * the exact idempotent confirmation can survive a lost response or process
- * restart without creating a second challenge.</p>
+ * <p>Private keys are never exported or persisted by this store. A card that
+ * the user has explicitly submitted may be retained only in a separate,
+ * domain-separated AndroidKeyStore AES-256-GCM envelope until Host pairing
+ * makes activation possible. The short-lived challenge token and
+ * already-created signatures use their own sealed envelope so the exact
+ * idempotent confirmation can survive a lost response or process restart
+ * without creating a second challenge.</p>
  */
 public final class AndroidPendingActivationStore
         implements DualMachineCardAuthorizationCoordinator
@@ -37,12 +40,15 @@ public final class AndroidPendingActivationStore
     static final String STORE =
             "visionforge_dual_machine_pending_activation_v1";
     static final String VALUE_KEY = "sealed_pending_activation";
+    static final String QUEUED_CARD_VALUE_KEY = "sealed_queued_card";
     static final String DEFAULT_KEY_ALIAS =
             "visionforge-dual-machine-pending-activation-v1";
     private static final String ANDROID_KEYSTORE = "AndroidKeyStore";
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
     private static final int MAGIC = 0x56465041; // "VFPA"
+    private static final int QUEUED_CARD_MAGIC = 0x56465143; // "VFQC"
     private static final int SCHEMA_VERSION = 4;
+    private static final int QUEUED_CARD_SCHEMA_VERSION = 1;
     private static final int LEGACY_SCHEMA_VERSION = 3;
     private static final int IV_BYTES = 12;
     private static final int GCM_TAG_BITS = 128;
@@ -50,6 +56,9 @@ public final class AndroidPendingActivationStore
     private static final int MAX_PLAINTEXT_BYTES = 2048;
     private static final byte[] AAD =
             "visionforge-dual-machine-pending-activation-v1"
+                    .getBytes(StandardCharsets.US_ASCII);
+    static final byte[] QUEUED_CARD_AAD =
+            "visionforge-dual-machine-queued-card-v1"
                     .getBytes(StandardCharsets.US_ASCII);
     private static final Object KEY_LOCK = new Object();
 
@@ -105,7 +114,8 @@ public final class AndroidPendingActivationStore
         byte[] iv = Arrays.copyOfRange(sealed, 1, 1 + IV_BYTES);
         byte[] ciphertext = Arrays.copyOfRange(
                 sealed, 1 + IV_BYTES, sealed.length);
-        byte[] plaintext = decrypt(requireExistingKey(), iv, ciphertext);
+        byte[] plaintext = decrypt(
+                requireExistingKey(), iv, ciphertext, AAD);
         try {
             return parse(plaintext);
         } finally {
@@ -125,7 +135,9 @@ public final class AndroidPendingActivationStore
         byte[] plaintext = serialize(pending);
         byte[] sealed;
         try {
-            sealed = encrypt(getOrCreateKey(), plaintext);
+            sealed = encrypt(
+                    getOrCreateKey(), plaintext, AAD,
+                    (byte) SCHEMA_VERSION);
         } finally {
             Arrays.fill(plaintext, (byte) 0);
         }
@@ -140,6 +152,100 @@ public final class AndroidPendingActivationStore
     public synchronized void clear() throws IOException {
         if (!preferences.edit().remove(VALUE_KEY).commit()) {
             throw new IOException("pending activation clear failed");
+        }
+    }
+
+    /**
+     * Returns the one card awaiting Host pairing, or {@code null}.  The card is
+     * never logged and exists at rest only in an AndroidKeyStore-sealed GCM
+     * envelope with a domain-separated AAD value.
+     */
+    public synchronized String loadQueuedCard()
+            throws IOException, GeneralSecurityException {
+        final String encoded;
+        try {
+            encoded = preferences.getString(QUEUED_CARD_VALUE_KEY, null);
+        } catch (ClassCastException corruptType) {
+            throw new GeneralSecurityException(
+                    "queued card storage type is corrupt", corruptType);
+        }
+        if (encoded == null) return null;
+        byte[] sealed = decodeCanonicalBase64(encoded);
+        if (sealed.length <= 1 + IV_BYTES + 16
+                || sealed.length > MAX_SEALED_BYTES
+                || sealed[0] != (byte) QUEUED_CARD_SCHEMA_VERSION) {
+            throw new GeneralSecurityException(
+                    "queued card envelope is invalid");
+        }
+        byte[] iv = Arrays.copyOfRange(sealed, 1, 1 + IV_BYTES);
+        byte[] ciphertext = Arrays.copyOfRange(
+                sealed, 1 + IV_BYTES, sealed.length);
+        byte[] plaintext = decrypt(
+                requireExistingKey(), iv, ciphertext, QUEUED_CARD_AAD);
+        try (DataInputStream input = new DataInputStream(
+                new ByteArrayInputStream(plaintext))) {
+            if (input.readInt() != QUEUED_CARD_MAGIC
+                    || input.readUnsignedShort()
+                    != QUEUED_CARD_SCHEMA_VERSION) {
+                throw new GeneralSecurityException(
+                        "queued card payload schema is invalid");
+            }
+            String cardCode = readAscii(input, 64);
+            if (input.read() != -1) {
+                throw new GeneralSecurityException(
+                        "queued card payload has trailing data");
+            }
+            final String canonical;
+            try {
+                canonical = DualMachineCardCode.normalizeAndValidate(cardCode);
+            } catch (IllegalArgumentException malformed) {
+                throw new GeneralSecurityException(
+                        "queued card payload is invalid", malformed);
+            }
+            if (!canonical.equals(cardCode)) {
+                throw new GeneralSecurityException(
+                        "queued card payload is not canonical");
+            }
+            return canonical;
+        } finally {
+            Arrays.fill(plaintext, (byte) 0);
+        }
+    }
+
+    public synchronized void saveQueuedCard(String cardCode)
+            throws IOException, GeneralSecurityException {
+        final String canonical;
+        try {
+            canonical = DualMachineCardCode.normalizeAndValidate(cardCode);
+        } catch (IllegalArgumentException malformed) {
+            throw new GeneralSecurityException(
+                    "queued card is invalid", malformed);
+        }
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream(96);
+        try (DataOutputStream output = new DataOutputStream(buffer)) {
+            output.writeInt(QUEUED_CARD_MAGIC);
+            output.writeShort(QUEUED_CARD_SCHEMA_VERSION);
+            writeAscii(output, canonical, 64);
+        }
+        byte[] plaintext = buffer.toByteArray();
+        byte[] sealed;
+        try {
+            sealed = encrypt(
+                    getOrCreateKey(), plaintext, QUEUED_CARD_AAD,
+                    (byte) QUEUED_CARD_SCHEMA_VERSION);
+        } finally {
+            Arrays.fill(plaintext, (byte) 0);
+        }
+        String encoded = Base64.getEncoder().encodeToString(sealed);
+        if (!preferences.edit().putString(
+                QUEUED_CARD_VALUE_KEY, encoded).commit()) {
+            throw new IOException("queued card persistence failed");
+        }
+    }
+
+    public synchronized void clearQueuedCard() throws IOException {
+        if (!preferences.edit().remove(QUEUED_CARD_VALUE_KEY).commit()) {
+            throw new IOException("queued card clear failed");
         }
     }
 
@@ -224,7 +330,11 @@ public final class AndroidPendingActivationStore
         }
     }
 
-    private byte[] encrypt(SecretKey key, byte[] plaintext)
+    private byte[] encrypt(
+            SecretKey key,
+            byte[] plaintext,
+            byte[] associatedData,
+            byte envelopeVersion)
             throws GeneralSecurityException {
         Cipher cipher = Cipher.getInstance(TRANSFORMATION);
         cipher.init(Cipher.ENCRYPT_MODE, key);
@@ -233,10 +343,10 @@ public final class AndroidPendingActivationStore
             throw new GeneralSecurityException(
                     "pending activation GCM IV is invalid");
         }
-        cipher.updateAAD(AAD);
+        cipher.updateAAD(associatedData);
         byte[] ciphertext = cipher.doFinal(plaintext);
         byte[] envelope = new byte[1 + IV_BYTES + ciphertext.length];
-        envelope[0] = (byte) SCHEMA_VERSION;
+        envelope[0] = envelopeVersion;
         System.arraycopy(iv, 0, envelope, 1, IV_BYTES);
         System.arraycopy(
                 ciphertext, 0, envelope, 1 + IV_BYTES,
@@ -252,13 +362,14 @@ public final class AndroidPendingActivationStore
     private byte[] decrypt(
             SecretKey key,
             byte[] iv,
-            byte[] ciphertext) throws GeneralSecurityException {
+            byte[] ciphertext,
+            byte[] associatedData) throws GeneralSecurityException {
         Cipher cipher = Cipher.getInstance(TRANSFORMATION);
         cipher.init(
                 Cipher.DECRYPT_MODE,
                 key,
                 new GCMParameterSpec(GCM_TAG_BITS, iv));
-        cipher.updateAAD(AAD);
+        cipher.updateAAD(associatedData);
         return cipher.doFinal(ciphertext);
     }
 

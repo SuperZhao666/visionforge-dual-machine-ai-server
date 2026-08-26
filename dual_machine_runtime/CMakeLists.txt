@@ -673,6 +673,27 @@ if(WIN32)
         vfdual_authenticated_control_tcp_transport_v1
     )
 
+    # CMake 3.22 can mis-decode the localized MSVC /showIncludes prefix when
+    # generating Ninja files on Chinese Windows.  Ninja then records zero
+    # header dependencies and an incremental release can mix the old 5006
+    # authenticated listener with the new 5006/5008 split.  Keep every native
+    # source that consumes the wired-link contract on an explicit edge so a
+    # port or route change cannot leave a stale object in VFHost.exe.
+    set(VFDUAL_WIRED_LINK_CONTRACT_HEADER
+        "${CMAKE_CURRENT_SOURCE_DIR}/host/windows/include/vfdual/wired_link_contract.hpp")
+    set_property(SOURCE
+        host/windows/src/authenticated_control_tcp_transport_v1.cpp
+        host/windows/security/src/host_first_pairing_service_v1.cpp
+        host/windows/security/src/host_authenticated_control_service_v1.cpp
+        host/windows/src/host_cat6_session.cpp
+        host/windows/src/host_firewall_provisioner.cpp
+        host/windows/src/host_mouse_button_publisher.cpp
+        host/windows/src/host_runtime_service.cpp
+        host/windows/tests/host_firewall_policy_tests.cpp
+        host/windows/tests/host_mouse_button_publisher_tests.cpp
+        APPEND PROPERTY OBJECT_DEPENDS
+            "${VFDUAL_WIRED_LINK_CONTRACT_HEADER}")
+
     add_library(vfdual_host_runtime_authorization_coordinator STATIC
         host/windows/security/src/host_runtime_authorization_coordinator.cpp
     )

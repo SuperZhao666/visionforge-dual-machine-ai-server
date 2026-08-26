@@ -191,6 +191,7 @@ public final class DualMachineSidecarHttpClient
             if (fields.bool("ok")) return "";
             String code = fields.string("error", 1, 64);
             if ("activation_challenge_invalid".equals(code)
+                    || "license_unavailable".equals(code)
                     || "license_bound_to_another_device".equals(code)
                     || "license_device_binding_inconsistent".equals(code)) {
                 return code;

@@ -34,6 +34,10 @@ inline constexpr wchar_t kCat6FirstPairingRuleName[] =
     L"VF Host CAT6 First Pairing Inbound";
 inline constexpr wchar_t kWirelessFirstPairingRuleName[] =
     L"VF Host Wireless LAN First Pairing Inbound";
+inline constexpr wchar_t kCat6AuthenticatedControlRuleName[] =
+    L"VF Host CAT6 Authenticated Control Inbound";
+inline constexpr wchar_t kWirelessAuthenticatedControlRuleName[] =
+    L"VF Host Wireless LAN Authenticated Control Inbound";
 inline constexpr wchar_t kCat6RuleDescription[] =
     L"VF Host isolated CAT6 transport";
 inline constexpr wchar_t kWirelessRuleDescription[] =
@@ -42,6 +46,10 @@ inline constexpr wchar_t kCat6FirstPairingRuleDescription[] =
     L"VF Host isolated CAT6 activation-only pairing";
 inline constexpr wchar_t kWirelessFirstPairingRuleDescription[] =
     L"VF Host wireless LAN activation-only pairing";
+inline constexpr wchar_t kCat6AuthenticatedControlRuleDescription[] =
+    L"VF Host isolated CAT6 bound authenticated control";
+inline constexpr wchar_t kWirelessAuthenticatedControlRuleDescription[] =
+    L"VF Host wireless LAN bound authenticated control";
 inline constexpr wchar_t kRuleGrouping[] = L"VF Host Transport";
 inline constexpr wchar_t kLegacyDhcpRuleName[] =
     L"VisionForge Host CAT6 DHCP Inbound";
@@ -242,7 +250,9 @@ bool firewall_interface_types_are_owned(
     const bool local_network_rule =
         equals_insensitive(desired.name, kWirelessAnnouncementRuleName) ||
         equals_insensitive(desired.name, kWirelessIdrRuleName) ||
-        equals_insensitive(desired.name, kWirelessFirstPairingRuleName);
+        equals_insensitive(desired.name, kWirelessFirstPairingRuleName) ||
+        equals_insensitive(
+            desired.name, kWirelessAuthenticatedControlRuleName);
     return local_network_rule &&
         firewall_interface_types_equal(
             desired.interface_types, kLocalNetworkInterfaceTypes) &&
@@ -1317,10 +1327,20 @@ std::vector<HostFirewallRulePolicy> build_host_firewall_policy(
              kLocalSubnet, kWiredVideoPort),
         rule(kCat6FirstPairingRuleName, kCat6FirstPairingRuleDescription,
              kWiredInterfaceType, kWiredHostIpv4,
-             kWiredAuthenticatedControlPort, kWiredMobileIpv4,
+             kWiredFirstPairingPort, kWiredMobileIpv4,
              kAnyFirewallPort, HostFirewallProtocol::tcp),
         rule(kWirelessFirstPairingRuleName,
              kWirelessFirstPairingRuleDescription,
+             kLocalNetworkInterfaceTypes, kAnyLocalAddress,
+             kWiredFirstPairingPort, kLocalSubnet,
+             kAnyFirewallPort, HostFirewallProtocol::tcp),
+        rule(kCat6AuthenticatedControlRuleName,
+             kCat6AuthenticatedControlRuleDescription,
+             kWiredInterfaceType, kWiredHostIpv4,
+             kWiredAuthenticatedControlPort, kWiredMobileIpv4,
+             kAnyFirewallPort, HostFirewallProtocol::tcp),
+        rule(kWirelessAuthenticatedControlRuleName,
+             kWirelessAuthenticatedControlRuleDescription,
              kLocalNetworkInterfaceTypes, kAnyLocalAddress,
              kWiredAuthenticatedControlPort, kLocalSubnet,
              kAnyFirewallPort, HostFirewallProtocol::tcp),

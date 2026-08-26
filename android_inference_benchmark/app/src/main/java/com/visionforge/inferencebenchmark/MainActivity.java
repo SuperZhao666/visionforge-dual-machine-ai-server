@@ -1122,7 +1122,15 @@ public final class MainActivity extends Activity implements MobileAppActions {
     protected void onStart() {
         super.onStart();
         activityStarted = true;
-        if (uiPreviewOnly || runtimeServiceBound) return;
+        if (uiPreviewOnly) return;
+        if (runtimeServiceBound && runtimeBinder != null) {
+            runtimeBinder.setActivityForeground(true);
+            firstPairingDialogController.render(
+                    true,
+                    runtimeBinder.firstPairingState());
+            return;
+        }
+        if (runtimeServiceBound) return;
         Intent serviceIntent = new Intent(
                 this, MobileRuntimeService.class);
         runtimeServiceBound = bindService(

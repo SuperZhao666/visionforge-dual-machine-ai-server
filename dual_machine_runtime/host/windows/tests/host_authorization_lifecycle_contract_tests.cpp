@@ -48,6 +48,10 @@ int main() {
         "host/windows/include/vfdual/host/application/host_runtime_facade.hpp");
     const std::string facade_source =
         read_source("host/windows/src/host_runtime_facade.cpp");
+    const std::string first_pairing_service = read_source(
+        "host/windows/security/src/host_first_pairing_service_v1.cpp");
+    const std::string wired_link_contract =
+        read_source("host/windows/include/vfdual/wired_link_contract.hpp");
     const std::string authorization_header =
         read_source("host/windows/include/vfdual/host_runtime_service.hpp");
     const std::string authorization_source =
@@ -73,6 +77,24 @@ int main() {
                             "host/windows/src/host_runtime_facade.cpp") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(cmake_source.find("OBJECT_DEPENDS") !=
+                         std::string::npos);
+
+    // The first-pair/authenticated-control port split is a header-only
+    // contract.  Chinese MSVC/Ninja builds must carry an explicit dependency
+    // edge for both listener translation units so an incremental release can
+    // never silently link two stale 5006 listeners.
+    const std::string wired_link_dependencies = slice_between(
+        cmake_source,
+        "set(VFDUAL_WIRED_LINK_CONTRACT_HEADER",
+        "add_library(vfdual_host_runtime_authorization_coordinator");
+    VFDUAL_TEST_REQUIRE(wired_link_dependencies.find(
+                            "host/windows/security/src/host_first_pairing_service_v1.cpp") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wired_link_dependencies.find(
+                            "host/windows/security/src/host_authenticated_control_service_v1.cpp") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wired_link_dependencies.find(
+                            "${VFDUAL_WIRED_LINK_CONTRACT_HEADER}") !=
                          std::string::npos);
 
     const std::string start = slice_between(
@@ -207,6 +229,30 @@ int main() {
     VFDUAL_TEST_REQUIRE(first_pair_start != std::string::npos);
     VFDUAL_TEST_REQUIRE(protected_runtime_start != std::string::npos);
     VFDUAL_TEST_REQUIRE(first_pair_start < protected_runtime_start);
+    VFDUAL_TEST_REQUIRE(facade_start.find(
+                            "if (!state_->first_pairing.is_running())") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_start.find(
+                            "!persisted_pair.has_value()") ==
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_source.find(
+                            "commit_server_authorized_pair_and_listen") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_source.find(
+                            "commit_server_authorized_rebinding(") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_source.find(
+                            "start_authenticated_control(binding, true") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(first_pairing_service.find(
+                            "if (completed || stopping_.load()) break;") ==
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wired_link_contract.find(
+                            "kWiredFirstPairingPort = 5006") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wired_link_contract.find(
+                            "kWiredAuthenticatedControlPort = 5008") !=
+                         std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_start.find(
                             "state_->first_pairing.provisional_pair_binding()") !=
                          std::string::npos);

@@ -670,6 +670,8 @@ public final class DualMachineSidecarHttpClientSelfTest {
                 .equals("license_device_binding_inconsistent"));
         check(rejectedSafeCode("activation_challenge_invalid")
                 .equals("activation_challenge_invalid"));
+        check(rejectedSafeCode("license_unavailable")
+                .equals("license_unavailable"));
         check(rejectedSafeCode("CARD-VFD2-SECRET").isEmpty());
     }
 

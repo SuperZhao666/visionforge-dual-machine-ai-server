@@ -23,6 +23,7 @@
 #include <exception>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -66,12 +67,84 @@ struct HostRuntimeFacade::State final {
             pair_store_error = failure.what();
         }
     }
+
+    bool start_authenticated_control(
+        const vfdual::HostAuthenticatedControlPairBindingV1& pair,
+        const bool replace_existing,
+        std::string& error) {
+        std::lock_guard lifecycle_lock(security_lifecycle_mutex);
+        if (replace_existing) {
+            authenticated_control.stop();
+            authorization.close();
+        } else if (authorization.has_authenticated_channel() ||
+                   authenticated_control.is_running()) {
+            error.clear();
+            return true;
+        }
+        const auto commit_generation = [this](
+            const vfdual::HostAuthenticatedControlPairBindingV1& binding,
+            const std::uint64_t generation) {
+            std::string commit_error;
+            const bool committed = pair_store->commit_generation(
+                binding, generation, commit_error);
+            if (!committed) pair_store_error = commit_error;
+            return committed;
+        };
+        const auto commit_session = [this](
+            const vfdual::HostAuthenticatedControlPairBindingV1& binding,
+            const std::uint64_t generation,
+            std::unique_ptr<vfdual::ConfirmedPeerHandshakeSessionV1> session,
+            std::unique_ptr<vfdual::AuthenticatedControlTcpConnectionV1>
+                connection) {
+            return authorization.install_authenticated_channel(
+                *device_identity,
+                binding, generation, std::move(session),
+                std::move(connection));
+        };
+        return authenticated_control.start(
+            *device_identity,
+            pair,
+            "0.0.0.0",
+            std::string(vfdual::kHostReleaseVersionAscii),
+            commit_generation,
+            commit_session,
+            error);
+    }
+
+    bool commit_server_authorized_pair_and_listen(
+        const vfdual::HostAuthenticatedControlPairBindingV1& binding) {
+        std::string commit_error;
+        if (!pair_store->commit_server_authorized_rebinding(
+                binding, commit_error)) {
+            pair_store_error = commit_error;
+            return false;
+        }
+        std::string listener_error;
+        if (!start_authenticated_control(binding, true, listener_error)) {
+            pair_store_error = listener_error;
+            return false;
+        }
+        pair_store_error.clear();
+        return true;
+    }
+
+    void stop_security_services() noexcept {
+        // Never hold the lifecycle mutex while joining the first-pair worker:
+        // its server-confirmed callback may be finishing a control-listener
+        // replacement through start_authenticated_control().
+        first_pairing.stop();
+        std::lock_guard lifecycle_lock(security_lifecycle_mutex);
+        authenticated_control.stop();
+        authorization.close();
+    }
+
     vfdual::HostRuntimeService runtime;
     vfdual::HostRuntimeAuthorizationCoordinator authorization;
     vfdual::HostIdentityError identity_error;
     std::unique_ptr<vfdual::HostDeviceIdentityRuntime> device_identity;
     std::unique_ptr<vfdual::HostPairBindingStoreV1> pair_store;
     std::string pair_store_error;
+    std::mutex security_lifecycle_mutex;
     vfdual::HostFirstPairingServiceV1 first_pairing;
     vfdual::HostAuthenticatedControlServiceV1 authenticated_control;
 };
@@ -109,9 +182,9 @@ bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& erro
         error = "Host pair-binding does not match the current device identity.";
         return false;
     }
-    // Firewall ownership is part of the activation-only listener boundary.
-    // Provision the exact TCP 5006 rules before accepting an untrusted peer;
-    // never depend on a broad Windows application exception.
+    // Firewall ownership is part of both narrow listener boundaries. Provision
+    // exact TCP 5006 first-pair and TCP 5008 authenticated-control rules before
+    // accepting a peer; never depend on a broad application exception.
     const auto pairing_firewall =
         vfdual::ensure_host_firewall_rules_automatically();
     if (!vfdual::host_firewall_is_ready(pairing_firewall.status)) {
@@ -119,17 +192,11 @@ bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& erro
             pairing_firewall.detail;
         return false;
     }
-    // Fresh pairing is the prerequisite for Host authorization, so its
-    // activation-only listener must exist before the authenticated video data
-    // plane is allowed to start.  Keeping these phases ordered the other way
-    // around creates a deadlock: an unpaired Host cannot pass the data-plane
-    // gate, while Android has no listener through which it can establish the
-    // first pair.  A completed provisional binding is deliberately not
-    // restarted here; it still grants no data-plane authority.
-    const auto provisional_pair =
-        state_->first_pairing.provisional_pair_binding();
-    if (!state_->first_pairing.is_running() &&
-        !persisted_pair.has_value() && !provisional_pair.has_value()) {
+    // Keep first-pair recovery available even when this Host still has a
+    // durable old binding.  It is activation-only and cannot open the data
+    // plane; the server-confirmed callback below permits only the same
+    // entitlement and Host identity.
+    if (!state_->first_pairing.is_running()) {
         const auto confirm_pairing = [](
             const std::string_view decimal_sas,
             const std::string_view android_ipv4) {
@@ -146,12 +213,7 @@ bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& erro
         };
         const auto commit_pair_binding = [this](
             const vfdual::HostAuthenticatedControlPairBindingV1& binding) {
-            std::string commit_error;
-            const bool committed =
-                state_->pair_store->commit_initial_binding(
-                    binding, commit_error);
-            if (!committed) state_->pair_store_error = commit_error;
-            return committed;
+            return state_->commit_server_authorized_pair_and_listen(binding);
         };
         if (!state_->first_pairing.start(
                 *state_->device_identity,
@@ -167,34 +229,8 @@ bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& erro
     if (persisted_pair.has_value() &&
         !state_->authorization.has_authenticated_channel() &&
         !state_->authenticated_control.is_running()) {
-        const auto commit_generation = [this](
-            const vfdual::HostAuthenticatedControlPairBindingV1& binding,
-            const std::uint64_t generation) {
-            std::string commit_error;
-            const bool committed = state_->pair_store->commit_generation(
-                binding, generation, commit_error);
-            if (!committed) state_->pair_store_error = commit_error;
-            return committed;
-        };
-        const auto commit_session = [this](
-            const vfdual::HostAuthenticatedControlPairBindingV1& binding,
-            const std::uint64_t generation,
-            std::unique_ptr<vfdual::ConfirmedPeerHandshakeSessionV1> session,
-            std::unique_ptr<vfdual::AuthenticatedControlTcpConnectionV1>
-                connection) {
-            return state_->authorization.install_authenticated_channel(
-                *state_->device_identity,
-                binding, generation, std::move(session),
-                std::move(connection));
-        };
-        if (!state_->authenticated_control.start(
-                *state_->device_identity,
-                *persisted_pair,
-                "0.0.0.0",
-                std::string(vfdual::kHostReleaseVersionAscii),
-                commit_generation,
-                commit_session,
-                error)) {
+        if (!state_->start_authenticated_control(
+                *persisted_pair, false, error)) {
             return false;
         }
     }
@@ -254,15 +290,11 @@ bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& erro
 }
 
 void HostRuntimeFacade::request_stop() noexcept {
-    state_->first_pairing.stop();
-    state_->authenticated_control.stop();
-    state_->authorization.close();
+    state_->stop_security_services();
     state_->runtime.request_stop();
 }
 void HostRuntimeFacade::stop() noexcept {
-    state_->first_pairing.stop();
-    state_->authenticated_control.stop();
-    state_->authorization.close();
+    state_->stop_security_services();
     state_->runtime.stop();
 }
 void HostRuntimeFacade::restore_direct_link_on_clean_shutdown() noexcept {

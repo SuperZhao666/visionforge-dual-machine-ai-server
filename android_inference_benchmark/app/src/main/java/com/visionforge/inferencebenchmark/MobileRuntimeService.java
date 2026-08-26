@@ -370,6 +370,8 @@ public final class MobileRuntimeService extends Service {
     private volatile DualMachineAuthorizationUiState authorizationUiState =
             DualMachineAuthorizationUiState.readyForActivation();
     private volatile DualMachineAuthorizationRuntime authorizationRuntime;
+    private volatile AndroidPendingActivationStore pendingActivationStore;
+    private volatile boolean queuedCardPresent;
     private volatile boolean authorizationSecurityFatal;
     /** Guarded by {@link #authorizationLifecycleLock}. */
     private long authorizationInitializationGeneration;
@@ -409,6 +411,7 @@ public final class MobileRuntimeService extends Service {
         compositionRoot.publish(runtimeStatus);
         compositionRoot.publishEthernetDiagnostics(latestEthernetDiagnostics);
         events = new MobileEventLogger(this);
+        pendingActivationStore = new AndroidPendingActivationStore(this);
         presentationBalanceReconciler =
                 new DualMachinePresentationBalanceReconciler(
                         new SharedPreferencesDualMachinePresentationBalanceStore(
@@ -430,7 +433,7 @@ public final class MobileRuntimeService extends Service {
                 () -> controlRuntime,
                 () -> pipeline,
                 this::attachAuthenticatedHost,
-                () -> publishMappedAuthorizationState(""),
+                this::onPairingAuthorizationStateChanged,
                 this::updateNotification,
                 this::nextAuthorizationId);
         hostVideoPresenceProbe = new HostVideoPresenceProbe(events);
@@ -583,6 +586,14 @@ public final class MobileRuntimeService extends Service {
                                     AndroidDeviceProfileCollector.collect(
                                             getApplicationContext()),
                                     identityStore::sign);
+                    AndroidPendingActivationStore activationStore =
+                            pendingActivationStore;
+                    if (activationStore == null) {
+                        throw new GeneralSecurityException(
+                                "queued card store is unavailable");
+                    }
+                    boolean queuedCardRestored =
+                            restoreQueuedCardPresence(activationStore);
                     deadlines =
                             new DualMachineMonotonicDeadlineScheduler();
                     created = new DualMachineAuthorizationRuntime(
@@ -591,8 +602,7 @@ public final class MobileRuntimeService extends Service {
                                     security.leaseKeyring,
                                     new SharedPreferencesDualMachineEntitlementStore(
                                             getApplicationContext()),
-                                    new AndroidPendingActivationStore(
-                                            getApplicationContext()),
+                                    activationStore,
                                     androidIdentity,
                                     identityStore.alias(),
                                     this::nextAuthorizationId,
@@ -604,7 +614,9 @@ public final class MobileRuntimeService extends Service {
                             created,
                             deadlines,
                             identityStore,
-                            androidIdentity)) {
+                            androidIdentity,
+                            activationStore,
+                            queuedCardRestored)) {
                         created.close();
                         deadlines.close();
                         events.write(
@@ -612,9 +624,13 @@ public final class MobileRuntimeService extends Service {
                                 "reason=initialization_superseded");
                         return;
                     }
+                    clearQueuedCardAfterEntitlementRestore(
+                            created, activationStore);
                     events.write(
                             "dual_machine_authorization_runtime_ready",
-                            "card_secret_persisted=false "
+                            "card_secret_plaintext_persisted=false "
+                                    + "queued_card_sealed="
+                                    + queuedCardPresent + " "
                                     + "host_session_persisted=false "
                                     + "authenticated_host_attached=false "
                                     + "formal_lease_restored=false");
@@ -622,6 +638,7 @@ public final class MobileRuntimeService extends Service {
                     refreshAuthorizationStatusAfterRestore(created);
                     pairingRuntime.scheduleFirstPairingIfNeeded();
                     pairingRuntime.scheduleAuthenticatedControlIfNeeded();
+                    activateQueuedCardIfReady();
                 } catch (IOException | GeneralSecurityException
                          | RuntimeException failure) {
                     if (created != null) created.close();
@@ -653,7 +670,9 @@ public final class MobileRuntimeService extends Service {
             DualMachineMonotonicDeadlineScheduler deadlines,
             AndroidPairingIdentityStore identityStore,
             DualMachineCardAuthorizationCoordinator.IdentityBinding
-                    androidIdentity) {
+                    androidIdentity,
+            AndroidPendingActivationStore activationStore,
+            boolean queuedCardRestored) {
         synchronized (authorizationLifecycleLock) {
             if (destroying
                     || initializationGeneration
@@ -662,6 +681,9 @@ public final class MobileRuntimeService extends Service {
             }
             authorizationDeadlines = deadlines;
             authorizationRuntime = runtime;
+            pendingActivationStore = activationStore;
+            queuedCardPresent = queuedCardRestored
+                    && runtime.snapshot().entitlement == null;
             pairingRuntime.configureIdentity(identityStore, androidIdentity);
             authorizationSecurityFatal = false;
             return true;
@@ -1275,10 +1297,142 @@ public final class MobileRuntimeService extends Service {
                     R.string.authorization_card_invalid));
             return;
         }
-        executeAuthorizationOperation(
-                "activate_card",
-                DualMachineAuthorizationUiState.Status.ACTIVATING,
-                runtime -> runtime.activateCard(canonical));
+        AndroidPendingActivationStore store = pendingActivationStore;
+        if (store == null || authorizationSecurityFatal) {
+            publishFatalAuthorizationState();
+            return;
+        }
+        if (!authorizationOperationInFlight.compareAndSet(false, true)) {
+            publishMappedAuthorizationState(getString(
+                    R.string.authorization_operation_in_progress));
+            return;
+        }
+        publishTransientAuthorizationState(
+                DualMachineAuthorizationUiState.Status.ACTIVATING);
+        try {
+            authorizationExecutor.execute(() -> {
+                boolean saved = false;
+                try {
+                    store.saveQueuedCard(canonical);
+                    queuedCardPresent = true;
+                    saved = true;
+                    events.write(
+                            "dual_machine_card_queued",
+                            "sealed_with_android_keystore=true "
+                                    + "card_logged=false automatic_resume=true");
+                    publishMappedAuthorizationState("");
+                } catch (IOException | GeneralSecurityException
+                         | RuntimeException failure) {
+                    queuedCardPresent = false;
+                    events.write(
+                            "dual_machine_card_queue_failed",
+                            "failure_type="
+                                    + failure.getClass().getSimpleName()
+                                    + " card_logged=false input_reenabled=true");
+                    publishMappedAuthorizationState(getString(
+                            R.string.authorization_operation_failed));
+                } finally {
+                    authorizationOperationInFlight.set(false);
+                }
+                if (saved) activateQueuedCardIfReady();
+            });
+        } catch (RuntimeException schedulingFailure) {
+            authorizationOperationInFlight.set(false);
+            queuedCardPresent = false;
+            publishMappedAuthorizationState(getString(
+                    R.string.authorization_operation_failed));
+        }
+    }
+
+    private void onPairingAuthorizationStateChanged() {
+        publishMappedAuthorizationState("");
+        activateQueuedCardIfReady();
+    }
+
+    private void activateQueuedCardIfReady() {
+        DualMachineAuthorizationRuntime runtime = authorizationRuntime;
+        AndroidPendingActivationStore store = pendingActivationStore;
+        if (destroying || !queuedCardPresent || runtime == null
+                || store == null || authorizationSecurityFatal
+                || runtime.snapshot().entitlement != null
+                || !runtime.hasCardActivationAuthority()
+                || !authorizationOperationInFlight.compareAndSet(
+                        false, true)) {
+            return;
+        }
+        publishTransientAuthorizationState(
+                DualMachineAuthorizationUiState.Status.ACTIVATING);
+        try {
+            authorizationExecutor.execute(() ->
+                    runQueuedCardActivation(runtime, store));
+        } catch (RuntimeException schedulingFailure) {
+            authorizationOperationInFlight.set(false);
+            publishMappedAuthorizationState(getString(
+                    R.string.authorization_operation_failed));
+        }
+    }
+
+    private void runQueuedCardActivation(
+            DualMachineAuthorizationRuntime runtime,
+            AndroidPendingActivationStore store) {
+        boolean activated = false;
+        String cardCode = null;
+        try {
+            cardCode = store.loadQueuedCard();
+            if (cardCode == null) {
+                queuedCardPresent = false;
+                publishMappedAuthorizationState("");
+                return;
+            }
+            if (runtime.snapshot().hasPendingActivationConfirmation()) {
+                runtime.resumePendingActivation();
+            } else {
+                runtime.activateCard(cardCode);
+            }
+            store.clearQueuedCard();
+            queuedCardPresent = false;
+            activated = true;
+            events.write(
+                    "dual_machine_queued_card_activation",
+                    "result=success card_logged=false queued_card_cleared=true");
+            publishMappedAuthorizationState("");
+        } catch (IOException | GeneralSecurityException
+                 | RuntimeException failure) {
+            boolean discarded = queuedCardFailureIsPermanent(failure);
+            if (discarded) {
+                try {
+                    store.clearQueuedCard();
+                    queuedCardPresent = false;
+                } catch (IOException clearFailure) {
+                    discarded = false;
+                }
+            }
+            events.write(
+                    "dual_machine_queued_card_activation",
+                    "result=failed failure_type="
+                            + failure.getClass().getSimpleName()
+                            + " card_logged=false retained_for_retry="
+                            + !discarded);
+            publishMappedAuthorizationState(
+                    authorizationFailureMessage(failure));
+        } finally {
+            cardCode = null;
+            authorizationOperationInFlight.set(false);
+        }
+        if (activated) {
+            pairingRuntime.scheduleAuthenticatedControlIfNeeded();
+        }
+    }
+
+    private static boolean queuedCardFailureIsPermanent(Throwable failure) {
+        if (!(failure instanceof DualMachineSidecarPort.RejectedException)) {
+            return false;
+        }
+        String code = ((DualMachineSidecarPort.RejectedException) failure)
+                .safeErrorCode;
+        return "license_unavailable".equals(code)
+                || "license_bound_to_another_device".equals(code)
+                || "license_device_binding_inconsistent".equals(code);
     }
 
     private void requestPendingActivationResume() {
@@ -2275,6 +2429,39 @@ public final class MobileRuntimeService extends Service {
         } catch (RuntimeException | LinkageError queueFailure) {
             runClaimedFormalUsageStop(handle, reason);
             throw queueFailure;
+        }
+    }
+
+    private boolean restoreQueuedCardPresence(
+            AndroidPendingActivationStore store) {
+        try {
+            String queuedCard = store.loadQueuedCard();
+            boolean present = queuedCard != null;
+            queuedCard = null;
+            return present;
+        } catch (IOException | GeneralSecurityException
+                 | RuntimeException failure) {
+            events.write(
+                    "dual_machine_queued_card_restore_failed",
+                    "failure_type=" + failure.getClass().getSimpleName()
+                            + " card_logged=false input_reenabled=true");
+            return false;
+        }
+    }
+
+    private void clearQueuedCardAfterEntitlementRestore(
+            DualMachineAuthorizationRuntime runtime,
+            AndroidPendingActivationStore store) {
+        if (runtime.snapshot().entitlement == null) return;
+        queuedCardPresent = false;
+        try {
+            store.clearQueuedCard();
+        } catch (IOException | RuntimeException failure) {
+            events.write(
+                    "dual_machine_queued_card_cleanup_deferred",
+                    "reason=entitlement_already_restored failure_type="
+                            + failure.getClass().getSimpleName()
+                            + " card_logged=false");
         }
     }
 
@@ -3402,6 +3589,7 @@ public final class MobileRuntimeService extends Service {
     private void scheduleAuthorizationMaintenance() {
         pairingRuntime.scheduleFirstPairingIfNeeded();
         pairingRuntime.scheduleAuthenticatedControlIfNeeded();
+        activateQueuedCardIfReady();
         ensureAuthorizationStatusRetryScheduled();
         DualMachineAuthorizationRuntime runtime = authorizationRuntime;
         if (destroying || runtime == null) {
@@ -4614,6 +4802,19 @@ public final class MobileRuntimeService extends Service {
         if (runtime == null) {
             if (authorizationSecurityFatal) {
                 publishFatalAuthorizationState();
+            } else if (queuedCardPresent) {
+                publishAuthorizationState(
+                        new DualMachineAuthorizationUiState(
+                                DualMachineAuthorizationUiState.Status
+                                        .CARD_SAVED_WAITING_FOR_HOST,
+                                false,
+                                false,
+                                0L,
+                                0L,
+                                false,
+                                false,
+                                ""),
+                        detail);
             } else {
                 publishAuthorizationState(
                         DualMachineAuthorizationUiState.readyForActivation(),
@@ -4633,7 +4834,8 @@ public final class MobileRuntimeService extends Service {
                         runtime.hasCardActivationAuthority(),
                         authorizationSecurityFatal,
                         detail,
-                        cachedBalance);
+                        cachedBalance,
+                        queuedCardPresent);
         publishAuthorizationState(mapped, detail);
     }
 

@@ -107,7 +107,7 @@ bool HostFirstPairingServiceV1::start(
         return false;
     }
     const auto started = listener_.start(
-        bind_ipv4, kWiredAuthenticatedControlPort);
+        bind_ipv4, kWiredFirstPairingPort);
     if (!started.succeeded()) {
         error = "fresh-pair TCP listener failed with status=" +
             std::to_string(static_cast<unsigned>(started.status)) +
@@ -195,13 +195,16 @@ void HostFirstPairingServiceV1::run() noexcept {
             std::lock_guard lock(connection_mutex_);
             active_connection_ = accepted.connection.get();
         }
-        const bool completed = process_candidate(*accepted.connection);
+        (void)process_candidate(*accepted.connection);
         accepted.connection->close();
         {
             std::lock_guard lock(connection_mutex_);
             active_connection_ = nullptr;
         }
-        if (completed || stopping_.load()) break;
+        // Keep the recovery endpoint alive after a successful candidate.  A
+        // later Android reinstall may need a server-authorized same-device
+        // rebind while this Host process and its durable binding stay alive.
+        if (stopping_.load()) break;
     }
     listener_.close();
     running_.store(false);
