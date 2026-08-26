@@ -144,8 +144,20 @@ constexpr std::array<std::byte, 27U> kP256SpkiPrefix{
             return {kHostFinishedRules.data(), kHostFinishedRules.size()};
         case ControlBootstrapMessageTypeV1::abort:
             return {kAbortRules.data(), kAbortRules.size()};
+        // First-pairing and activation records use the fixed-width codecs in
+        // first_pairing_bootstrap_payload_v1. They must never fall through to
+        // this legacy TLV codec, but still need explicit handling so adding a
+        // protocol message cannot silently weaken -Wswitch coverage.
+        case ControlBootstrapMessageTypeV1::host_first_pair_offer:
+        case ControlBootstrapMessageTypeV1::android_first_pair_offer:
+        case ControlBootstrapMessageTypeV1::android_first_pair_confirmation:
+        case ControlBootstrapMessageTypeV1::host_first_pair_confirmation:
+        case ControlBootstrapMessageTypeV1::activation_proof_request:
+        case ControlBootstrapMessageTypeV1::host_activation_signature:
+        case ControlBootstrapMessageTypeV1::activation_result:
+        case ControlBootstrapMessageTypeV1::first_pair_complete:
         case ControlBootstrapMessageTypeV1::invalid:
-            break;
+            return {};
     }
     return {};
 }
