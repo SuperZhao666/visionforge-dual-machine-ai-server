@@ -426,7 +426,20 @@ bool HostRuntimeAuthorizationCoordinator::install_authenticated_channel(
     std::unique_ptr<AuthenticatedControlTcpConnectionV1> connection)
     noexcept {
     try {
+        // A valid successor may complete its bound handshake before the old
+        // socket's EOF reaches the worker.  Capture the still-running operator
+        // request before close() fail-closes the old authorization gate, then
+        // expose only a fresh one-shot intent to the new authenticated peer.
+        const bool preserve_operator_start_for_successor =
+            runtime_.is_running();
         close();
+        if (preserve_operator_start_for_successor) {
+            (void)runtime_.offer_pending_start_intent();
+            log_host_runtime_event(
+                "host_start_intent_rearmed_for_authenticated_successor",
+                "operator_start_preserved=true successor_authenticated=true "
+                "data_plane_open=false billing_started=false");
+        }
         if (session == nullptr || connection == nullptr ||
             !connection->is_open() ||
             session->local_role() != PeerHandshakeRole::host) {
@@ -944,9 +957,30 @@ void HostRuntimeAuthorizationCoordinator::run_authenticated_control()
             "host_authenticated_control_worker_failed",
             "stage=unexpected_exception data_plane_open=false");
     }
-    std::lock_guard lock(mutex_);
-    if (connection_ != nullptr) connection_->close();
+    // A mobile process restart (including an APK overlay) tears down the
+    // authenticated control socket before its successor can prove the next
+    // session generation.  If the operator's stream was still running, retain
+    // that one user intent across the fail-closed interruption so the newly
+    // authenticated mobile process can request a fresh server lease.  This
+    // does not reopen the data plane: the successor must still claim the new
+    // one-shot token and complete the normal signed Offer/Accept/Commit flow.
+    // Intentional Host shutdown sets stopping_ and must never arm an automatic
+    // restart from this worker.  An already-authenticated replacement is
+    // handled explicitly by install_authenticated_channel().
+    const bool preserve_operator_start =
+        !stopping_.load() && runtime_.is_running();
+    {
+        std::lock_guard lock(mutex_);
+        if (connection_ != nullptr) connection_->close();
+    }
     runtime_.revoke_data_plane_authorization();
+    if (preserve_operator_start) {
+        (void)runtime_.offer_pending_start_intent();
+        log_host_runtime_event(
+            "host_start_intent_rearmed_after_channel_loss",
+            "operator_start_preserved=true channel_authenticated=false "
+            "data_plane_open=false billing_started=false");
+    }
 }
 
 void HostRuntimeAuthorizationCoordinator::close() noexcept {

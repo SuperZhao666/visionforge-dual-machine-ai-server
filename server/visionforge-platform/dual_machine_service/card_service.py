@@ -238,6 +238,7 @@ class CardActivationService:
                 _activation_target(
                     repository,
                     card,
+                    host_key_sha256=host_identity.fingerprint_sha256,
                     android_key_sha256=(
                         android_identity.fingerprint_sha256
                     ),
@@ -252,6 +253,7 @@ class CardActivationService:
                     _new_card_activation_target(
                         repository,
                         normalized["pair_id"],
+                        host_key_sha256=host_identity.fingerprint_sha256,
                         android_key_sha256=(
                             android_identity.fingerprint_sha256
                         ),
@@ -459,6 +461,9 @@ class CardActivationService:
                     _require_same_or_unbound_android_device(
                         repository,
                         existing_entitlement,
+                        host_key_sha256=str(
+                            challenge["host_key_sha256"],
+                        ),
                         android_key_sha256=str(
                             challenge["android_key_sha256"],
                         ),
@@ -800,6 +805,7 @@ class CardActivationService:
         _require_same_or_unbound_android_device(
             repository,
             entitlement,
+            host_key_sha256=str(challenge["host_key_sha256"]),
             android_key_sha256=str(challenge["android_key_sha256"]),
             android_device_profile_json=str(
                 challenge.get("android_device_profile_json") or "{}",
@@ -1213,6 +1219,7 @@ def _activation_target(
     repository: LicenseRepository,
     card: dict[str, Any] | None,
     *,
+    host_key_sha256: str,
     android_key_sha256: str,
     android_device_profile: dict[str, Any],
     now_epoch: int,
@@ -1239,6 +1246,7 @@ def _activation_target(
             _require_same_or_unbound_android_device(
                 repository,
                 entitlement,
+                host_key_sha256=host_key_sha256,
                 android_key_sha256=android_key_sha256,
                 android_device_profile_json=json.dumps(
                     android_device_profile,
@@ -1276,6 +1284,7 @@ def _new_card_activation_target(
     repository: LicenseRepository,
     pair_id: str,
     *,
+    host_key_sha256: str,
     android_key_sha256: str,
     android_device_profile: dict[str, Any],
 ) -> tuple[str, str]:
@@ -1285,6 +1294,7 @@ def _new_card_activation_target(
     _require_same_or_unbound_android_device(
         repository,
         existing,
+        host_key_sha256=host_key_sha256,
         android_key_sha256=android_key_sha256,
         android_device_profile_json=json.dumps(
             android_device_profile,
@@ -1300,6 +1310,7 @@ def _require_same_or_unbound_android_device(
     repository: LicenseRepository,
     entitlement: dict[str, Any],
     *,
+    host_key_sha256: str,
     android_key_sha256: str,
     android_device_profile_json: str,
 ) -> None:
@@ -1319,24 +1330,42 @@ def _require_same_or_unbound_android_device(
             409,
         )
 
-    current_key = str(current["android_key_sha256"])
-    if not hmac.compare_digest(current_key, str(android_key_sha256)):
+    current_host_key = str(current["host_key_sha256"])
+    if not hmac.compare_digest(current_host_key, str(host_key_sha256)):
         raise DualMachineServiceError(
             "license_bound_to_another_device",
             409,
         )
+    current_key = str(current["android_key_sha256"])
     current_fingerprint = _device_profile_fingerprint(
         str(current.get("android_device_profile_json") or "{}"),
     )
     requested_fingerprint = _device_profile_fingerprint(
         android_device_profile_json,
     )
-    if (
+    fingerprint_changed = (
         current_fingerprint
         and requested_fingerprint
         and not hmac.compare_digest(
-            current_fingerprint,
-            requested_fingerprint,
+            current_fingerprint, requested_fingerprint,
+        )
+    )
+    if fingerprint_changed:
+        raise DualMachineServiceError(
+            "license_bound_to_another_device",
+            409,
+        )
+    if hmac.compare_digest(current_key, str(android_key_sha256)):
+        return
+    # AndroidKeyStore deletes app-owned keys on a clean uninstall.  A card
+    # proof may rotate that key only when the unchanged Host identity and both
+    # non-empty, normalized physical-device fingerprints agree.  A missing or
+    # different fingerprint remains fail-closed.
+    if (
+        not current_fingerprint
+        or not requested_fingerprint
+        or not hmac.compare_digest(
+            current_fingerprint, requested_fingerprint,
         )
     ):
         raise DualMachineServiceError(

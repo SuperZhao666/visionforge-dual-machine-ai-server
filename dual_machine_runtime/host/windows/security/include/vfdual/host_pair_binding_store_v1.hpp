@@ -28,6 +28,15 @@ public:
         const HostAuthenticatedControlPairBindingV1& binding,
         std::string& error);
 
+    /**
+     * Atomically installs a server-confirmed replacement for the same
+     * entitlement on the same Host identity.  A different entitlement, Host,
+     * or non-advancing binding revision fails closed.
+     */
+    [[nodiscard]] bool commit_server_authorized_rebinding(
+        const HostAuthenticatedControlPairBindingV1& binding,
+        std::string& error);
+
     /** Commits a strictly newer server generation for the exact stored pair. */
     [[nodiscard]] bool commit_generation(
         const HostAuthenticatedControlPairBindingV1& expected_binding,

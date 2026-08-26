@@ -370,6 +370,7 @@ public final class MobileRuntimeService extends Service {
     private volatile DualMachineAuthorizationUiState authorizationUiState =
             DualMachineAuthorizationUiState.readyForActivation();
     private volatile DualMachineAuthorizationRuntime authorizationRuntime;
+    private volatile QueuedCardActivationCoordinator queuedCardActivation;
     private volatile boolean authorizationSecurityFatal;
     /** Guarded by {@link #authorizationLifecycleLock}. */
     private long authorizationInitializationGeneration;
@@ -409,6 +410,8 @@ public final class MobileRuntimeService extends Service {
         compositionRoot.publish(runtimeStatus);
         compositionRoot.publishEthernetDiagnostics(latestEthernetDiagnostics);
         events = new MobileEventLogger(this);
+        AndroidPendingActivationStore activationStore =
+                new AndroidPendingActivationStore(this);
         presentationBalanceReconciler =
                 new DualMachinePresentationBalanceReconciler(
                         new SharedPreferencesDualMachinePresentationBalanceStore(
@@ -420,6 +423,19 @@ public final class MobileRuntimeService extends Service {
         controlRuntime = MobileControlRuntime.get(this);
         controlRuntime.ensureSelectedOutputConnected();
         pipeline = new MobilePipelineCoordinator(new QnnNativeVideoInferencePipeline(), events);
+        queuedCardActivation = new QueuedCardActivationCoordinator(
+                this,
+                activationStore,
+                authorizationExecutor,
+                authorizationOperationInFlight,
+                () -> authorizationRuntime,
+                () -> destroying || authorizationSecurityFatal,
+                this::publishTransientAuthorizationState,
+                this::publishMappedAuthorizationState,
+                this::authorizationFailureMessage,
+                () -> pairingRuntime.scheduleAuthenticatedControlIfNeeded(),
+                this::publishFatalAuthorizationState,
+                events);
         pairingRuntime = new MobilePairingRuntimeCoordinator(
                 this,
                 NOTIFICATION_ID,
@@ -430,7 +446,7 @@ public final class MobileRuntimeService extends Service {
                 () -> controlRuntime,
                 () -> pipeline,
                 this::attachAuthenticatedHost,
-                () -> publishMappedAuthorizationState(""),
+                queuedCardActivation::onPairingAuthorizationStateChanged,
                 this::updateNotification,
                 this::nextAuthorizationId);
         hostVideoPresenceProbe = new HostVideoPresenceProbe(events);
@@ -583,6 +599,15 @@ public final class MobileRuntimeService extends Service {
                                     AndroidDeviceProfileCollector.collect(
                                             getApplicationContext()),
                                     identityStore::sign);
+                    QueuedCardActivationCoordinator queuedCards =
+                            queuedCardActivation;
+                    if (queuedCards == null) {
+                        throw new GeneralSecurityException(
+                                "queued card coordinator is unavailable");
+                    }
+                    AndroidPendingActivationStore activationStore =
+                            queuedCards.store();
+                    queuedCards.restorePresence();
                     deadlines =
                             new DualMachineMonotonicDeadlineScheduler();
                     created = new DualMachineAuthorizationRuntime(
@@ -591,8 +616,7 @@ public final class MobileRuntimeService extends Service {
                                     security.leaseKeyring,
                                     new SharedPreferencesDualMachineEntitlementStore(
                                             getApplicationContext()),
-                                    new AndroidPendingActivationStore(
-                                            getApplicationContext()),
+                                    activationStore,
                                     androidIdentity,
                                     identityStore.alias(),
                                     this::nextAuthorizationId,
@@ -612,9 +636,12 @@ public final class MobileRuntimeService extends Service {
                                 "reason=initialization_superseded");
                         return;
                     }
+                    queuedCards.reconcileAfterRuntimeRestore(created);
                     events.write(
                             "dual_machine_authorization_runtime_ready",
-                            "card_secret_persisted=false "
+                            "card_secret_plaintext_persisted=false "
+                                    + "queued_card_sealed="
+                                    + queuedCards.isPresent() + " "
                                     + "host_session_persisted=false "
                                     + "authenticated_host_attached=false "
                                     + "formal_lease_restored=false");
@@ -622,6 +649,7 @@ public final class MobileRuntimeService extends Service {
                     refreshAuthorizationStatusAfterRestore(created);
                     pairingRuntime.scheduleFirstPairingIfNeeded();
                     pairingRuntime.scheduleAuthenticatedControlIfNeeded();
+                    queuedCards.activateIfReady();
                 } catch (IOException | GeneralSecurityException
                          | RuntimeException failure) {
                     if (created != null) created.close();
@@ -1267,18 +1295,7 @@ public final class MobileRuntimeService extends Service {
     }
 
     private void requestCardActivation(String cardCode) {
-        final String canonical;
-        try {
-            canonical = DualMachineCardCode.normalizeAndValidate(cardCode);
-        } catch (IllegalArgumentException invalid) {
-            publishMappedAuthorizationState(getString(
-                    R.string.authorization_card_invalid));
-            return;
-        }
-        executeAuthorizationOperation(
-                "activate_card",
-                DualMachineAuthorizationUiState.Status.ACTIVATING,
-                runtime -> runtime.activateCard(canonical));
+        queuedCardActivation.submit(cardCode);
     }
 
     private void requestPendingActivationResume() {
@@ -3402,6 +3419,8 @@ public final class MobileRuntimeService extends Service {
     private void scheduleAuthorizationMaintenance() {
         pairingRuntime.scheduleFirstPairingIfNeeded();
         pairingRuntime.scheduleAuthenticatedControlIfNeeded();
+        QueuedCardActivationCoordinator queuedCards = queuedCardActivation;
+        if (queuedCards != null) queuedCards.activateIfReady();
         ensureAuthorizationStatusRetryScheduled();
         DualMachineAuthorizationRuntime runtime = authorizationRuntime;
         if (destroying || runtime == null) {
@@ -4611,16 +4630,21 @@ public final class MobileRuntimeService extends Service {
 
     private void publishMappedAuthorizationState(String detail) {
         DualMachineAuthorizationRuntime runtime = authorizationRuntime;
+        QueuedCardActivationCoordinator queuedCards = queuedCardActivation;
         if (runtime == null) {
             if (authorizationSecurityFatal) {
                 publishFatalAuthorizationState();
             } else {
                 publishAuthorizationState(
-                        DualMachineAuthorizationUiState.readyForActivation(),
+                        queuedCards == null
+                                ? DualMachineAuthorizationUiState
+                                .readyForActivation()
+                                : queuedCards.unactivatedState(),
                         detail);
             }
             return;
         }
+        boolean cardQueued = queuedCards != null && queuedCards.isPresent();
         DualMachineFormalUsageStateMachine.Snapshot snapshot =
                 runtime.snapshot();
         DualMachinePresentationBalance cachedBalance =
@@ -4633,7 +4657,8 @@ public final class MobileRuntimeService extends Service {
                         runtime.hasCardActivationAuthority(),
                         authorizationSecurityFatal,
                         detail,
-                        cachedBalance);
+                        cachedBalance,
+                        cardQueued);
         publishAuthorizationState(mapped, detail);
     }
 

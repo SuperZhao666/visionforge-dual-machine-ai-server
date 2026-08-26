@@ -34,13 +34,15 @@
 
 ## 一机一码设备绑定语义
 
-- 卡密首次激活后，当前绑定保存 Android P-256 身份公钥摘要，以及客户端
-  可提供时的 `device_fingerprint`；卡密再次提交只允许同一 Android 身份。
-- 当前绑定与新请求都包含非空 `device_fingerprint` 时，两者也必须一致；历史
-  绑定仅保存 `{}` 时保持同身份兼容，并在成功重绑后记录新指纹。
-- Android 身份或有效设备指纹不一致时，在 challenge 阶段返回
-  `license_bound_to_another_device`，不得新增 challenge、审计或改变授权状态。
-- 换机必须先由管理员显式解绑。解绑会关闭当前绑定并作废待处理 challenge；
+- 卡密首次激活后，当前绑定保存 Host 与 Android 的 P-256 身份公钥摘要，以及
+  客户端可提供时的 `device_fingerprint`；原 Android 身份再次提交仍按原绑定处理。
+- Android 卸载重装导致身份私钥轮换时，仅允许在 Host 身份保持不变，并且当前
+  绑定与新请求都包含相同的非空 `device_fingerprint` 时，通过完整卡密证明、
+  Host 旧身份签名和 Android 新身份签名重新绑定。指纹本身不是授权凭据。
+- 身份轮换时缺少指纹、指纹不一致或 Host 身份改变，均在 challenge 阶段返回
+  `license_bound_to_another_device`，不得新增 challenge、审计或改变授权状态；
+  历史绑定仅保存 `{}` 时只保持原 Android 身份兼容，不允许据此轮换身份。
+- 真正换机或更换 Host 必须先由管理员显式解绑。解绑会关闭当前绑定并作废待处理 challenge；
   随后的并发换机请求最多只有一个能够取得待确认 challenge，其余请求失败。
 - 相同 `request_id` 与相同载荷的 challenge 重放返回原 challenge；相同确认的
   并发或延迟重放返回同一激活结果，不重复建授权、消费卡密或写激活审计。

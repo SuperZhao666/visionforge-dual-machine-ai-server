@@ -93,7 +93,7 @@ final class AndroidFirstPairingCoordinatorV1 implements AutoCloseable {
                     endpoint.network,
                     endpoint.localIpv4,
                     endpoint.hostIpv4,
-                    AuthenticatedControlTcpChannelV1.DEFAULT_PORT,
+                    AuthenticatedControlTcpChannelV1.FIRST_PAIRING_PORT,
                     IO_TIMEOUT_MILLIS);
         }
 
@@ -176,7 +176,7 @@ final class AndroidFirstPairingCoordinatorV1 implements AutoCloseable {
                                 ipv4(peerIpv4),
                                 ipv4(localIpv4),
                                 MobilePipelineCoordinator.VIDEO_PORT,
-                                AuthenticatedControlTcpChannelV1.DEFAULT_PORT,
+                                AuthenticatedControlTcpChannelV1.AUTHENTICATED_CONTROL_PORT,
                                 received.runtimeVersionSha256(),
                                 androidOffer.runtimeVersionSha256(),
                                 received.expiresAtEpoch))) {

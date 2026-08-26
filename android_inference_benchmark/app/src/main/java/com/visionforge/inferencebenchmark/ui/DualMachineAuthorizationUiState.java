@@ -6,6 +6,7 @@ import java.util.Objects;
 public final class DualMachineAuthorizationUiState {
     public enum Status {
         WAITING_FOR_HOST,
+        CARD_SAVED_WAITING_FOR_HOST,
         READY_FOR_ACTIVATION,
         ACTIVATING,
         ACTIVATION_PENDING,
@@ -154,6 +155,18 @@ public final class DualMachineAuthorizationUiState {
                 "");
     }
 
+    public static DualMachineAuthorizationUiState
+            cardSavedWaitingForHost() {
+        return new DualMachineAuthorizationUiState(
+                Status.CARD_SAVED_WAITING_FOR_HOST,
+                false,
+                0L,
+                0L,
+                false,
+                false,
+                "");
+    }
+
     public boolean entitlementBound() {
         return status == Status.ACTIVE_IDLE
                 || status == Status.STARTING
@@ -184,9 +197,10 @@ public final class DualMachineAuthorizationUiState {
     }
 
     /**
-     * Card text may be prepared before Host authentication so the UI never
-     * presents a visible but inert input. Submission remains fail-closed in
-     * {@link #canActivateCard()} until a proof-producing Host is available.
+     * Card text may be submitted before Host authentication so the UI never
+     * presents a visible but inert input. The service seals that submitted
+     * value and resumes activation automatically once a proof-producing Host
+     * is available; queued and in-flight states deliberately hide this form.
      */
     public boolean canEnterCardCode() {
         return status == Status.WAITING_FOR_HOST
@@ -215,9 +229,7 @@ public final class DualMachineAuthorizationUiState {
 
     public boolean isActivationCardVisible() {
         return status == Status.WAITING_FOR_HOST
-                || status == Status.READY_FOR_ACTIVATION
-                || status == Status.ACTIVATING
-                || status == Status.ACTIVATION_PENDING;
+                || status == Status.READY_FOR_ACTIVATION;
     }
 
     private static boolean inferLegacyBalanceKnown(

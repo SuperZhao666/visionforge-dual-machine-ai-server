@@ -216,6 +216,34 @@ public final class PairingIdentityTestInstrumentation extends Instrumentation {
         store.clear();
         require(store.load() == null,
                 "cleared pending activation must be absent");
+
+        String cardCode = "VFD2-9FW4B-TVHCV-B7EKW-YHVHR-E77GF-Z5MYW";
+        store.saveQueuedCard(cardCode);
+        String sealedCard = preferences.getString(
+                AndroidPendingActivationStore.QUEUED_CARD_VALUE_KEY, "");
+        require(!sealedCard.isEmpty(),
+                "queued card must be persisted");
+        require(!sealedCard.contains(cardCode),
+                "queued card must not appear in sealed storage");
+        require(cardCode.equals(store.loadQueuedCard()),
+                "queued card must round-trip exactly");
+        byte[] corruptedCard = Base64.getDecoder().decode(sealedCard);
+        corruptedCard[corruptedCard.length - 1] ^= 1;
+        require(preferences.edit().putString(
+                        AndroidPendingActivationStore.QUEUED_CARD_VALUE_KEY,
+                        Base64.getEncoder().encodeToString(corruptedCard))
+                        .commit(),
+                "corrupt queued-card fixture write must succeed");
+        try {
+            store.loadQueuedCard();
+            throw new AssertionError(
+                    "tampered queued card must fail closed");
+        } catch (java.security.GeneralSecurityException expectedFailure) {
+            // Expected AEAD authentication failure.
+        }
+        store.clearQueuedCard();
+        require(store.loadQueuedCard() == null,
+                "cleared queued card must be absent");
     }
 
     /**

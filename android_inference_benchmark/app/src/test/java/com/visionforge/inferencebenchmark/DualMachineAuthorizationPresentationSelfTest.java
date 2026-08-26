@@ -44,6 +44,14 @@ public final class DualMachineAuthorizationPresentationSelfTest {
         require(ready.isActivationCardVisible());
         require(ready.canEnterCardCode());
 
+        DualMachineAuthorizationUiState queued =
+                state(DualMachineAuthorizationUiState.Status
+                                .CARD_SAVED_WAITING_FOR_HOST,
+                        false, 0L);
+        require(!queued.canActivateCard());
+        require(!queued.isActivationCardVisible());
+        require(!queued.canEnterCardCode());
+
         DualMachineAuthorizationUiState idle =
                 state(DualMachineAuthorizationUiState.Status.ACTIVE_IDLE,
                         true, 3_600L);
@@ -244,7 +252,7 @@ public final class DualMachineAuthorizationPresentationSelfTest {
         require(activating.status
                 == DualMachineAuthorizationUiState.Status.ACTIVATING);
         require(!activating.balanceKnown);
-        require(activating.isActivationCardVisible());
+        require(!activating.isActivationCardVisible());
         stateMachine.markCardActivationPending();
         DualMachineAuthorizationUiState pending =
                 DualMachineAuthorizationUiMapper.map(
@@ -256,7 +264,7 @@ public final class DualMachineAuthorizationPresentationSelfTest {
         require(pending.canResumeActivation());
         require(!pending.canEnterCardCode());
         require(!pending.balanceKnown);
-        require(pending.isActivationCardVisible());
+        require(!pending.isActivationCardVisible());
 
         DualMachineAuthorizationUiState fatal =
                 DualMachineAuthorizationUiMapper.map(

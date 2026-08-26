@@ -75,7 +75,7 @@ final class AndroidBoundAuthenticatedControlCoordinatorV1
                     endpoint.network,
                     endpoint.localIpv4,
                     endpoint.hostIpv4,
-                    AuthenticatedControlTcpChannelV1.DEFAULT_PORT,
+                    AuthenticatedControlTcpChannelV1.AUTHENTICATED_CONTROL_PORT,
                     IO_TIMEOUT_MILLIS);
             handshake = AuthenticatedPairingHandshake.create(
                     entitlement,

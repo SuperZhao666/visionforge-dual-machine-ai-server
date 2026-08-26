@@ -235,14 +235,14 @@ def _event_count(settings: DualMachineSettings, event_type: str) -> int:
         connection.close()
 
 
-def test_different_android_key_is_rejected_without_any_side_effect(
+def test_same_device_reinstall_rotates_android_key_after_proof(
     device_lock_settings: DualMachineSettings,
 ) -> None:
     activated = _issue_and_activate(
         device_lock_settings,
         android_device_profile={"device_fingerprint": INITIAL_FINGERPRINT},
     )
-    _, other_android_public = _identity()
+    other_android_private, other_android_public = _identity()
     command = _activation_command(
         activated.code,
         request_id="4" * 32,
@@ -251,11 +251,89 @@ def test_different_android_key_is_rejected_without_any_side_effect(
         android_public_key=other_android_public,
         android_device_profile={"device_fingerprint": INITIAL_FINGERPRINT},
     )
+    challenge = activated.service.create_challenge(
+        command,
+        client_ip="127.0.0.2",
+        now_epoch=1_700_000_010,
+    )
+    rebound = activated.service.confirm_activation(
+        _confirm_command(
+            challenge,
+            activated.host_private_key,
+            other_android_private,
+        ),
+        client_ip="127.0.0.2",
+        now_epoch=1_700_000_011,
+    )
+
+    current = _current_binding(device_lock_settings)
+    assert challenge["activation_mode"] == "bind_device"
+    assert rebound["entitlement_id"] == activated.entitlement_id
+    assert rebound["binding_updated"] is True
+    assert current is not None
+    assert current["android_identity_public_key_b64"] == other_android_public
+    assert json.loads(current["android_device_profile_json"])[
+        "device_fingerprint"
+    ] == INITIAL_FINGERPRINT
+
+
+def test_same_device_fingerprint_cannot_rotate_key_from_another_host(
+    device_lock_settings: DualMachineSettings,
+) -> None:
+    activated = _issue_and_activate(
+        device_lock_settings,
+        android_device_profile={"device_fingerprint": INITIAL_FINGERPRINT},
+    )
+    _, other_host_public = _identity()
+    _, other_android_public = _identity()
     before = _database_snapshot(device_lock_settings)
 
     with pytest.raises(DualMachineServiceError) as error:
         activated.service.create_challenge(
-            command,
+            _activation_command(
+                activated.code,
+                request_id="4" * 32,
+                pair_id="5" * 32,
+                host_public_key=other_host_public,
+                android_public_key=other_android_public,
+                android_device_profile={
+                    "device_fingerprint": INITIAL_FINGERPRINT,
+                },
+            ),
+            client_ip="127.0.0.2",
+            now_epoch=1_700_000_010,
+        )
+
+    assert error.value.code == "license_bound_to_another_device"
+    assert error.value.status_code == 409
+    assert _database_snapshot(device_lock_settings) == before
+
+
+@pytest.mark.parametrize(
+    "replacement_profile",
+    [{}, {"device_fingerprint": SECOND_FINGERPRINT}],
+)
+def test_android_key_rotation_requires_same_nonempty_device_fingerprint(
+    device_lock_settings: DualMachineSettings,
+    replacement_profile: dict[str, str],
+) -> None:
+    activated = _issue_and_activate(
+        device_lock_settings,
+        android_device_profile={"device_fingerprint": INITIAL_FINGERPRINT},
+    )
+    _, other_android_public = _identity()
+    before = _database_snapshot(device_lock_settings)
+
+    with pytest.raises(DualMachineServiceError) as error:
+        activated.service.create_challenge(
+            _activation_command(
+                activated.code,
+                request_id="6" * 32,
+                pair_id="7" * 32,
+                host_public_key=activated.host_public_key,
+                android_public_key=other_android_public,
+                android_device_profile=replacement_profile,
+            ),
             client_ip="127.0.0.2",
             now_epoch=1_700_000_010,
         )

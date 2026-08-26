@@ -13,7 +13,14 @@
 
 namespace vfdual {
 
-/** Production socket owner for one exact VFB1 bound-pair handshake. */
+/**
+ * Production socket owner for successive exact VFB1 bound-pair handshakes.
+ *
+ * A successful candidate transfers its connection to the authorization
+ * coordinator while this listener remains available for a later authenticated
+ * reconnect.  Each successor must still consume a new server-authorized
+ * generation for the same persisted pair.
+ */
 class HostAuthenticatedControlServiceV1 final {
 public:
     using GenerationCommit = std::function<bool(

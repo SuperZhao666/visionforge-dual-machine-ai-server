@@ -36,7 +36,6 @@ final class AuthorizationScreen implements MobileScreen {
     private final LinearLayout statusCard;
     private final FxPhaseGlowView statusPhaseGlow;
     private FxGlowDrawable statusGlow;
-    private boolean submissionEnabled;
 
     AuthorizationScreen(Context context, MobileAppActions actions) {
         this.context = context;
@@ -177,12 +176,6 @@ final class AuthorizationScreen implements MobileScreen {
                     R.string.authorization_card_invalid));
             return;
         }
-        if (!submissionEnabled) {
-            cardCode.setError(context.getString(
-                    R.string.authorization_start_host_before_activation));
-            cardCode.requestFocus();
-            return;
-        }
         cardCode.getText().clear();
         actions.onActivateCard(normalized);
     }
@@ -208,9 +201,17 @@ final class AuthorizationScreen implements MobileScreen {
                 color = VisionForgeTheme.WARNING;
                 glyph = MaterialIcons.LINK;
                 break;
+            case CARD_SAVED_WAITING_FOR_HOST:
+                titleResource =
+                        R.string.authorization_card_saved_waiting_for_host;
+                detailResource = R.string
+                        .authorization_card_saved_waiting_for_host_detail;
+                color = VisionForgeTheme.WARNING;
+                glyph = MaterialIcons.LOCK;
+                break;
             case READY_FOR_ACTIVATION:
                 titleResource = R.string.authorization_ready;
-                detailResource = R.string.authorization_ready_detail;
+                detailResource = 0;
                 color = VisionForgeTheme.ACCENT;
                 glyph = MaterialIcons.KEY;
                 break;
@@ -285,7 +286,7 @@ final class AuthorizationScreen implements MobileScreen {
                 break;
             default:
                 titleResource = R.string.authorization_ready;
-                detailResource = R.string.authorization_ready_detail;
+                detailResource = 0;
                 color = VisionForgeTheme.WARNING;
                 glyph = MaterialIcons.KEY;
                 break;
@@ -293,7 +294,10 @@ final class AuthorizationScreen implements MobileScreen {
         VisionForgeTheme.setTextIfChanged(
                 statusTitle, context.getString(titleResource));
         String detail = authorization.detail.isEmpty()
-                ? context.getString(detailResource) : authorization.detail;
+                ? detailResource == 0 ? "" : context.getString(detailResource)
+                : authorization.detail;
+        statusDetail.setVisibility(
+                detail.isEmpty() ? View.GONE : View.VISIBLE);
         VisionForgeTheme.setTextIfChanged(statusDetail, detail);
         VisionForgeTheme.setTextIfChanged(statusIcon, glyph);
         statusIcon.setTextColor(color);
@@ -307,7 +311,6 @@ final class AuthorizationScreen implements MobileScreen {
         VisionForgeTheme.setTextIfChanged(remaining,
                 formatBalance(authorization));
 
-        submissionEnabled = authorization.canActivateCard();
         boolean activationVisible = authorization.isActivationCardVisible();
         boolean cardEntryEnabled = authorization.canEnterCardCode();
         activationLabel.setVisibility(
@@ -339,6 +342,7 @@ final class AuthorizationScreen implements MobileScreen {
         if (!authorization.displayBalanceKnown) {
             switch (authorization.status) {
                 case WAITING_FOR_HOST:
+                case CARD_SAVED_WAITING_FOR_HOST:
                 case READY_FOR_ACTIVATION:
                     return context.getString(
                             R.string.authorization_balance_not_activated);

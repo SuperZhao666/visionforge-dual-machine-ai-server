@@ -1543,6 +1543,38 @@ final class MobileRuntimeServiceCommandContractSelfTest {
                 "protected void onStart()",
                 "protected void onResume()");
         require(activityStartMethod.contains("activityStarted = true;"));
+        require(!activityStartMethod.contains(
+                "if (uiPreviewOnly || runtimeServiceBound) return;"));
+        int alreadyBoundGuardIndex = activityStartMethod.indexOf(
+                "if (runtimeServiceBound && runtimeBinder != null)");
+        int alreadyBoundForegroundIndex = activityStartMethod.indexOf(
+                "runtimeBinder.setActivityForeground(true);",
+                alreadyBoundGuardIndex);
+        int pendingPairingRenderIndex = activityStartMethod.indexOf(
+                "runtimeBinder.firstPairingState()",
+                alreadyBoundForegroundIndex);
+        require(alreadyBoundGuardIndex >= 0);
+        require(alreadyBoundForegroundIndex > alreadyBoundGuardIndex);
+        require(pendingPairingRenderIndex > alreadyBoundForegroundIndex);
+        String pairingNotificationMethod = methodSlice(
+                pairingSource,
+                "private Notification pairingNotification(",
+                "private void publishState(");
+        int openPairingActivityIndex = pairingNotificationMethod.indexOf(
+                "new Intent(context, MainActivity.class)");
+        int openPairingFlagsIndex = pairingNotificationMethod.indexOf(
+                "Intent.FLAG_ACTIVITY_SINGLE_TOP",
+                openPairingActivityIndex);
+        int openPairingPendingIntentIndex = pairingNotificationMethod.indexOf(
+                "PendingIntent.getActivity(",
+                openPairingFlagsIndex);
+        int notificationContentIntentIndex = pairingNotificationMethod.indexOf(
+                ".setContentIntent(openIntent)",
+                openPairingPendingIntentIndex);
+        require(openPairingActivityIndex >= 0);
+        require(openPairingFlagsIndex > openPairingActivityIndex);
+        require(openPairingPendingIntentIndex > openPairingFlagsIndex);
+        require(notificationContentIntentIndex > openPairingPendingIntentIndex);
         String activityPauseMethod = methodSlice(
                 activity,
                 "protected void onPause()",

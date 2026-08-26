@@ -11,14 +11,14 @@
     <string name="section_card_activation">激活卡密</string>
     <string name="authorization_card_hint">VFD2-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX</string>
     <string name="authorization_card_invalid">卡密格式不正确，请核对后重新输入。</string>
-    <string name="authorization_start_host_before_activation">卡密已保留。请先启动同一网络中的 VF Host 并完成认证，再点击激活。</string>
     <string name="action_activate_card">激活卡密</string>
     <string name="action_resume_activation">恢复未完成的激活确认</string>
 
     <string name="authorization_waiting_for_host">等待电脑认证</string>
-    <string name="authorization_waiting_for_host_detail">请先在同一网络中启动 VF Host。正式版首次安装或重装后，可重新输入原卡密恢复本机授权；只更新设备绑定，不重复充值或扣时。</string>
+    <string name="authorization_waiting_for_host_detail">首次使用时只需输入一次卡密；即使 VF Host 暂未就绪，系统也会安全保存并在连接恢复后自动继续。</string>
+    <string name="authorization_card_saved_waiting_for_host">卡密已安全保存</string>
+    <string name="authorization_card_saved_waiting_for_host_detail">正在等待 VF Host 完成配对与认证；无需再次输入，连接恢复后会自动继续激活。</string>
     <string name="authorization_ready">电脑认证完成，可以激活卡密</string>
-    <string name="authorization_ready_detail">输入卡密进行激活不会立刻扣费。激活请求会同时携带电脑端和安卓端的身份签名。</string>
     <string name="authorization_activating">正在激活卡密</string>
     <string name="authorization_activating_detail">正在向服务器确认卡密；完成前不会扣费。</string>
     <string name="authorization_activation_pending">激活确认待恢复</string>

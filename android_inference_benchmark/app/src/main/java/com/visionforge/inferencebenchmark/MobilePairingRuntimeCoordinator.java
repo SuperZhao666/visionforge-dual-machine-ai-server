@@ -444,10 +444,19 @@ final class MobilePairingRuntimeCoordinator {
     }
 
     private Notification pairingNotification(PendingConfirmation pending) {
+        Intent openPairingActivity = new Intent(context, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         Intent accept = new Intent(context, MobileRuntimeService.class)
                 .setAction(ACTION_CONFIRM_FIRST_PAIR);
         Intent reject = new Intent(context, MobileRuntimeService.class)
                 .setAction(ACTION_REJECT_FIRST_PAIR);
+        PendingIntent openIntent = PendingIntent.getActivity(
+                context,
+                13,
+                openPairingActivity,
+                PendingIntent.FLAG_IMMUTABLE
+                        | PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent acceptIntent = PendingIntent.getService(
                 context,
                 11,
@@ -470,6 +479,7 @@ final class MobilePairingRuntimeCoordinator {
                         R.string.first_pairing_notification_title))
                 .setContentText(detail)
                 .setStyle(new Notification.BigTextStyle().bigText(detail))
+                .setContentIntent(openIntent)
                 .addAction(new Notification.Action.Builder(
                         0,
                         context.getString(R.string.first_pairing_action_reject),

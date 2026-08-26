@@ -52,6 +52,24 @@ public final class DualMachineAuthorizationUiMapper {
             boolean fatalSecurityError,
             String detail,
             DualMachinePresentationBalance cachedBalance) {
+        return map(
+                snapshot,
+                authorizationReady,
+                activationReady,
+                fatalSecurityError,
+                detail,
+                cachedBalance,
+                false);
+    }
+
+    public static DualMachineAuthorizationUiState map(
+            DualMachineFormalUsageStateMachine.Snapshot snapshot,
+            boolean authorizationReady,
+            boolean activationReady,
+            boolean fatalSecurityError,
+            String detail,
+            DualMachinePresentationBalance cachedBalance,
+            boolean cardQueued) {
         if (snapshot == null) {
             throw new IllegalArgumentException(
                     "authorization snapshot is required");
@@ -107,7 +125,10 @@ public final class DualMachineAuthorizationUiMapper {
         DualMachineAuthorizationUiState.Status status;
         switch (snapshot.state) {
             case UNACTIVATED:
-                status = activationReady
+                status = cardQueued
+                        ? DualMachineAuthorizationUiState.Status
+                        .CARD_SAVED_WAITING_FOR_HOST
+                        : activationReady
                         ? DualMachineAuthorizationUiState.Status
                         .READY_FOR_ACTIVATION
                         : DualMachineAuthorizationUiState.Status

@@ -188,13 +188,22 @@ void HostAuthenticatedControlServiceV1::run() noexcept {
             std::lock_guard lock(connection_mutex_);
             active_connection_ = accepted.connection.get();
         }
-        const bool completed = process_candidate(accepted.connection);
+        (void)process_candidate(accepted.connection);
         if (accepted.connection != nullptr) accepted.connection->close();
         {
             std::lock_guard lock(connection_mutex_);
             active_connection_ = nullptr;
         }
-        if (completed || stopping_.load()) break;
+        // A completed handshake transfers this connection to the runtime
+        // authorization coordinator, but the bound-pair listener must remain
+        // available.  Android package replacement, process death, Wi-Fi
+        // roaming, or an ordinary control-channel loss all require a fresh
+        // generation-authenticated handshake without restarting the Host.
+        // Every successor still proves the exact persisted pair and consumes
+        // a server-authorized generation before it can replace the old
+        // channel, so continuing to accept cannot reopen the data plane by
+        // itself.
+        if (stopping_.load()) break;
     }
     listener_.close();
     running_.store(false);

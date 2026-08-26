@@ -98,6 +98,40 @@ int main() {
         CHECK(loaded.has_value());
         CHECK(loaded->generation_high_watermark == 8U);
 
+        // A server-confirmed recovery may rotate only the Android side of the
+        // exact entitlement on the exact Host.  The old generation watermark
+        // must not leak into the newly authorized pair.
+        auto rebound = initial;
+        rebound.pair_id = std::string(32U, '4');
+        rebound.binding_id = std::string(32U, '5');
+        rebound.binding_revision = initial.binding_revision + 1U;
+        rebound.revocation_version = initial.revocation_version + 1U;
+        rebound.android_identity_spki_sha256 =
+            "b3cc196af0aa20e460a28ad6763f49dad278dddec6571e60705871cf30fa771e";
+        rebound.android_subject_public_key_info_der = {
+            0x30U, 0x03U, 0x04U, 0x05U, 0x06U};
+        CHECK(store.commit_server_authorized_rebinding(rebound, error));
+        loaded = store.load(error);
+        CHECK(loaded.has_value());
+        CHECK(same_pair(*loaded, rebound));
+        CHECK(loaded->generation_high_watermark == 0U);
+
+        auto different_entitlement = rebound;
+        different_entitlement.entitlement_id = std::string(32U, '6');
+        different_entitlement.binding_revision++;
+        CHECK(!store.commit_server_authorized_rebinding(
+                different_entitlement, error));
+        auto different_host = rebound;
+        different_host.host_identity_spki_sha256 = std::string(64U, 'b');
+        different_host.binding_revision++;
+        CHECK(!store.commit_server_authorized_rebinding(
+                different_host, error));
+        auto stale_revision = rebound;
+        stale_revision.pair_id = std::string(32U, '7');
+        stale_revision.binding_id = std::string(32U, '8');
+        CHECK(!store.commit_server_authorized_rebinding(
+                stale_revision, error));
+
         {
             std::ofstream corrupt(state_file, std::ios::binary | std::ios::trunc);
             corrupt << "not-a-binding\n";

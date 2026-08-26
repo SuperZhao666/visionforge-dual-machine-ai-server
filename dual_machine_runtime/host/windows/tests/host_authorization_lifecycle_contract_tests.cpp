@@ -48,6 +48,12 @@ int main() {
         "host/windows/include/vfdual/host/application/host_runtime_facade.hpp");
     const std::string facade_source =
         read_source("host/windows/src/host_runtime_facade.cpp");
+    const std::string first_pairing_service = read_source(
+        "host/windows/security/src/host_first_pairing_service_v1.cpp");
+    const std::string authenticated_control_service = read_source(
+        "host/windows/security/src/host_authenticated_control_service_v1.cpp");
+    const std::string wired_link_contract =
+        read_source("host/windows/include/vfdual/wired_link_contract.hpp");
     const std::string authorization_header =
         read_source("host/windows/include/vfdual/host_runtime_service.hpp");
     const std::string authorization_source =
@@ -73,6 +79,24 @@ int main() {
                             "host/windows/src/host_runtime_facade.cpp") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(cmake_source.find("OBJECT_DEPENDS") !=
+                         std::string::npos);
+
+    // The first-pair/authenticated-control port split is a header-only
+    // contract.  Chinese MSVC/Ninja builds must carry an explicit dependency
+    // edge for both listener translation units so an incremental release can
+    // never silently link two stale 5006 listeners.
+    const std::string wired_link_dependencies = slice_between(
+        cmake_source,
+        "set(VFDUAL_WIRED_LINK_CONTRACT_HEADER",
+        "add_library(vfdual_host_runtime_authorization_coordinator");
+    VFDUAL_TEST_REQUIRE(wired_link_dependencies.find(
+                            "host/windows/security/src/host_first_pairing_service_v1.cpp") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wired_link_dependencies.find(
+                            "host/windows/security/src/host_authenticated_control_service_v1.cpp") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wired_link_dependencies.find(
+                            "${VFDUAL_WIRED_LINK_CONTRACT_HEADER}") !=
                          std::string::npos);
 
     const std::string start = slice_between(
@@ -188,6 +212,61 @@ int main() {
     VFDUAL_TEST_REQUIRE(failure_log != std::string::npos);
     VFDUAL_TEST_REQUIRE(stopping_guard < failure_log);
 
+    const std::string authenticated_successor_install = slice_between(
+        authorization_coordinator,
+        "bool HostRuntimeAuthorizationCoordinator::install_authenticated_channel(",
+        "bool HostRuntimeAuthorizationCoordinator::has_authenticated_channel()");
+    const std::size_t successor_running_snapshot =
+        authenticated_successor_install.find(
+            "const bool preserve_operator_start_for_successor =");
+    const std::size_t successor_fail_closed =
+        authenticated_successor_install.find("close();");
+    const std::size_t successor_intent_rearm =
+        authenticated_successor_install.find(
+            "runtime_.offer_pending_start_intent();");
+    VFDUAL_TEST_REQUIRE(successor_running_snapshot != std::string::npos);
+    VFDUAL_TEST_REQUIRE(successor_fail_closed != std::string::npos);
+    VFDUAL_TEST_REQUIRE(successor_intent_rearm != std::string::npos);
+    VFDUAL_TEST_REQUIRE(successor_running_snapshot < successor_fail_closed);
+    VFDUAL_TEST_REQUIRE(successor_fail_closed < successor_intent_rearm);
+    VFDUAL_TEST_REQUIRE(authenticated_successor_install.find(
+                            "successor_authenticated=true") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(authenticated_successor_install.find(
+                            "data_plane_open=false billing_started=false") !=
+                         std::string::npos);
+
+    // An Android process restart must fail closed, then preserve exactly the
+    // already-running operator request for the authenticated successor.  The
+    // reconnect path may only re-arm a one-shot start intent; it must not open
+    // the data plane or do so during an intentional Host stop/replacement.
+    const std::string channel_loss_recovery = slice_between(
+        authorization_coordinator,
+        "const bool preserve_operator_start =",
+        "void HostRuntimeAuthorizationCoordinator::close() noexcept");
+    VFDUAL_TEST_REQUIRE(channel_loss_recovery.find(
+                            "!stopping_.load() && runtime_.is_running()") !=
+                         std::string::npos);
+    const std::size_t fail_closed_revoke = channel_loss_recovery.find(
+        "runtime_.revoke_data_plane_authorization();");
+    const std::size_t rearm_one_shot = channel_loss_recovery.find(
+        "runtime_.offer_pending_start_intent();");
+    VFDUAL_TEST_REQUIRE(fail_closed_revoke != std::string::npos);
+    VFDUAL_TEST_REQUIRE(rearm_one_shot != std::string::npos);
+    VFDUAL_TEST_REQUIRE(fail_closed_revoke < rearm_one_shot);
+    VFDUAL_TEST_REQUIRE(channel_loss_recovery.find(
+                            "if (preserve_operator_start)") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(channel_loss_recovery.find(
+                            "data_plane_open=false billing_started=false") !=
+                         std::string::npos);
+    const std::string intentional_close = authorization_coordinator.substr(
+        authorization_coordinator.find(
+            "void HostRuntimeAuthorizationCoordinator::close() noexcept"));
+    VFDUAL_TEST_REQUIRE(intentional_close.find(
+                            "offer_pending_start_intent") ==
+                         std::string::npos);
+
     const std::size_t reset_for_successor = authorization_coordinator.find(
         "runtime_.reset_data_plane_authorization_for_new_session()");
     const std::size_t install_successor = authorization_coordinator.find(
@@ -208,6 +287,47 @@ int main() {
     VFDUAL_TEST_REQUIRE(protected_runtime_start != std::string::npos);
     VFDUAL_TEST_REQUIRE(first_pair_start < protected_runtime_start);
     VFDUAL_TEST_REQUIRE(facade_start.find(
+                            "if (!state_->first_pairing.is_running())") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_start.find(
+                            "!persisted_pair.has_value()") ==
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_source.find(
+                            "commit_server_authorized_pair_and_listen") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_source.find(
+                            "commit_server_authorized_rebinding(") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_source.find(
+                            "start_authenticated_control(binding, true") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(first_pairing_service.find(
+                            "if (completed || stopping_.load()) break;") ==
+                         std::string::npos);
+    // A successful bound handshake hands its socket to the authorization
+    // coordinator.  The listener itself must stay alive so an Android process
+    // restart or an APK overlay can authenticate a successor generation
+    // without forcing the user to restart Host.
+    const std::string authenticated_control_run = slice_between(
+        authenticated_control_service,
+        "void HostAuthenticatedControlServiceV1::run() noexcept",
+        "bool HostAuthenticatedControlServiceV1::process_candidate(");
+    VFDUAL_TEST_REQUIRE(authenticated_control_run.find(
+                            "if (completed || stopping_.load()) break;") ==
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(authenticated_control_run.find(
+                            "if (stopping_.load()) break;") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(authenticated_control_run.find(
+                            "(void)process_candidate(accepted.connection)") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wired_link_contract.find(
+                            "kWiredFirstPairingPort = 5006") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wired_link_contract.find(
+                            "kWiredAuthenticatedControlPort = 5008") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_start.find(
                             "state_->first_pairing.provisional_pair_binding()") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_start.find(
@@ -218,6 +338,54 @@ int main() {
     VFDUAL_TEST_REQUIRE(wireless_discovery != std::string::npos);
     VFDUAL_TEST_REQUIRE(first_pair_start < wireless_discovery);
     VFDUAL_TEST_REQUIRE(wireless_discovery < protected_runtime_start);
+    const std::size_t wireless_discovery_retries = facade_start.find(
+        "state_->start_wireless_discovery_retries(error)");
+    VFDUAL_TEST_REQUIRE(wireless_discovery_retries != std::string::npos);
+    VFDUAL_TEST_REQUIRE(wireless_discovery < wireless_discovery_retries);
+    VFDUAL_TEST_REQUIRE(wireless_discovery_retries < protected_runtime_start);
+    VFDUAL_TEST_REQUIRE(facade_source.find(
+                            "std::jthread wireless_discovery_retry_worker") !=
+                         std::string::npos);
+    const std::string wireless_retry_worker = slice_between(
+        facade_source,
+        "bool start_wireless_discovery_retries(std::string& error) noexcept",
+        "void stop_wireless_discovery_retries() noexcept");
+    VFDUAL_TEST_REQUIRE(wireless_retry_worker.find(
+                            "while (!stop_token.stop_requested())") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wireless_retry_worker.find(
+                            "authorization.has_authenticated_channel()") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wireless_retry_worker.find(
+                            "discover_wireless_lan_mobile_session(") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(wireless_retry_worker.find(
+                            "std::chrono::milliseconds{1'500}, stop_token") !=
+                         std::string::npos);
+    const std::string protected_runtime_failure = slice_between(
+        facade_start,
+        "if (!state_->runtime.start(settings, error))",
+        "return true;");
+    VFDUAL_TEST_REQUIRE(protected_runtime_failure.find(
+                            "host_failure_is_authorization_pending(error)") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(protected_runtime_failure.find(
+                            "if (!vfdual::host_failure_is_authorization_pending(error))") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(protected_runtime_failure.find(
+                            "state_->stop_wireless_discovery_retries();") !=
+                         std::string::npos);
+    const std::string stop_security_services = slice_between(
+        facade_source,
+        "void stop_security_services() noexcept",
+        "vfdual::HostRuntimeService runtime;");
+    const std::size_t stop_discovery = stop_security_services.find(
+        "stop_wireless_discovery_retries();");
+    const std::size_t stop_first_pair = stop_security_services.find(
+        "first_pairing.stop();");
+    VFDUAL_TEST_REQUIRE(stop_discovery != std::string::npos);
+    VFDUAL_TEST_REQUIRE(stop_first_pair != std::string::npos);
+    VFDUAL_TEST_REQUIRE(stop_discovery < stop_first_pair);
     VFDUAL_TEST_REQUIRE(facade_start.find("\"0.0.0.0\"") !=
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_start.find(

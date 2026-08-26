@@ -35,7 +35,7 @@ int main() {
     const std::wstring executable = L"C:\\Program Files\\VF\\VFHost.exe";
     const auto policy = vfdual::build_host_firewall_policy(executable);
 
-    CHECK(policy.size() == 7U);
+    CHECK(policy.size() == 9U);
     CHECK(policy[0].name == L"VF Host CAT6 DHCP Inbound");
     CHECK(policy[1].name == L"VF Host CAT6 Announcement Inbound");
     CHECK(policy[2].name == L"VF Host CAT6 IDR Inbound");
@@ -43,6 +43,8 @@ int main() {
     CHECK(policy[4].name == L"VF Host Wireless LAN IDR Inbound");
     CHECK(policy[5].name == L"VF Host CAT6 First Pairing Inbound");
     CHECK(policy[6].name == L"VF Host Wireless LAN First Pairing Inbound");
+    CHECK(policy[7].name == L"VF Host CAT6 Authenticated Control Inbound");
+    CHECK(policy[8].name == L"VF Host Wireless LAN Authenticated Control Inbound");
     for (const auto& rule : policy) {
         CHECK(rule.application_path == executable);
         CHECK(rule.grouping == L"VF Host Transport");
@@ -78,14 +80,26 @@ int main() {
     CHECK(policy[5].interface_types == L"LAN");
     CHECK(policy[5].local_address == vfdual::kWiredHostIpv4);
     CHECK(policy[5].remote_addresses == vfdual::kWiredMobileIpv4);
-    CHECK(policy[5].local_port == vfdual::kWiredAuthenticatedControlPort);
+    CHECK(policy[5].local_port == vfdual::kWiredFirstPairingPort);
     CHECK(policy[5].remote_port == 0U);
     CHECK(policy[6].protocol == HostFirewallProtocol::tcp);
     CHECK(policy[6].interface_types == L"LAN,Wireless");
     CHECK(policy[6].local_address == "*");
     CHECK(policy[6].remote_addresses == "LocalSubnet");
-    CHECK(policy[6].local_port == vfdual::kWiredAuthenticatedControlPort);
+    CHECK(policy[6].local_port == vfdual::kWiredFirstPairingPort);
     CHECK(policy[6].remote_port == 0U);
+    CHECK(policy[7].protocol == HostFirewallProtocol::tcp);
+    CHECK(policy[7].interface_types == L"LAN");
+    CHECK(policy[7].local_address == vfdual::kWiredHostIpv4);
+    CHECK(policy[7].remote_addresses == vfdual::kWiredMobileIpv4);
+    CHECK(policy[7].local_port == vfdual::kWiredAuthenticatedControlPort);
+    CHECK(policy[7].remote_port == 0U);
+    CHECK(policy[8].protocol == HostFirewallProtocol::tcp);
+    CHECK(policy[8].interface_types == L"LAN,Wireless");
+    CHECK(policy[8].local_address == "*");
+    CHECK(policy[8].remote_addresses == "LocalSubnet");
+    CHECK(policy[8].local_port == vfdual::kWiredAuthenticatedControlPort);
+    CHECK(policy[8].remote_port == 0U);
     auto current = snapshot_of(policy[6]);
     CHECK(vfdual::host_firewall_rule_is_current(policy[6], current));
     current.protocol = HostFirewallProtocol::udp;

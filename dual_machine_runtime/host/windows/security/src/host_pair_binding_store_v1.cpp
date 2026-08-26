@@ -395,6 +395,47 @@ bool HostPairBindingStoreV1::commit_initial_binding(
     });
 }
 
+bool HostPairBindingStoreV1::commit_server_authorized_rebinding(
+    const HostAuthenticatedControlPairBindingV1& binding,
+    std::string& error) {
+    return guarded(error, [&] {
+        if (!valid_binding(binding) || binding.generation_high_watermark != 0U) {
+            throw std::runtime_error(
+                "server-authorized pair-binding is invalid");
+        }
+        std::scoped_lock process_lock(process_mutex_);
+        const auto parent = state_file_.parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+        InterprocessLock interprocess_lock(lock_file_);
+        const auto existing = load_unlocked(state_file_);
+        if (!existing.has_value()) {
+            persist_atomically(state_file_, serialize(binding));
+            return;
+        }
+        if (same_pair(*existing, binding)) {
+            return;
+        }
+        if (existing->entitlement_id != binding.entitlement_id) {
+            throw std::runtime_error(
+                "server-authorized rebinding changed entitlement");
+        }
+        if (existing->host_identity_spki_sha256 !=
+                binding.host_identity_spki_sha256) {
+            throw std::runtime_error(
+                "server-authorized rebinding changed Host identity");
+        }
+        if (binding.binding_revision <= existing->binding_revision) {
+            throw std::runtime_error(
+                "server-authorized rebinding revision did not advance");
+        }
+        if (binding.revocation_version < existing->revocation_version) {
+            throw std::runtime_error(
+                "server-authorized rebinding revocation version rolled back");
+        }
+        persist_atomically(state_file_, serialize(binding));
+    });
+}
+
 bool HostPairBindingStoreV1::commit_generation(
     const HostAuthenticatedControlPairBindingV1& expected_binding,
     const std::uint64_t generation,
