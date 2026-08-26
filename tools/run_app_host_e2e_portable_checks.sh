@@ -26,7 +26,7 @@ cmake -S dual_machine_runtime -B "${NATIVE_BUILD}" -DCMAKE_BUILD_TYPE=Release
 cmake --build "${NATIVE_BUILD}" --parallel
 ctest --test-dir "${NATIVE_BUILD}" --output-on-failure
 
-javac --release 17 -d "${JAVA_FULL}" \
+javac -encoding UTF-8 --release 17 -d "${JAVA_FULL}" \
   @tools/manifests/app_host_java_full_sources.txt
 java -Dvisionforge.android.project.dir="${ROOT}/android_inference_benchmark/app" \
   -cp "${JAVA_FULL}" \
@@ -34,7 +34,7 @@ java -Dvisionforge.android.project.dir="${ROOT}/android_inference_benchmark/app"
 java -cp "${JAVA_FULL}" com.visionforge.mobile.core.MobileCoreSelfTest
 java -cp "${JAVA_FULL}" com.visionforge.mobile.application.MobileArchitectureSelfTest
 
-javac --release 17 -Xlint:all -Werror -d "${JAVA_STRICT}" \
+javac -encoding UTF-8 --release 17 -Xlint:all -Werror -d "${JAVA_STRICT}" \
   @tools/manifests/app_host_java_strict_sources.txt
 java -cp "${JAVA_STRICT}" com.visionforge.mobile.core.MobileCoreSelfTest
 java -cp "${JAVA_STRICT}" com.visionforge.mobile.application.MobileArchitectureSelfTest
