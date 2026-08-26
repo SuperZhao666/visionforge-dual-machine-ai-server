@@ -122,6 +122,12 @@ else()
 endif()
 if(WIN32)
     target_link_libraries(vfdual_protocol PRIVATE bcrypt)
+else()
+    # Portable protocol tests exercise the exact first-pairing commitment
+    # vectors. Use the runner's maintained crypto provider instead of a local
+    # handwritten SHA-256 implementation; production Windows builds keep CNG.
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(vfdual_protocol PRIVATE OpenSSL::Crypto)
 endif()
 
 # Platform-neutral App/Host domain model used as an executable architecture

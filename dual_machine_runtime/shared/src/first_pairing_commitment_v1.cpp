@@ -8,6 +8,8 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <bcrypt.h>
+#else
+#include <openssl/evp.h>
 #endif
 
 namespace vfdual {
@@ -170,9 +172,30 @@ void write_u64_be(
     if (!BCRYPT_SUCCESS(status)) output.fill(std::byte{0U});
     return BCRYPT_SUCCESS(status);
 #else
-    static_cast<void>(input);
-    output.fill(std::byte{0U});
-    return false;
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    if (context == nullptr) {
+        output.fill(std::byte{0U});
+        return false;
+    }
+    bool succeeded =
+        EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1;
+    if (succeeded && !input.empty()) {
+        succeeded = EVP_DigestUpdate(
+            context,
+            static_cast<const void*>(input.data()),
+            input.size()) == 1;
+    }
+    unsigned int digest_bytes{};
+    if (succeeded) {
+        succeeded = EVP_DigestFinal_ex(
+            context,
+            reinterpret_cast<unsigned char*>(output.data()),
+            &digest_bytes) == 1 &&
+            digest_bytes == output.size();
+    }
+    EVP_MD_CTX_free(context);
+    if (!succeeded) output.fill(std::byte{0U});
+    return succeeded;
 #endif
 }
 
