@@ -25,6 +25,8 @@ final class DualMachineAuthorizationCardModeContractSelfTest {
         String mobileRuntime = read(runtimeRoot.resolve("MobileRuntimeService.java"));
         String pendingStore = read(runtimeRoot.resolve(
                 "AndroidPendingActivationStore.java"));
+        String queuedCardCoordinator = read(runtimeRoot.resolve(
+                "QueuedCardActivationCoordinator.java"));
         String firstPairing = read(runtimeRoot.resolve(
                 "AndroidFirstPairingCoordinatorV1.java"));
         String boundControl = read(runtimeRoot.resolve(
@@ -56,9 +58,16 @@ final class DualMachineAuthorizationCardModeContractSelfTest {
                 "if (!submissionEnabled) return;"));
         require(!authorizationScreen.contains(
                 "R.string.authorization_start_host_before_activation"));
-        require(mobileRuntime.contains("saveQueuedCard(canonical)"));
-        require(mobileRuntime.contains("activateQueuedCardIfReady"));
-        require(mobileRuntime.contains("clearQueuedCard()"));
+        require(mobileRuntime.contains(
+                "QueuedCardActivationCoordinator queuedCardActivation"));
+        require(mobileRuntime.contains(
+                "queuedCardActivation.submit(cardCode)"));
+        require(queuedCardCoordinator.contains(
+                "DualMachineCardCode.normalizeAndValidate(cardCode)"));
+        require(queuedCardCoordinator.contains(
+                "store.saveQueuedCard(canonicalCardCode)"));
+        require(queuedCardCoordinator.contains("activateIfReady()"));
+        require(queuedCardCoordinator.contains("store.clearQueuedCard()"));
         require(pendingStore.contains("loadQueuedCard()"));
         require(pendingStore.contains("saveQueuedCard(String cardCode)"));
         require(pendingStore.contains("QUEUED_CARD_AAD"));
@@ -77,6 +86,16 @@ final class DualMachineAuthorizationCardModeContractSelfTest {
         require(!authorizationScreen.contains(
                 "R.string.authorization_zero_cost_notice"));
         require(!strings.contains("authorization_zero_cost_notice"));
+        require(!authorizationScreen.contains(
+                "R.string.authorization_ready_detail"));
+        require(!strings.contains("authorization_ready_detail"));
+        require(authorizationScreen.contains(
+                "case READY_FOR_ACTIVATION:\n"
+                        + "                titleResource = "
+                        + "R.string.authorization_ready;\n"
+                        + "                detailResource = 0;"));
+        require(authorizationScreen.contains(
+                "detail.isEmpty() ? View.GONE : View.VISIBLE"));
         require(!controlScreen.contains("createAdvancedNoteCard"));
         require(!controlScreen.contains("toggleAdvancedNote"));
         require(!controlScreen.contains("createPersonalTrajectoryCard"));

@@ -155,6 +155,18 @@ public final class DualMachineAuthorizationUiState {
                 "");
     }
 
+    public static DualMachineAuthorizationUiState
+            cardSavedWaitingForHost() {
+        return new DualMachineAuthorizationUiState(
+                Status.CARD_SAVED_WAITING_FOR_HOST,
+                false,
+                0L,
+                0L,
+                false,
+                false,
+                "");
+    }
+
     public boolean entitlementBound() {
         return status == Status.ACTIVE_IDLE
                 || status == Status.STARTING

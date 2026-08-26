@@ -211,7 +211,7 @@ final class AuthorizationScreen implements MobileScreen {
                 break;
             case READY_FOR_ACTIVATION:
                 titleResource = R.string.authorization_ready;
-                detailResource = R.string.authorization_ready_detail;
+                detailResource = 0;
                 color = VisionForgeTheme.ACCENT;
                 glyph = MaterialIcons.KEY;
                 break;
@@ -286,7 +286,7 @@ final class AuthorizationScreen implements MobileScreen {
                 break;
             default:
                 titleResource = R.string.authorization_ready;
-                detailResource = R.string.authorization_ready_detail;
+                detailResource = 0;
                 color = VisionForgeTheme.WARNING;
                 glyph = MaterialIcons.KEY;
                 break;
@@ -294,7 +294,10 @@ final class AuthorizationScreen implements MobileScreen {
         VisionForgeTheme.setTextIfChanged(
                 statusTitle, context.getString(titleResource));
         String detail = authorization.detail.isEmpty()
-                ? context.getString(detailResource) : authorization.detail;
+                ? detailResource == 0 ? "" : context.getString(detailResource)
+                : authorization.detail;
+        statusDetail.setVisibility(
+                detail.isEmpty() ? View.GONE : View.VISIBLE);
         VisionForgeTheme.setTextIfChanged(statusDetail, detail);
         VisionForgeTheme.setTextIfChanged(statusIcon, glyph);
         statusIcon.setTextColor(color);
