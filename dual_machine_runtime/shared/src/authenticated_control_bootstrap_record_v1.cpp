@@ -65,7 +65,7 @@ constexpr std::array kBootstrapSequence{
                 ControlBootstrapMessageTypeV1::host_hello) &&
         encoded <=
             static_cast<std::uint8_t>(
-                ControlBootstrapMessageTypeV1::abort);
+                ControlBootstrapMessageTypeV1::first_pair_complete);
 }
 
 [[nodiscard]] bool valid_role(
@@ -111,6 +111,76 @@ void write_u32_be(
             std::to_integer<std::uint8_t>(input[3U]));
 }
 
+struct BootstrapHeaderInspectionV1 final {
+    ControlBootstrapParseStatusV1 status{
+        ControlBootstrapParseStatusV1::record_too_short};
+    std::size_t record_bytes{};
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return status == ControlBootstrapParseStatusV1::parsed &&
+            record_bytes > kAuthenticatedControlBootstrapHeaderBytes;
+    }
+};
+
+[[nodiscard]] BootstrapHeaderInspectionV1 inspect_bootstrap_header_v1(
+    const std::span<const std::byte> encoded,
+    const ControlBootstrapDirectionV1 expected_direction) noexcept {
+    BootstrapHeaderInspectionV1 result{};
+    if (encoded.size() < kAuthenticatedControlBootstrapHeaderBytes) {
+        return result;
+    }
+    if (!std::equal(kMagic.begin(), kMagic.end(), encoded.begin())) {
+        result.status = ControlBootstrapParseStatusV1::invalid_magic;
+        return result;
+    }
+    if (std::to_integer<std::uint8_t>(encoded[kVersionOffset]) !=
+            kAuthenticatedControlBootstrapVersion) {
+        result.status = ControlBootstrapParseStatusV1::unsupported_version;
+        return result;
+    }
+    if (std::to_integer<std::uint8_t>(encoded[kHeaderSizeOffset]) !=
+            kAuthenticatedControlBootstrapHeaderBytes) {
+        result.status = ControlBootstrapParseStatusV1::invalid_header_size;
+        return result;
+    }
+    const auto direction = static_cast<ControlBootstrapDirectionV1>(
+        std::to_integer<std::uint8_t>(encoded[kDirectionOffset]));
+    if (!valid_direction(direction)) {
+        result.status = ControlBootstrapParseStatusV1::invalid_direction;
+        return result;
+    }
+    if (!valid_direction(expected_direction) ||
+        direction != expected_direction) {
+        result.status = ControlBootstrapParseStatusV1::unexpected_direction;
+        return result;
+    }
+    const auto message_type = static_cast<ControlBootstrapMessageTypeV1>(
+        std::to_integer<std::uint8_t>(encoded[kMessageTypeOffset]));
+    if (!valid_message_type(message_type)) {
+        result.status = ControlBootstrapParseStatusV1::invalid_message_type;
+        return result;
+    }
+    if (!control_bootstrap_message_allowed_v1(direction, message_type)) {
+        result.status = ControlBootstrapParseStatusV1::direction_mismatch;
+        return result;
+    }
+    const std::uint32_t payload_size = read_u32_be(
+        std::span<const std::byte, 4U>{
+            encoded.data() + kPayloadLengthOffset, 4U});
+    if (payload_size == 0U) {
+        result.status = ControlBootstrapParseStatusV1::payload_empty;
+        return result;
+    }
+    if (payload_size > kMaximumAuthenticatedControlBootstrapPayloadBytes) {
+        result.status = ControlBootstrapParseStatusV1::payload_too_large;
+        return result;
+    }
+    result.status = ControlBootstrapParseStatusV1::parsed;
+    result.record_bytes =
+        kAuthenticatedControlBootstrapHeaderBytes + payload_size;
+    return result;
+}
+
 }  // namespace
 
 bool control_bootstrap_message_allowed_v1(
@@ -131,7 +201,17 @@ bool control_bootstrap_message_allowed_v1(
                 message_type ==
                     ControlBootstrapMessageTypeV1::host_handshake_signature ||
                 message_type ==
-                    ControlBootstrapMessageTypeV1::host_finished;
+                    ControlBootstrapMessageTypeV1::host_finished ||
+                message_type ==
+                    ControlBootstrapMessageTypeV1::host_first_pair_offer ||
+                message_type ==
+                    ControlBootstrapMessageTypeV1::
+                        host_first_pair_confirmation ||
+                message_type ==
+                    ControlBootstrapMessageTypeV1::
+                        host_activation_signature ||
+                message_type ==
+                    ControlBootstrapMessageTypeV1::first_pair_complete;
         case ControlBootstrapDirectionV1::android_to_host:
             return message_type ==
                     ControlBootstrapMessageTypeV1::
@@ -143,7 +223,16 @@ bool control_bootstrap_message_allowed_v1(
                         pair_generation_credential ||
                 message_type ==
                     ControlBootstrapMessageTypeV1::
-                        android_handshake_confirmation;
+                        android_handshake_confirmation ||
+                message_type ==
+                    ControlBootstrapMessageTypeV1::android_first_pair_offer ||
+                message_type ==
+                    ControlBootstrapMessageTypeV1::
+                        android_first_pair_confirmation ||
+                message_type ==
+                    ControlBootstrapMessageTypeV1::activation_proof_request ||
+                message_type ==
+                    ControlBootstrapMessageTypeV1::activation_result;
         case ControlBootstrapDirectionV1::invalid:
             return false;
     }
@@ -210,61 +299,22 @@ parse_authenticated_control_bootstrap_record_v1(
     const std::span<const std::byte> encoded,
     const ControlBootstrapDirectionV1 expected_direction) noexcept {
     ControlBootstrapParseResultV1 result{};
-    if (encoded.size() < kAuthenticatedControlBootstrapHeaderBytes) {
+    const BootstrapHeaderInspectionV1 header =
+        inspect_bootstrap_header_v1(encoded, expected_direction);
+    if (!header.succeeded()) {
+        result.status = header.status;
         return result;
     }
-    if (!std::equal(kMagic.begin(), kMagic.end(), encoded.begin())) {
-        result.status = ControlBootstrapParseStatusV1::invalid_magic;
-        return result;
-    }
-    if (std::to_integer<std::uint8_t>(encoded[kVersionOffset]) !=
-            kAuthenticatedControlBootstrapVersion) {
-        result.status = ControlBootstrapParseStatusV1::unsupported_version;
-        return result;
-    }
-    if (std::to_integer<std::uint8_t>(encoded[kHeaderSizeOffset]) !=
-            kAuthenticatedControlBootstrapHeaderBytes) {
-        result.status = ControlBootstrapParseStatusV1::invalid_header_size;
+    if (encoded.size() != header.record_bytes) {
+        result.status = ControlBootstrapParseStatusV1::length_mismatch;
         return result;
     }
     const auto direction = static_cast<ControlBootstrapDirectionV1>(
         std::to_integer<std::uint8_t>(encoded[kDirectionOffset]));
-    if (!valid_direction(direction)) {
-        result.status = ControlBootstrapParseStatusV1::invalid_direction;
-        return result;
-    }
-    if (!valid_direction(expected_direction) ||
-        direction != expected_direction) {
-        result.status = ControlBootstrapParseStatusV1::unexpected_direction;
-        return result;
-    }
     const auto message_type = static_cast<ControlBootstrapMessageTypeV1>(
         std::to_integer<std::uint8_t>(encoded[kMessageTypeOffset]));
-    if (!valid_message_type(message_type)) {
-        result.status = ControlBootstrapParseStatusV1::invalid_message_type;
-        return result;
-    }
-    if (!control_bootstrap_message_allowed_v1(direction, message_type)) {
-        result.status = ControlBootstrapParseStatusV1::direction_mismatch;
-        return result;
-    }
-    const std::uint32_t payload_size = read_u32_be(
-        std::span<const std::byte, 4U>{
-            encoded.data() + kPayloadLengthOffset, 4U});
-    if (payload_size == 0U) {
-        result.status = ControlBootstrapParseStatusV1::payload_empty;
-        return result;
-    }
-    if (payload_size >
-            kMaximumAuthenticatedControlBootstrapPayloadBytes) {
-        result.status = ControlBootstrapParseStatusV1::payload_too_large;
-        return result;
-    }
-    if (encoded.size() !=
-            kAuthenticatedControlBootstrapHeaderBytes + payload_size) {
-        result.status = ControlBootstrapParseStatusV1::length_mismatch;
-        return result;
-    }
+    const std::size_t payload_size =
+        header.record_bytes - kAuthenticatedControlBootstrapHeaderBytes;
     result.status = ControlBootstrapParseStatusV1::parsed;
     result.record = ParsedControlBootstrapRecordV1{
         .direction = direction,
@@ -273,6 +323,155 @@ parse_authenticated_control_bootstrap_record_v1(
             kAuthenticatedControlBootstrapHeaderBytes, payload_size),
     };
     return result;
+}
+
+ControlBootstrapStreamDecoderV1::ControlBootstrapStreamDecoderV1(
+    const ControlBootstrapDirectionV1 expected_direction) noexcept
+    : expected_direction_(expected_direction),
+      failed_(!valid_direction(expected_direction)),
+      rejection_(failed_
+          ? ControlBootstrapParseStatusV1::unexpected_direction
+          : ControlBootstrapParseStatusV1::record_too_short) {
+    if (failed_) return;
+    try {
+        encoded_.reserve(kAuthenticatedControlBootstrapHeaderBytes);
+    } catch (...) {
+        failed_ = true;
+    }
+}
+
+ControlBootstrapStreamDecoderV1::~ControlBootstrapStreamDecoderV1() {
+    std::fill(encoded_.begin(), encoded_.end(), std::byte{0U});
+}
+
+ControlBootstrapStreamFeedResultV1
+ControlBootstrapStreamDecoderV1::feed(
+    const std::span<const std::byte> source) noexcept {
+    if (failed_) {
+        return {
+            ControlBootstrapStreamStatusV1::rejected, 0U, rejection_};
+    }
+    if (ready_) {
+        return {
+            ControlBootstrapStreamStatusV1::output_pending,
+            0U,
+            ControlBootstrapParseStatusV1::parsed};
+    }
+
+    std::size_t consumed{};
+    try {
+        if (encoded_.size() < kAuthenticatedControlBootstrapHeaderBytes) {
+            const std::size_t header_remaining =
+                kAuthenticatedControlBootstrapHeaderBytes - encoded_.size();
+            const std::size_t copy_bytes =
+                (std::min)(header_remaining, source.size());
+            encoded_.insert(
+                encoded_.end(), source.begin(),
+                source.begin() + static_cast<std::ptrdiff_t>(copy_bytes));
+            consumed += copy_bytes;
+            if (encoded_.size() < kAuthenticatedControlBootstrapHeaderBytes) {
+                return {
+                    ControlBootstrapStreamStatusV1::need_more,
+                    consumed,
+                    ControlBootstrapParseStatusV1::record_too_short};
+            }
+
+            const BootstrapHeaderInspectionV1 header =
+                inspect_bootstrap_header_v1(
+                    encoded_, expected_direction_);
+            if (!header.succeeded()) {
+                reject(header.status);
+                return {
+                    ControlBootstrapStreamStatusV1::rejected,
+                    consumed,
+                    header.status};
+            }
+            expected_record_bytes_ = header.record_bytes;
+            encoded_.reserve(expected_record_bytes_);
+        }
+
+        const std::size_t record_remaining =
+            expected_record_bytes_ - encoded_.size();
+        const std::size_t source_remaining = source.size() - consumed;
+        const std::size_t copy_bytes =
+            (std::min)(record_remaining, source_remaining);
+        encoded_.insert(
+            encoded_.end(),
+            source.begin() + static_cast<std::ptrdiff_t>(consumed),
+            source.begin() + static_cast<std::ptrdiff_t>(consumed + copy_bytes));
+        consumed += copy_bytes;
+        if (encoded_.size() < expected_record_bytes_) {
+            return {
+                ControlBootstrapStreamStatusV1::need_more,
+                consumed,
+                ControlBootstrapParseStatusV1::record_too_short};
+        }
+
+        const ControlBootstrapParseResultV1 parsed =
+            parse_authenticated_control_bootstrap_record_v1(
+                encoded_, expected_direction_);
+        if (parsed.status != ControlBootstrapParseStatusV1::parsed) {
+            reject(parsed.status);
+            return {
+                ControlBootstrapStreamStatusV1::rejected,
+                consumed,
+                parsed.status};
+        }
+        ready_ = true;
+        return {
+            ControlBootstrapStreamStatusV1::record_ready,
+            consumed,
+            ControlBootstrapParseStatusV1::parsed};
+    } catch (...) {
+        reject(ControlBootstrapParseStatusV1::record_too_short);
+        return {
+            ControlBootstrapStreamStatusV1::allocation_failed,
+            consumed,
+            rejection_};
+    }
+}
+
+std::optional<std::vector<std::byte>>
+ControlBootstrapStreamDecoderV1::take_record() noexcept {
+    if (failed_ || !ready_) return std::nullopt;
+    try {
+        std::vector<std::byte> record = std::move(encoded_);
+        reset_for_next_record();
+        return record;
+    } catch (...) {
+        reject(ControlBootstrapParseStatusV1::record_too_short);
+        return std::nullopt;
+    }
+}
+
+bool ControlBootstrapStreamDecoderV1::failed() const noexcept {
+    return failed_;
+}
+
+bool ControlBootstrapStreamDecoderV1::record_ready() const noexcept {
+    return ready_;
+}
+
+void ControlBootstrapStreamDecoderV1::reject(
+    const ControlBootstrapParseStatusV1 status) noexcept {
+    std::fill(encoded_.begin(), encoded_.end(), std::byte{0U});
+    encoded_.clear();
+    expected_record_bytes_ = 0U;
+    ready_ = false;
+    failed_ = true;
+    rejection_ = status;
+}
+
+void ControlBootstrapStreamDecoderV1::reset_for_next_record() noexcept {
+    encoded_.clear();
+    expected_record_bytes_ = 0U;
+    ready_ = false;
+    rejection_ = ControlBootstrapParseStatusV1::record_too_short;
+    try {
+        encoded_.reserve(kAuthenticatedControlBootstrapHeaderBytes);
+    } catch (...) {
+        failed_ = true;
+    }
 }
 
 ControlBootstrapSequenceV1::ControlBootstrapSequenceV1(

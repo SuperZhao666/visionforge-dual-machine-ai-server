@@ -493,6 +493,10 @@ public final class AuthenticatedPairingHandshake implements AutoCloseable {
         }
     }
 
+    synchronized long serverChallengeExpiresAtEpoch() {
+        return serverChallenge == null ? 0L : serverChallenge.expiresAtEpoch;
+    }
+
     public synchronized byte[] acceptHostHandshakeSignature(
             byte[] encodedRecord) throws PairingException {
         byte[] hostSignature = null;

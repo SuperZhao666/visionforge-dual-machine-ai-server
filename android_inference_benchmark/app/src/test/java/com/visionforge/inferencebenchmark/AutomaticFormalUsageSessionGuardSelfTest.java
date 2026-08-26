@@ -9,6 +9,7 @@ final class AutomaticFormalUsageSessionGuardSelfTest {
     private static final String CHANNEL =
             "cccccccccccccccccccccccccccccccc"
                     + "cccccccccccccccccccccccccccccccc";
+    private static final long CONNECTION_A = 0x1020_3040_5060_7080L;
 
     static void run() {
         initialGenerationIsArmed();
@@ -19,15 +20,12 @@ final class AutomaticFormalUsageSessionGuardSelfTest {
         boundaryCloseDoesNotConsumeAnUnbilledExactRetry();
         startupWithoutProgressNeverTriggersProactiveStop();
         sustainedNoProgressStopsOnceOnlyAfterAProgressRenewal();
-        sameHostStreamCannotCreateAnotherSession();
-        boundaryClosedStreamRearmsAfterVerifiedPauseAndFreshProgress();
-        delayedOldFrameCannotRearmSameStream();
-        confirmedFrameResetRearmsExactlyOnce();
-        rapidSecondRestartReplacesCandidateWithoutSequenceCatchup();
-        lowSequenceGenerationCanStillRearm();
-        naturalFrameWrapDoesNotRearm();
-        unknownFrameEvidenceFailsClosed();
-        restoredProcessStateRemainsBlocked();
+        rawVideoNeverRearmsBlockedBilling();
+        authenticatedIntentRequiresConfirmedAbsence();
+        authenticatedIntentRearmsExactlyOnce();
+        duplicateAuthenticatedIntentCannotRearmAgain();
+        invalidIntentEvidenceFailsClosed();
+        restoredProcessStateRequiresAuthenticatedIntent();
         bothBlockedStatesRequestHostRearmProbes();
     }
 
@@ -116,8 +114,7 @@ final class AutomaticFormalUsageSessionGuardSelfTest {
         require(guard.cancelUnbilledStartReservation(START_A, CHANNEL));
         guard.reserveFormalStart(START_B, CHANNEL);
         require(!guard.cancelUnbilledStartReservation(START_A, CHANNEL));
-        require(!guard.blockPotentiallyBilledGeneration(
-                START_A, CHANNEL));
+        require(!guard.blockPotentiallyBilledGeneration(START_A, CHANNEL));
         require(guard.snapshot().state
                 == AutomaticFormalUsageSessionGuard.State.START_RESERVED);
         require(START_B.equals(guard.snapshot().startRequestId));
@@ -134,7 +131,7 @@ final class AutomaticFormalUsageSessionGuardSelfTest {
         require(guard.blockPotentiallyBilledGeneration(START_A, CHANNEL));
         require(guard.snapshot().state
                 == AutomaticFormalUsageSessionGuard.State
-                .BLOCKED_UNTIL_NEW_HOST_STREAM);
+                        .BLOCKED_UNTIL_NEW_HOST_STREAM);
     }
 
     private static void sustainedNoProgressStopsOnceOnlyAfterAProgressRenewal() {
@@ -146,202 +143,111 @@ final class AutomaticFormalUsageSessionGuardSelfTest {
         require(!guard.shouldStopAfterNoProgress(11_750L, 1_500L));
     }
 
-    private static void sameHostStreamCannotCreateAnotherSession() {
-        AutomaticFormalUsageSessionGuard guard = activeGuard(1_000L);
-        guard.markProgressRenewed();
-        guard.recordHostFrame(1_900L);
-        require(guard.blockPotentiallyBilledGeneration(START_A, CHANNEL));
-        require(!guard.blockPotentiallyBilledGeneration(START_A, CHANNEL));
-
-        for (int maintenanceTick = 0; maintenanceTick < 40;
-                maintenanceTick++) {
-            require(!guard.isAutomaticStartAllowed());
-            long frame = 1_901L + maintenanceTick;
-            require(guard.recordHostFrame(frame)
-                    == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                    .SAME_STREAM_BLOCKED);
-        }
-        require(!guard.isAutomaticStartAllowed());
-        require(!guard.recordHostAbsent(1_000L, 1_000L));
-        require(guard.recordHostAbsent(21_000L, 1_000L));
-        require(guard.recordHostFrame(5_000L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
-        require(guard.recordHostFrame(1_925L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
-    }
-
-    private static void boundaryClosedStreamRearmsAfterVerifiedPauseAndFreshProgress() {
-        AutomaticFormalUsageSessionGuard guard = activeGuard(1_000L);
-        guard.markProgressRenewed();
-        guard.recordHostFrame(1_900L);
-        require(guard.markFormalSessionClosed(START_A, CHANNEL));
-
-        // A continuously advancing stream cannot immediately create another
-        // billable generation.  Once the Host has been absent long enough,
-        // however, two strictly-forward observations prove that real work
-        // resumed and must not leave control permanently fail-closed.
-        require(guard.recordHostFrame(1_901L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
-        require(!guard.recordHostAbsent(10_000L, 1_000L));
-        require(guard.recordHostAbsent(11_000L, 1_000L));
-        require(guard.recordHostFrame(2_000L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
-        require(!guard.isAutomaticStartAllowed());
-        require(guard.recordHostFrame(2_001L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .NEW_STREAM_REARMED);
-        require(guard.isAutomaticStartAllowed());
-    }
-
-    private static void confirmedFrameResetRearmsExactlyOnce() {
-        AutomaticFormalUsageSessionGuard guard = activeGuard(5_000L);
-        guard.recordHostFrame(5_900L);
-        require(guard.markFormalSessionClosed(START_A, CHANNEL));
-        require(guard.recordHostFrame(5_850L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
-        require(!guard.recordHostAbsent(10_000L, 1_000L));
-        require(guard.recordHostAbsent(11_000L, 1_000L));
-        require(guard.recordHostFrame(20L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
-        require(!guard.isAutomaticStartAllowed());
-        require(guard.recordHostFrame(21L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .NEW_STREAM_REARMED);
-        require(guard.isAutomaticStartAllowed());
-        require(guard.recordHostFrame(22L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome.RECORDED);
-
-        guard.reserveFormalStart(START_A, CHANNEL);
-        guard.markFormalSessionOpened(START_A, CHANNEL);
-        guard.recordHostFrame(800L);
-        require(guard.markFormalSessionClosed(START_A, CHANNEL));
-        require(!guard.isAutomaticStartAllowed());
-        require(!guard.recordHostAbsent(20_000L, 1_000L));
-        require(guard.recordHostAbsent(21_000L, 1_000L));
-        require(guard.recordHostFrame(12L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
-        require(guard.recordHostFrame(13L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .NEW_STREAM_REARMED);
-    }
-
-    private static void delayedOldFrameCannotRearmSameStream() {
-        AutomaticFormalUsageSessionGuard guard = activeGuard(1_000L);
-        require(guard.blockPotentiallyBilledGeneration(START_A, CHANNEL));
-        require(!guard.recordHostAbsent(1_000L, 1_000L));
-        require(guard.recordHostAbsent(2_000L, 1_000L));
-        require(guard.recordHostFrame(900L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
-        require(guard.recordHostFrame(1_200L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
-        require(!guard.isAutomaticStartAllowed());
-    }
-
-    private static void rapidSecondRestartReplacesCandidateWithoutSequenceCatchup() {
+    private static void rawVideoNeverRearmsBlockedBilling() {
         AutomaticFormalUsageSessionGuard guard = activeGuard(50_000L);
         require(guard.markFormalSessionClosed(START_A, CHANNEL));
         require(!guard.recordHostAbsent(1_000L, 1_000L));
         require(guard.recordHostAbsent(2_000L, 1_000L));
-        require(guard.recordHostFrame(5_000L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
 
-        // A second click/restart can reset the Host sequence again before the
-        // 5,000 candidate is confirmed.  Keep the absence proof, replace the
-        // candidate, and require a distinct forward observation.
-        require(guard.recordHostFrame(100L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
-        require(guard.recordHostFrame(100L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
-        require(!guard.isAutomaticStartAllowed());
-        require(guard.recordHostFrame(101L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .NEW_STREAM_REARMED);
-        require(guard.isAutomaticStartAllowed());
+        long[] attackerOrStaleFrames = {50_001L, 5L, 6L, 49_000L, 7L};
+        for (long frame : attackerOrStaleFrames) {
+            require(guard.recordHostFrame(frame)
+                    == AutomaticFormalUsageSessionGuard.HostFrameOutcome
+                            .SAME_STREAM_BLOCKED);
+            require(!guard.isAutomaticStartAllowed());
+        }
     }
 
-    private static void lowSequenceGenerationCanStillRearm() {
-        AutomaticFormalUsageSessionGuard guard = activeGuard(50L);
+    private static void authenticatedIntentRequiresConfirmedAbsence() {
+        AutomaticFormalUsageSessionGuard guard = activeGuard(900L);
         require(guard.markFormalSessionClosed(START_A, CHANNEL));
-        require(!guard.recordHostAbsent(5_000L, 1_000L));
-        require(guard.recordHostAbsent(6_000L, 1_000L));
-        require(guard.recordHostFrame(5L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
-        require(guard.recordHostFrame(15L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .NEW_STREAM_REARMED);
-    }
-
-    private static void naturalFrameWrapDoesNotRearm() {
-        AutomaticFormalUsageSessionGuard guard = activeGuard(
-                AutomaticFormalUsageSessionGuard.MAX_LOGICAL_FRAME_SEQUENCE
-                        - 5L);
-        require(guard.blockPotentiallyBilledGeneration(START_A, CHANNEL));
-        require(!guard.recordHostAbsent(30_000L, 1_000L));
-        require(guard.recordHostAbsent(31_000L, 1_000L));
-        require(guard.recordHostFrame(5_000L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, 1L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .HOST_ABSENCE_NOT_CONFIRMED);
+        require(!guard.recordHostAbsent(10_000L, 1_000L));
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, 1L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .HOST_ABSENCE_NOT_CONFIRMED);
+        require(guard.recordHostAbsent(11_000L, 1_000L));
         require(!guard.isAutomaticStartAllowed());
-        require(guard.recordHostFrame(90L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
     }
 
-    private static void unknownFrameEvidenceFailsClosed() {
-        AutomaticFormalUsageSessionGuard guard =
-                new AutomaticFormalUsageSessionGuard();
+    private static void authenticatedIntentRearmsExactlyOnce() {
+        AutomaticFormalUsageSessionGuard guard = activeGuard(1_000L);
+        require(guard.markFormalSessionClosed(START_A, CHANNEL));
+        confirmAbsence(guard, 20_000L);
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, 7L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .NEW_START_INTENT_REARMED);
+        require(guard.isAutomaticStartAllowed());
+        require(guard.snapshot().lastHostStartIntentConnectionId
+                == CONNECTION_A);
+        require(guard.snapshot().lastHostStartIntentToken == 7L);
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, 7L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .STATE_IGNORED);
+    }
+
+    private static void duplicateAuthenticatedIntentCannotRearmAgain() {
+        AutomaticFormalUsageSessionGuard guard = activeGuard(2_000L);
+        require(guard.markFormalSessionClosed(START_A, CHANNEL));
+        confirmAbsence(guard, 30_000L);
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, 9L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .NEW_START_INTENT_REARMED);
+
         guard.reserveFormalStart(START_A, CHANNEL);
         guard.markFormalSessionOpened(START_A, CHANNEL);
+        require(guard.markFormalSessionClosed(START_A, CHANNEL));
+        confirmAbsence(guard, 40_000L);
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, 9L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .DUPLICATE_IGNORED);
+        require(!guard.isAutomaticStartAllowed());
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, 10L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .NEW_START_INTENT_REARMED);
+    }
+
+    private static void invalidIntentEvidenceFailsClosed() {
+        AutomaticFormalUsageSessionGuard guard = activeGuard(300L);
         require(guard.blockPotentiallyBilledGeneration(START_A, CHANNEL));
-        require(!guard.recordHostAbsent(40_000L, 1_000L));
-        require(guard.recordHostAbsent(41_000L, 1_000L));
-        require(guard.recordHostFrame(-1L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .INVALID_IGNORED);
-        require(guard.recordHostFrame(5L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
+        confirmAbsence(guard, 50_000L);
+        require(guard.recordAuthenticatedHostStartIntent(0L, 1L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .INVALID_IGNORED);
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, 0L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .INVALID_IGNORED);
+        require(guard.recordAuthenticatedHostStartIntent(CONNECTION_A, -1L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .INVALID_IGNORED);
         require(!guard.isAutomaticStartAllowed());
     }
 
-    private static void restoredProcessStateRemainsBlocked() {
+    private static void restoredProcessStateRequiresAuthenticatedIntent() {
         AutomaticFormalUsageSessionGuard guard =
                 new AutomaticFormalUsageSessionGuard();
-        guard.restoreBlocked(9_000L);
+        guard.restoreBlocked(9_000L, true);
         require(!guard.isAutomaticStartAllowed());
-
-        // A long packet gap followed by the same forward-moving stream is not
-        // a new billable generation.
-        require(!guard.recordHostAbsent(50_000L, 1_000L));
-        require(guard.recordHostAbsent(70_000L, 1_000L));
-        require(guard.recordHostFrame(12_000L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .SAME_STREAM_BLOCKED);
-        require(!guard.isAutomaticStartAllowed());
-
-        // Only a later silence plus a confirmed sequence reset can re-arm.
-        require(!guard.recordHostAbsent(80_000L, 1_000L));
-        require(guard.recordHostAbsent(81_000L, 1_000L));
+        confirmAbsence(guard, 60_000L);
         require(guard.recordHostFrame(50L)
                 == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .RESTART_CANDIDATE_RECORDED);
-        require(guard.recordHostFrame(51L)
-                == AutomaticFormalUsageSessionGuard.HostFrameOutcome
-                .NEW_STREAM_REARMED);
+                        .SAME_STREAM_BLOCKED);
+        require(!guard.isAutomaticStartAllowed());
+        confirmAbsence(guard, 70_000L);
+        require(guard.recordAuthenticatedHostStartIntent(
+                        CONNECTION_A + 1L, 1L)
+                == AutomaticFormalUsageSessionGuard.HostStartIntentOutcome
+                        .NEW_START_INTENT_REARMED);
         require(guard.isAutomaticStartAllowed());
+    }
+
+    private static void confirmAbsence(
+            AutomaticFormalUsageSessionGuard guard,
+            long startedAt) {
+        require(!guard.recordHostAbsent(startedAt, 1_000L));
+        require(guard.recordHostAbsent(startedAt + 1_000L, 1_000L));
     }
 
     private static AutomaticFormalUsageSessionGuard activeGuard(

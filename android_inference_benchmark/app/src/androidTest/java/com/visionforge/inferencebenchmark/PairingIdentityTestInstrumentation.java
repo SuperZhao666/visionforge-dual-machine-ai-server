@@ -16,8 +16,12 @@ import android.security.keystore.KeyProperties;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.security.Key;
 import java.security.KeyFactory;
 import java.security.KeyStore;
@@ -44,6 +48,10 @@ public final class PairingIdentityTestInstrumentation extends Instrumentation {
     private static final String MODE_QNN_BENCHMARK = "qnn_benchmark";
     private static final String MODE_PORTABLE_BACKEND_PROBE =
             "portable_backend_probe";
+    private static final String MODE_EXPORT_PAIR_BINDING_RECOVERY =
+            "export_pair_binding_recovery";
+    private static final String PAIR_BINDING_RECOVERY_FILE =
+            "host-pair-binding-recovery-v1.state";
     private static final String ENTITLEMENT_STORE =
             "visionforge_dual_machine_entitlement_migration_test_v1";
     private static final String HOST_PUBLIC_KEY_BASE64 =
@@ -79,6 +87,14 @@ public final class PairingIdentityTestInstrumentation extends Instrumentation {
                         "stream",
                         MobilePortableBackendProbeRunner.run(
                                 getTargetContext(), arguments));
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
+            if (MODE_EXPORT_PAIR_BINDING_RECOVERY.equals(
+                    arguments.getString(ARG_MODE))) {
+                exportPairBindingRecovery();
+                result.putString(
+                        "stream", "PAIR_BINDING_RECOVERY_V1_OK\n");
                 finish(Activity.RESULT_OK, result);
                 return;
             }
@@ -200,6 +216,75 @@ public final class PairingIdentityTestInstrumentation extends Instrumentation {
         store.clear();
         require(store.load() == null,
                 "cleared pending activation must be absent");
+    }
+
+    /**
+     * Exports only the already-persisted public pair binding for one-time QA
+     * migration to the rebuilt Host. Card codes, tokens, signatures, leases,
+     * session keys and Android private-key material are never read or written.
+     */
+    private void exportPairBindingRecovery() throws Exception {
+        Context context = getTargetContext();
+        DualMachineEntitlementRecord entitlement =
+                new SharedPreferencesDualMachineEntitlementStore(context)
+                        .load();
+        require(entitlement != null
+                        && entitlement.hasActivePairSecurityBinding()
+                        && !entitlement.revoked,
+                "active pair binding is required for recovery export");
+
+        AndroidPairingIdentityStore identity =
+                new AndroidPairingIdentityStore(
+                        entitlement.androidIdentityAlias);
+        byte[] androidSpki = identity.publicKeySpkiDer();
+        require(entitlement.androidKeySha256.equals(
+                        identity.fingerprintHex()),
+                "Android identity does not match the entitlement binding");
+
+        String state = "VFPB1\n"
+                + "entitlement_id=" + entitlement.entitlementId + "\n"
+                + "pair_id=" + entitlement.pairId + "\n"
+                + "binding_id=" + entitlement.bindingId + "\n"
+                + "binding_revision=" + entitlement.bindingRevision + "\n"
+                + "revocation_version=" + entitlement.revocationVersion + "\n"
+                + "generation_high_watermark=0\n"
+                + "host_identity_spki_sha256="
+                + entitlement.hostKeySha256 + "\n"
+                + "android_identity_spki_sha256="
+                + entitlement.androidKeySha256 + "\n"
+                + "android_subject_public_key_info_der="
+                + lowerHex(androidSpki) + "\n";
+
+        File external = context.getExternalFilesDir(null);
+        require(external != null && (external.isDirectory()
+                        || external.mkdirs()),
+                "external QA recovery directory is unavailable");
+        File destination = new File(external, PAIR_BINDING_RECOVERY_FILE);
+        File temporary = new File(external,
+                PAIR_BINDING_RECOVERY_FILE + ".tmp");
+        byte[] encoded = state.getBytes(StandardCharsets.US_ASCII);
+        try (FileOutputStream output = new FileOutputStream(temporary, false)) {
+            output.write(encoded);
+            output.flush();
+            output.getFD().sync();
+        } finally {
+            Arrays.fill(encoded, (byte) 0);
+            Arrays.fill(androidSpki, (byte) 0);
+        }
+        Files.move(
+                temporary.toPath(), destination.toPath(),
+                StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private static String lowerHex(byte[] value) {
+        char[] alphabet = "0123456789abcdef".toCharArray();
+        char[] encoded = new char[value.length * 2];
+        for (int index = 0; index < value.length; index++) {
+            int unsigned = value[index] & 0xff;
+            encoded[index * 2] = alphabet[unsigned >>> 4];
+            encoded[index * 2 + 1] = alphabet[unsigned & 0x0f];
+        }
+        return new String(encoded);
     }
 
     private void verifyIdentityLifecycleAndPolicy() throws Exception {

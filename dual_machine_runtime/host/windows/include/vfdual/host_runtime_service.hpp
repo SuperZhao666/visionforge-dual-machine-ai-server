@@ -2,6 +2,8 @@
 
 #include "vfdual/dxgi_desktop_capture.hpp"
 #include "vfdual/host_data_plane_authorization_gate.hpp"
+#include "vfdual/host_authenticated_data_plane_session_v2.hpp"
+#include "vfdual/host_start_intent_gate.hpp"
 #include "vfdual/isolated_dhcp_server.hpp"
 #include "vfdual/wired_link_contract.hpp"
 
@@ -168,9 +170,16 @@ private:
     // facade cannot manufacture a "verified" aggregate and open this gate.
     friend class HostRuntimeAuthorizationCoordinator;
     [[nodiscard]] bool install_confirmed_peer_binding(UsageLeaseBinding binding);
+    void reset_data_plane_authorization_for_new_session() noexcept;
+    [[nodiscard]] bool install_authenticated_data_plane_session(
+        const ConfirmedPeerHandshakeSessionV1& session) noexcept;
     [[nodiscard]] UsageLeaseAdmission submit_verified_usage_lease(
         const VerifiedUsageLease& lease,
         std::uint64_t trusted_now_epoch);
+    [[nodiscard]] std::uint64_t offer_pending_start_intent() noexcept;
+    [[nodiscard]] std::uint64_t claim_pending_start_intent() noexcept;
+    void complete_pending_start_intent() noexcept;
+    void cancel_pending_start_intent() noexcept;
 
     // Stops capture/encoder/transport workers without ending the current
     // authorized usage session. Public stop() remains the explicit business
@@ -189,6 +198,9 @@ private:
     std::stop_source startup_stop_source_;
     IsolatedDhcpServer* isolated_dhcp_server_{};
     std::shared_ptr<HostDataPlaneAuthorizationGate> authorization_gate_;
+    std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+        authenticated_data_plane_session_;
+    HostStartIntentGate start_intent_gate_;
 };
 
 }  // namespace vfdual

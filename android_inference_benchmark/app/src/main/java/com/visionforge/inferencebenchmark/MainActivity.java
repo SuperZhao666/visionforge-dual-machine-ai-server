@@ -20,6 +20,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.WindowManager;
 
+import com.visionforge.inferencebenchmark.runtime.FirstPairingUiState;
 import com.visionforge.inferencebenchmark.runtime.MobileRuntimeBinding;
 import com.visionforge.inferencebenchmark.runtime.MobileRuntimePhase;
 import com.visionforge.inferencebenchmark.runtime.MobileRuntimeReadModel;
@@ -115,6 +116,9 @@ public final class MainActivity extends Activity implements MobileAppActions {
     private volatile boolean activityDestroyed;
     private MobileRuntimeBinding runtimeBinder;
     private boolean runtimeServiceBound;
+    private final FirstPairingDialogController firstPairingDialogController =
+            new FirstPairingDialogController(
+                    this, this::submitFirstPairingDecision);
 
     private final ServiceConnection runtimeServiceConnection =
             new ServiceConnection() {
@@ -131,8 +135,13 @@ public final class MainActivity extends Activity implements MobileAppActions {
                     runtimeBinder.setActivityForeground(activityStarted);
                     runtimeBinder.setAuthorizationObserver(
                             MainActivity.this::onAuthorizationChanged);
+                    runtimeBinder.setFirstPairingObserver(
+                            MainActivity.this::onFirstPairingChanged);
                     authorizationUiState =
                             runtimeBinder.authorizationState();
+                    firstPairingDialogController.render(
+                            activityStarted,
+                            runtimeBinder.firstPairingState());
                     refreshStates("");
                 }
 
@@ -580,10 +589,21 @@ public final class MainActivity extends Activity implements MobileAppActions {
         refreshStates(note);
     }
 
+    private void onFirstPairingChanged(FirstPairingUiState state) {
+        if (activityDestroyed || state == null) return;
+        firstPairingDialogController.render(activityStarted, state);
+    }
+
+    private void submitFirstPairingDecision(boolean matchingCodes) {
+        MobileRuntimeBinding binder = runtimeBinder;
+        if (binder != null) binder.confirmFirstPairing(matchingCodes);
+    }
+
     private void onRuntimeServiceUnavailable(String reason) {
         runtimeBinder = null;
         authorizationUiState =
                 DualMachineAuthorizationUiState.readyForActivation();
+        firstPairingDialogController.dismiss();
         if (controlRuntime != null) {
             controlRuntime.failClosed(reason);
         }
@@ -673,8 +693,8 @@ public final class MainActivity extends Activity implements MobileAppActions {
         input.nativePostprocessApplied = controlRuntime.isNativePostprocessApplied();
         input.authorization = authorizationUiState;
         input.qnnRuntimeLabel = displayRuntimeLabel(snapshot.qnnRuntimeLabel);
-        input.accessUnitFps = rates.freshContentFps;
-        input.decodedFrameFps = rates.freshDecodedFrameFps;
+        input.accessUnitFps = rates.reassembledFps;
+        input.decodedFrameFps = rates.decodedFrameFps;
         input.qnnFps = rates.qnnFps;
         input.preprocessP50 = snapshot.preprocessP50;
         input.qnnP50 = snapshot.qnnP50;
@@ -1174,7 +1194,9 @@ public final class MainActivity extends Activity implements MobileAppActions {
         activityStarted = false;
         if (runtimeBinder != null) {
             runtimeBinder.setAuthorizationObserver(null);
+            runtimeBinder.setFirstPairingObserver(null);
         }
+        firstPairingDialogController.dismiss();
         runtimeBinder = null;
         if (runtimeServiceBound) {
             runtimeServiceBound = false;
@@ -1188,6 +1210,7 @@ public final class MainActivity extends Activity implements MobileAppActions {
         boolean changingConfigurations = isChangingConfigurations();
         activityDestroyed = true;
         stateRefreshHandler.removeCallbacks(stateRefreshTask);
+        firstPairingDialogController.dismiss();
         if (eventLogger != null) {
             eventLogger.write("mobile_app_stopped",
                     "service_owned_control_preserved=true changing_configurations="

@@ -54,7 +54,19 @@ public final class DualMachineCardAuthorizationCoordinatorSelfTest {
         legacyBalanceStatusRefreshMigratesAuthoritativeMetadata();
         exhaustedBindingIsReleasedOnlyAfterUsageSessionEnds();
         exhaustedBindingClearFailureStaysFailClosed();
+        firstPairingHostSignerIsActivationOnly();
         System.out.println("DUAL_MACHINE_CARD_AUTHORIZATION_COORDINATOR_OK");
+    }
+
+    private static void firstPairingHostSignerIsActivationOnly()
+            throws Exception {
+        Fixture fixture = new Fixture(true);
+        fixture.coordinator.activateCard(CARD);
+        check(fixture.typedHostActivationSignCalls.get() == 1);
+        check(fixture.hostSignCalls.get() == 0);
+        expectSecurity(fixture.coordinator::refreshStatus);
+        check(fixture.typedHostActivationSignCalls.get() == 1);
+        check(fixture.hostSignCalls.get() == 0);
     }
 
     private static void exhaustedBindingIsReleasedOnlyAfterUsageSessionEnds()
@@ -544,6 +556,8 @@ public final class DualMachineCardAuthorizationCoordinatorSelfTest {
         final KeyPair host = keyPair();
         final KeyPair android = keyPair();
         final AtomicInteger hostSignCalls = new AtomicInteger();
+        final AtomicInteger typedHostActivationSignCalls =
+                new AtomicInteger();
         final AtomicInteger androidSignCalls = new AtomicInteger();
         final AtomicReference<DualMachineEntitlementRecord> saved =
                 new AtomicReference<>();
@@ -560,18 +574,43 @@ public final class DualMachineCardAuthorizationCoordinatorSelfTest {
         final DualMachineCardAuthorizationCoordinator coordinator;
 
         Fixture() throws Exception {
+            this(false);
+        }
+
+        Fixture(boolean firstPairingHost) throws Exception {
             ArrayDeque<String> identifiers = new ArrayDeque<>();
             identifiers.add(REQUEST_ID);
             identifiers.add(PAIR_ID);
             identifiers.add(STATUS_NONCE);
             identifiers.add("66".repeat(16));
             identifiers.add("77".repeat(16));
-            DualMachineCardAuthorizationCoordinator.IdentityBinding hostBinding =
-                    identity(
-                            "HOST-DEVICE",
-                            "17.8.81",
-                            host,
-                            hostSignCalls);
+            DualMachineCardAuthorizationCoordinator.IdentityBinding hostBinding;
+            if (firstPairingHost) {
+                hostBinding = DualMachineCardAuthorizationCoordinator
+                        .IdentityBinding.forFirstPairingActivation(
+                                "HOST-DEVICE",
+                                "17.8.81",
+                                DualMachinePairingIdentityCodec
+                                        .encodePublicKeyBase64(
+                                                host.getPublic().getEncoded()),
+                                (proof, payload) -> {
+                                    check(MessageDigest.isEqual(
+                                            payload,
+                                            DualMachineUsageAuthorizationContract
+                                                    .activationConfirmation(
+                                                            proof)));
+                                    typedHostActivationSignCalls
+                                            .incrementAndGet();
+                                    return DualMachinePairingIdentityCodec.sign(
+                                            host.getPrivate(), payload);
+                                });
+            } else {
+                hostBinding = identity(
+                        "HOST-DEVICE",
+                        "17.8.81",
+                        host,
+                        hostSignCalls);
+            }
             DualMachineCardAuthorizationCoordinator.IdentityBinding
                     androidBinding = identity(
                     "ANDROID-DEVICE",

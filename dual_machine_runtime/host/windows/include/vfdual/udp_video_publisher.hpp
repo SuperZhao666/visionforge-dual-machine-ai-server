@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vfdual/protocol.hpp"
+#include "vfdual/host_authenticated_data_plane_session_v2.hpp"
 #include "vfdual/udp_socket.hpp"
 
 #include <cstdint>
@@ -46,7 +47,9 @@ public:
     [[nodiscard]] bool connect_to(
         std::string_view host, std::uint16_t port, std::uint16_t local_port = 0,
         std::string_view local_host = {},
-        const VideoDataPlanePermitSource& permit_source = {}) noexcept;
+        const VideoDataPlanePermitSource& permit_source = {},
+        std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+            authenticated_session = {}) noexcept;
     void reset() noexcept;
     [[nodiscard]] VideoPublishResult publish(
         VideoFrameIdentity identity, std::span<const std::byte> access_unit,
@@ -59,6 +62,8 @@ private:
 
     UdpSocket socket_;
     VideoDataPlanePermitSource permit_source_;
+    std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+        authenticated_session_;
 };
 
 }  // namespace vfdual

@@ -35,7 +35,9 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
 
     public static void main(String[] arguments) throws Exception {
         verifiesExplicitPaidStartProgressRenewalAndLocalFirstStop();
+        verifiesRenewalTimingSeparatesProofSidecarAndInstall();
         verifiesIndependentHostAndAndroidProgressEvidence();
+        verifiesKnownAndroidPipelineRestartDoesNotLoseNextProgress();
         verifiesNoProgressMeansNoRenewalChargeAndExpiryCloses();
         verifiesAmbiguousStartRetriesExactRequestWithoutDoubleCharge();
         verifiesRepeatedAmbiguousStartRecoversExactRequestWithoutDoubleCharge();
@@ -51,6 +53,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         verifiesRuntimeOpenFailureFailsClosed();
         verifiesStopRacingRuntimeOpenCannotReopenDataPlane();
         verifiesStagedLeaseBlocksSecondDebitUntilPromotion();
+        verifiesFailedStagedLeaseActivationRetainsExactStopOwner();
         verifiesBothDeadlineOrdersContinueContiguousRenewal();
         verifiesLateFutureLeaseReopensAtNotBeforeWithoutAnotherDebit();
         verifiesDeadlineWatchdogAndRuntimeWindowContract();
@@ -69,6 +72,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         verifiesUndispatchedStartConvergesWithoutServerResponse();
         verifiesActiveLifecycleStopNeverCancelsCompletedStart();
         verifiesActiveStopResponseLossRetriesStopWithoutCancellation();
+        verifiesRuntimeLossReusesPreparedStopAfterHostSignerDetaches();
         verifiesAuthoritativeCancellationBalanceDriftConverges();
         verifiesAmbiguousCancellationRetainsExactPendingUntilConfirmed();
         verifiesRuntimeLossRetainsAmbiguousExactCancellation();
@@ -77,6 +81,35 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         verifiesDelayedLifecycleHandleCannotCloseLaterGeneration();
         verifiesPermanentLeaseNeverDebits();
         System.out.println("DUAL_MACHINE_FORMAL_USAGE_COORDINATOR_OK");
+    }
+
+    private static void verifiesRenewalTimingSeparatesProofSidecarAndInstall()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        start(fixture.coordinator);
+        fixture.hostProgress.incrementAndGet();
+        fixture.androidProgress.incrementAndGet();
+        fixture.epoch.set(103L);
+        fixture.monotonic.set(3L * SECOND_NANOS);
+        fixture.runtime.usageSignerHook = () -> fixture.monotonic.addAndGet(
+                TimeUnit.MILLISECONDS.toNanos(11L));
+        fixture.sidecar.heartbeatHook = () -> fixture.monotonic.addAndGet(
+                TimeUnit.MILLISECONDS.toNanos(22L));
+        fixture.runtime.stageHook = () -> fixture.monotonic.addAndGet(
+                TimeUnit.MILLISECONDS.toNanos(33L));
+
+        check(fixture.coordinator.renewAfterObservedProgress()
+                == DualMachineFormalUsageCoordinator.RenewalOutcome
+                .FUTURE_STAGED);
+        DualMachineFormalUsageCoordinator.RenewalTiming timing =
+                fixture.coordinator.latestRenewalTiming();
+        check(timing.attempted);
+        check(timing.sequence == 1L);
+        check(timing.proofMillis == 11L);
+        check(timing.sidecarMillis == 22L);
+        check(timing.installMillis == 33L);
+        check(timing.totalMillis == 66L);
+        check("completed".equals(timing.terminalPhase));
     }
 
     private static void verifiesPermanentLeaseNeverDebits()
@@ -142,6 +175,33 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         check(fixture.sidecar.stops == 2);
         check(fixture.sidecar.startCancellations == 0);
         check(fixture.runtime.closeCalls == 1);
+        check(fixture.state.snapshot().state
+                == DualMachineFormalUsageStateMachine.State.ACTIVATED_IDLE);
+    }
+
+    private static void
+            verifiesRuntimeLossReusesPreparedStopAfterHostSignerDetaches()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        start(fixture.coordinator);
+        fixture.sidecar.stopResponsesToLoseAfterCommit = 1;
+        fixture.hostSignerAvailable.set(false);
+
+        fixture.coordinator.failCloseFromRuntimeLoss();
+
+        check(fixture.sidecar.stops == 1);
+        check(fixture.sidecar.committedStopRequest != null);
+        DualMachineSidecarPort.StopRequest prepared =
+                fixture.sidecar.committedStopRequest;
+        check(fixture.state.snapshot().state
+                == DualMachineFormalUsageStateMachine.State.STOPPING);
+
+        DualMachineFormalUsageCoordinator.StopOutcome recovered =
+                fixture.coordinator.stopForRuntimeLifecycle();
+
+        check(recovered.serverConfirmed);
+        check(fixture.sidecar.stops == 2);
+        check(fixture.sidecar.committedStopRequest == prepared);
         check(fixture.state.snapshot().state
                 == DualMachineFormalUsageStateMachine.State.ACTIVATED_IDLE);
     }
@@ -534,7 +594,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         check(cancelled.billingStarted);
         check(cancelled.serverConfirmed);
         check(fixture.sidecar.startDebits == 1);
-        check(fixture.sidecar.stops == 1);
+        check(fixture.sidecar.stops == 0);
         check(fixture.sidecar.startCancellations == 1);
         check(fixture.runtime.openCalls == 0);
         check(fixture.state.snapshot().state
@@ -545,7 +605,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
                 fixture.coordinator.stopForRuntimeLifecycle();
         check(queuedOwner.serverConfirmed);
         check(queuedOwner.remainingSeconds == 95L);
-        check(fixture.sidecar.stops == 1);
+        check(fixture.sidecar.stops == 0);
         check(fixture.sidecar.startCancellations == 1);
     }
 
@@ -886,9 +946,22 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         expectIo(fixture.coordinator::renewAfterObservedProgress);
         check(fixture.state.snapshot().remainingSeconds == 95L);
         expectState(fixture.coordinator::renewAfterObservedProgress);
+        fixture.sidecar.heartbeatHook = () -> fixture.monotonic.addAndGet(
+                TimeUnit.MILLISECONDS.toNanos(22L));
+        fixture.runtime.stageHook = () -> fixture.monotonic.addAndGet(
+                TimeUnit.MILLISECONDS.toNanos(33L));
         check(fixture.coordinator.retryPendingRenewal()
                 == DualMachineFormalUsageCoordinator.RenewalOutcome
                 .FUTURE_STAGED);
+        DualMachineFormalUsageCoordinator.RenewalTiming retryTiming =
+                fixture.coordinator.latestRenewalTiming();
+        check(retryTiming.attempted);
+        check(retryTiming.sequence == 1L);
+        check(retryTiming.proofMillis == 0L);
+        check(retryTiming.sidecarMillis == 22L);
+        check(retryTiming.installMillis == 33L);
+        check(retryTiming.totalMillis == 55L);
+        check("completed".equals(retryTiming.terminalPhase));
         check(fixture.sidecar.heartbeats == 2);
         check(fixture.sidecar.heartbeatDebits == 1);
         check(fixture.state.snapshot().remainingSeconds == 90L);
@@ -935,6 +1008,25 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         check(androidOnlyObservation.observedAndroidProgress == 1L);
         check(androidOnlyObservation.lastAndroidProgress == 0L);
         check(androidOnly.sidecar.heartbeats == 0);
+    }
+
+    private static void
+            verifiesKnownAndroidPipelineRestartDoesNotLoseNextProgress()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        start(fixture.coordinator);
+
+        fixture.androidProgress.set(0L);
+        fixture.coordinator.reconcileKnownAndroidPipelineRestart();
+
+        fixture.hostProgress.incrementAndGet();
+        fixture.androidProgress.incrementAndGet();
+        fixture.epoch.set(103L);
+        fixture.monotonic.set(3L * SECOND_NANOS);
+        check(fixture.coordinator.renewAfterObservedProgress()
+                == DualMachineFormalUsageCoordinator.RenewalOutcome
+                .FUTURE_STAGED);
+        check(fixture.sidecar.heartbeats == 1);
     }
 
     private static void
@@ -1102,8 +1194,9 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         check(fixture.runtime.openCalls == 1);
         check(fixture.runtime.closed);
         check(fixture.sidecar.startDebits == 1);
-        check(fixture.sidecar.stops == 1);
-        check(fixture.sidecar.sawClosedBeforeStop);
+        check(fixture.sidecar.stops == 0);
+        check(fixture.sidecar.startCancellations == 1);
+        check(!fixture.sidecar.serverSessionActive);
         check(fixture.state.snapshot().state
                 == DualMachineFormalUsageStateMachine.State.ACTIVATED_IDLE);
         check(!fixture.state.snapshot().permitsDataPlane);
@@ -1118,7 +1211,9 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         check(fixture.runtime.openCalls == 1);
         check(fixture.runtime.closed);
         check(fixture.sidecar.startDebits == 1);
-        check(fixture.sidecar.stops == 1);
+        check(fixture.sidecar.stops == 0);
+        check(fixture.sidecar.startCancellations == 1);
+        check(!fixture.sidecar.serverSessionActive);
         check(fixture.state.snapshot().state
                 == DualMachineFormalUsageStateMachine.State.ACTIVATED_IDLE);
         check(!fixture.state.snapshot().permitsDataPlane);
@@ -1196,6 +1291,41 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         check(fixture.sidecar.heartbeatDebits == 1);
         check(fixture.sidecar.stops == 0);
         check(fixture.deadlines.deadline == 12L * SECOND_NANOS);
+    }
+
+    private static void
+            verifiesFailedStagedLeaseActivationRetainsExactStopOwner()
+            throws Exception {
+        Fixture fixture = new Fixture();
+        start(fixture.coordinator);
+        fixture.hostProgress.incrementAndGet();
+        fixture.androidProgress.incrementAndGet();
+        fixture.epoch.set(103L);
+        fixture.monotonic.set(3L * SECOND_NANOS);
+        check(fixture.coordinator.renewAfterObservedProgress()
+                == DualMachineFormalUsageCoordinator.RenewalOutcome
+                .FUTURE_STAGED);
+        check(fixture.sidecar.serverSessionActive);
+
+        fixture.runtime.failOpen = true;
+        fixture.epoch.set(105L);
+        fixture.monotonic.set(5L * SECOND_NANOS);
+        check(fixture.coordinator.enforceAndGetDataPlanePermitState()
+                == DualMachineFormalUsageCoordinator.DataPlanePermitState
+                .CLOSED);
+        check(fixture.runtime.closed);
+        check(fixture.state.snapshot().state
+                == DualMachineFormalUsageStateMachine.State.STOPPING);
+        check(fixture.coordinator.captureLifecycleStop() != null);
+        check(fixture.sidecar.serverSessionActive);
+
+        DualMachineFormalUsageCoordinator.StopOutcome stopped =
+                fixture.coordinator.stopForRuntimeLifecycle();
+        check(stopped.serverConfirmed);
+        check(fixture.sidecar.stops == 1);
+        check(!fixture.sidecar.serverSessionActive);
+        check(fixture.state.snapshot().state
+                == DualMachineFormalUsageStateMachine.State.ACTIVATED_IDLE);
     }
 
     private static void verifiesBothDeadlineOrdersContinueContiguousRenewal()
@@ -1322,6 +1452,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         final AtomicLong monotonic = new AtomicLong();
         final AtomicLong hostProgress = new AtomicLong(10L);
         final AtomicLong androidProgress = new AtomicLong(20L);
+        final AtomicBoolean hostSignerAvailable = new AtomicBoolean(true);
         final FakeRuntime runtime = new FakeRuntime(monotonic);
         final FakeDeadlineScheduler deadlines =
                 new FakeDeadlineScheduler(monotonic);
@@ -1344,7 +1475,12 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
                 Runnable idSourceHook,
                 int hookCall) throws Exception {
             DualMachineCardAuthorizationCoordinator.IdentityBinding host =
-                    identity("HOST-DEVICE", "17.8.81", hostIdentity);
+                    identity(
+                            "HOST-DEVICE",
+                            "17.8.81",
+                            hostIdentity,
+                            hostSignerAvailable,
+                            runtime);
             DualMachineCardAuthorizationCoordinator.IdentityBinding android =
                     identity("ANDROID-DEVICE", "1.0.0", androidIdentity);
             entitlement = new DualMachineEntitlementRecord(
@@ -1419,9 +1555,12 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         Runnable prepareHook;
         Runnable freshVideoHook;
         Runnable openHook;
+        Runnable stageHook;
+        Runnable usageSignerHook;
         private final AtomicLong monotonic;
         DualMachineFormalUsageCoordinator.DataPlanePermit active;
         DualMachineFormalUsageCoordinator.DataPlanePermit staged;
+        volatile String installedUsageLeaseSha256 = "";
 
         FakeRuntime(AtomicLong monotonic) {
             this.monotonic = monotonic;
@@ -1494,6 +1633,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
             if (staged != null && staged.sequence == permit.sequence) {
                 staged = null;
             }
+            installedUsageLeaseSha256 = permit.leaseSha256;
             closed = false;
             if (openHook != null) {
                 Runnable hook = openHook;
@@ -1509,7 +1649,9 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
             check(permit.notBeforeMonotonicNanos > monotonic.get());
             check(permit.expiresAtMonotonicNanos
                     > permit.notBeforeMonotonicNanos);
+            if (stageHook != null) stageHook.run();
             staged = permit;
+            installedUsageLeaseSha256 = permit.leaseSha256;
         }
 
         @Override
@@ -1627,6 +1769,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         boolean failCommittedReplayWithRuntime;
         boolean loseFirstHeartbeatResponseAfterCommit;
         boolean serverSessionActive;
+        Runnable heartbeatHook;
         Runnable afterChallengeHook;
         Runnable beforeStartCommitHook;
         Runnable afterStartCommitHook;
@@ -1646,6 +1789,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         String stopRequestNonce = "";
         StartUsageRequest committedStartRequest;
         StartCancellationRequest committedCancellationRequest;
+        StopRequest committedStopRequest;
         StartCancellationRequest retiredCancellationRequest;
         HeartbeatRequest committedHeartbeatRequest;
         UsageLeaseResponse committedStartResponse;
@@ -1691,6 +1835,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
             startUsageRequestNonce = "";
             committedStartRequest = null;
             committedCancellationRequest = null;
+            committedStopRequest = null;
             committedStartResponse = null;
             committedCancellationResponse = null;
             serverSessionActive = false;
@@ -1894,6 +2039,7 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         public UsageLeaseResponse heartbeat(HeartbeatRequest request)
                 throws IOException {
             heartbeats++;
+            if (heartbeatHook != null) heartbeatHook.run();
             if (committedHeartbeatResponse != null) {
                 check(request == committedHeartbeatRequest);
                 return committedHeartbeatResponse;
@@ -1935,6 +2081,11 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
         @Override
         public StopResponse stop(StopRequest request) throws IOException {
             stops++;
+            if (committedStopRequest == null) {
+                committedStopRequest = request;
+            } else {
+                check(request == committedStopRequest);
+            }
             serverSessionActive = false;
             sawClosedBeforeStop = runtime.closed;
             check(request.previousLease.equals(currentToken));
@@ -2038,14 +2189,66 @@ public final class DualMachineFormalUsageCoordinatorSelfTest {
     private static DualMachineCardAuthorizationCoordinator.IdentityBinding
             identity(String device, String version, KeyPair pair)
             throws Exception {
+        return identity(device, version, pair, new AtomicBoolean(true));
+    }
+
+    private static DualMachineCardAuthorizationCoordinator.IdentityBinding
+            identity(
+                    String device,
+                    String version,
+                    KeyPair pair,
+                    AtomicBoolean signerAvailable)
+            throws Exception {
+        return identity(
+                device, version, pair, signerAvailable, null);
+    }
+
+    private static DualMachineCardAuthorizationCoordinator.IdentityBinding
+            identity(
+                    String device,
+                    String version,
+                    KeyPair pair,
+                    AtomicBoolean signerAvailable,
+                    FakeRuntime hostRuntime)
+            throws Exception {
         DualMachineCardAuthorizationCoordinator.IdentityBinding binding =
                 new DualMachineCardAuthorizationCoordinator.IdentityBinding(
                         device,
                         version,
                         DualMachinePairingIdentityCodec.encodePublicKeyBase64(
                                 pair.getPublic().getEncoded()),
-                        payload -> DualMachinePairingIdentityCodec.sign(
-                                pair.getPrivate(), payload));
+                        payload -> {
+                            if (!signerAvailable.get()) {
+                                throw new GeneralSecurityException(
+                                        "simulated detached Host signer");
+                            }
+                            String canonical = new String(
+                                    payload, StandardCharsets.UTF_8);
+                            if (hostRuntime != null
+                                    && canonical.contains(
+                                    DualMachineUsageAuthorizationContract
+                                            .USAGE_HEARTBEAT_DOMAIN)
+                                    && hostRuntime.usageSignerHook != null) {
+                                hostRuntime.usageSignerHook.run();
+                            }
+                            if (hostRuntime != null
+                                    && canonical.contains(
+                                    DualMachineUsageAuthorizationContract
+                                            .USAGE_STOP_DOMAIN)) {
+                                String installedLease = hostRuntime
+                                        .installedUsageLeaseSha256;
+                                if (installedLease.isEmpty()
+                                        || !canonical.contains(
+                                        "\"previous_lease_sha256\":\""
+                                                + installedLease + "\"")) {
+                                    throw new GeneralSecurityException(
+                                            "Host stop signer has no matching "
+                                            + "installed usage lease");
+                                }
+                            }
+                            return DualMachinePairingIdentityCodec.sign(
+                                    pair.getPrivate(), payload);
+                        });
         return binding;
     }
 

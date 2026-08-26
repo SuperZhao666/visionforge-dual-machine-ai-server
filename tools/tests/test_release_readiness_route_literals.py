@@ -21,7 +21,7 @@ PYTHON_ROUTE_LITERALS = READINESS_GLOBALS["_python_route_literals"]
 class ReleaseReadinessRouteLiteralTests(unittest.TestCase):
     def test_runtime_dependency_failure_uses_literal_ast_routes(self) -> None:
         source = '''
-from unavailable_fastapi import APIRouter
+from fastapi import APIRouter
 
 router = APIRouter(prefix="/api/dual-machine/v1")
 

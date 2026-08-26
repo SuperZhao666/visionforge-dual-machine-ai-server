@@ -5,6 +5,9 @@ import com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstra
 import com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1.MessageType;
 import com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1.Reason;
 import com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1.Record;
+import com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1.FeedResult;
+import com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1.StreamDecoder;
+import com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapRecordV1.StreamStatus;
 
 import java.util.Arrays;
 
@@ -20,6 +23,9 @@ public final class AuthenticatedControlBootstrapRecordV1SelfTest {
         verifiesEveryMessageDirection();
         rejectsMutationsReflectionAndLengthConfusion();
         verifiesExactPayloadBound();
+        verifiesEveryTcpFragmentBoundary();
+        preservesCoalescedTcpRemainder();
+        rejectsMalformedHeaderBeforePayloadAllocation();
         System.out.println("AuthenticatedControlBootstrapRecordV1SelfTest: PASS");
     }
 
@@ -163,6 +169,153 @@ public final class AuthenticatedControlBootstrapRecordV1SelfTest {
                         MessageType.PAIR_GENERATION_CREDENTIAL,
                         oversized));
         clear(maximum, encoded, oversized);
+    }
+
+    private static void verifiesEveryTcpFragmentBoundary() throws Exception {
+        byte[] encoded = AuthenticatedControlBootstrapRecordV1.encode(
+                Direction.HOST_TO_ANDROID,
+                MessageType.HOST_HELLO,
+                ascii("host-hello"));
+        for (int split = 0; split <= encoded.length; split++) {
+            try (StreamDecoder decoder =
+                    new StreamDecoder(Direction.HOST_TO_ANDROID)) {
+                FeedResult prefix = decoder.feed(encoded, 0, split);
+                require(prefix.consumed() == split, "prefix consumed");
+                require(prefix.status() == (split == encoded.length
+                                ? StreamStatus.RECORD_READY
+                                : StreamStatus.NEED_MORE),
+                        "prefix status");
+                FeedResult suffix = decoder.feed(
+                        encoded,
+                        split,
+                        encoded.length - split);
+                if (split == encoded.length) {
+                    require(suffix.status() == StreamStatus.OUTPUT_PENDING,
+                            "pending status");
+                    require(suffix.consumed() == 0, "pending consumed");
+                } else {
+                    require(suffix.status() == StreamStatus.RECORD_READY,
+                            "suffix ready");
+                    require(suffix.consumed() == encoded.length - split,
+                            "suffix consumed");
+                }
+                byte[] taken = decoder.takeEncodedRecord();
+                require(Arrays.equals(taken, encoded), "fragmented record");
+                require(!decoder.recordReady(), "record reset");
+                require(!decoder.failed(), "decoder remains usable");
+                clear(taken);
+            }
+        }
+
+        try (StreamDecoder decoder =
+                new StreamDecoder(Direction.HOST_TO_ANDROID)) {
+            for (int index = 0; index < encoded.length; index++) {
+                FeedResult result = decoder.feed(encoded, index, 1);
+                require(result.consumed() == 1, "bytewise consumed");
+                require(result.status() == (index + 1 == encoded.length
+                                ? StreamStatus.RECORD_READY
+                                : StreamStatus.NEED_MORE),
+                        "bytewise status");
+            }
+            byte[] taken = decoder.takeEncodedRecord();
+            require(Arrays.equals(taken, encoded), "bytewise record");
+            clear(taken);
+        }
+        clear(encoded);
+    }
+
+    private static void preservesCoalescedTcpRemainder() throws Exception {
+        byte[] first = AuthenticatedControlBootstrapRecordV1.encode(
+                Direction.HOST_TO_ANDROID,
+                MessageType.HOST_HELLO,
+                ascii("one"));
+        byte[] second = AuthenticatedControlBootstrapRecordV1.encode(
+                Direction.HOST_TO_ANDROID,
+                MessageType.HOST_CHALLENGE_PROOF,
+                ascii("two"));
+        byte[] coalesced = new byte[first.length + second.length];
+        System.arraycopy(first, 0, coalesced, 0, first.length);
+        System.arraycopy(second, 0, coalesced, first.length, second.length);
+        try (StreamDecoder decoder =
+                new StreamDecoder(Direction.HOST_TO_ANDROID)) {
+            FeedResult firstFeed = decoder.feed(coalesced);
+            require(firstFeed.status() == StreamStatus.RECORD_READY,
+                    "first coalesced ready");
+            require(firstFeed.consumed() == first.length,
+                    "first coalesced boundary");
+            FeedResult pending = decoder.feed(
+                    coalesced,
+                    firstFeed.consumed(),
+                    coalesced.length - firstFeed.consumed());
+            require(pending.status() == StreamStatus.OUTPUT_PENDING,
+                    "coalesced output pending");
+            require(pending.consumed() == 0, "coalesced pending consumed");
+            byte[] firstTaken = decoder.takeEncodedRecord();
+            require(Arrays.equals(firstTaken, first), "first coalesced record");
+
+            FeedResult secondFeed = decoder.feed(
+                    coalesced,
+                    firstFeed.consumed(),
+                    coalesced.length - firstFeed.consumed());
+            require(secondFeed.status() == StreamStatus.RECORD_READY,
+                    "second coalesced ready");
+            require(secondFeed.consumed() == second.length,
+                    "second coalesced boundary");
+            byte[] secondTaken = decoder.takeEncodedRecord();
+            require(Arrays.equals(secondTaken, second),
+                    "second coalesced record");
+            clear(firstTaken, secondTaken);
+        }
+        clear(first, second, coalesced);
+    }
+
+    private static void rejectsMalformedHeaderBeforePayloadAllocation()
+            throws Exception {
+        byte[] valid = AuthenticatedControlBootstrapRecordV1.encode(
+                Direction.ANDROID_TO_HOST,
+                MessageType.SERVER_CHALLENGE,
+                ascii("challenge"));
+        byte[] oversized = Arrays.copyOf(
+                valid,
+                AuthenticatedControlBootstrapRecordV1.HEADER_BYTES);
+        oversized[8] = 0;
+        oversized[9] = 1;
+        oversized[10] = 0;
+        oversized[11] = 1;
+        try (StreamDecoder decoder =
+                new StreamDecoder(Direction.ANDROID_TO_HOST)) {
+            FeedResult rejected = decoder.feed(oversized);
+            require(rejected.status() == StreamStatus.REJECTED,
+                    "oversized header rejected");
+            require(rejected.consumed()
+                            == AuthenticatedControlBootstrapRecordV1.HEADER_BYTES,
+                    "oversized header consumed");
+            require(rejected.rejection() == Reason.PAYLOAD_TOO_LARGE,
+                    "oversized reason");
+            require(decoder.failed(), "oversized decoder terminal");
+            FeedResult terminal = decoder.feed(valid);
+            require(terminal.status() == StreamStatus.REJECTED,
+                    "terminal decoder rejects retry");
+            require(terminal.consumed() == 0, "terminal consumes zero");
+        }
+
+        try (StreamDecoder reflected =
+                new StreamDecoder(Direction.HOST_TO_ANDROID)) {
+            FeedResult result = reflected.feed(
+                    valid,
+                    0,
+                    AuthenticatedControlBootstrapRecordV1.HEADER_BYTES);
+            require(result.status() == StreamStatus.REJECTED,
+                    "reflected direction rejected");
+            require(result.rejection() == Reason.UNEXPECTED_DIRECTION,
+                    "reflected direction reason");
+        }
+        try (StreamDecoder invalid = new StreamDecoder(null)) {
+            require(invalid.failed(), "invalid direction terminal");
+            require(invalid.feed(valid).status() == StreamStatus.REJECTED,
+                    "invalid direction rejected");
+        }
+        clear(valid, oversized);
     }
 
     private static void parseAndroid(byte[] encoded) throws Exception {

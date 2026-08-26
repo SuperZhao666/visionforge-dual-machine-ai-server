@@ -23,7 +23,7 @@ inline constexpr std::uint16_t kMaximumFragmentCount = kMaxFragments;
 inline constexpr std::size_t kHeaderBytes = kWireHeaderSize;
 
 static_assert(kHeaderBytes == 20, "v2 wire header size must remain stable");
-static_assert(kMaximumFragmentCount == 1498, "fragment-count contract drifted");
+static_assert(kMaximumFragmentCount == 1561, "fragment-count contract drifted");
 
 enum class ContractViolation {
     None,

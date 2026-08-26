@@ -30,10 +30,18 @@ inline constexpr wchar_t kWirelessAnnouncementRuleName[] =
     L"VF Host Wireless LAN Announcement Inbound";
 inline constexpr wchar_t kWirelessIdrRuleName[] =
     L"VF Host Wireless LAN IDR Inbound";
+inline constexpr wchar_t kCat6FirstPairingRuleName[] =
+    L"VF Host CAT6 First Pairing Inbound";
+inline constexpr wchar_t kWirelessFirstPairingRuleName[] =
+    L"VF Host Wireless LAN First Pairing Inbound";
 inline constexpr wchar_t kCat6RuleDescription[] =
     L"VF Host isolated CAT6 transport";
 inline constexpr wchar_t kWirelessRuleDescription[] =
     L"VF Host wireless LAN UDP transport";
+inline constexpr wchar_t kCat6FirstPairingRuleDescription[] =
+    L"VF Host isolated CAT6 activation-only pairing";
+inline constexpr wchar_t kWirelessFirstPairingRuleDescription[] =
+    L"VF Host wireless LAN activation-only pairing";
 inline constexpr wchar_t kRuleGrouping[] = L"VF Host Transport";
 inline constexpr wchar_t kLegacyDhcpRuleName[] =
     L"VisionForge Host CAT6 DHCP Inbound";
@@ -61,6 +69,12 @@ inline constexpr wchar_t kLegacyWirelessInterfaceType[] = L"Wireless";
 inline constexpr char kAnyLocalAddress[] = "*";
 inline constexpr char kAnyRemoteAddress[] = "*";
 inline constexpr char kLocalSubnet[] = "LocalSubnet";
+inline constexpr std::uint16_t kAnyFirewallPort = 0U;
+
+long firewall_protocol_number(HostFirewallProtocol protocol) noexcept {
+    return protocol == HostFirewallProtocol::tcp
+        ? NET_FW_IP_PROTOCOL_TCP : NET_FW_IP_PROTOCOL_UDP;
+}
 
 struct ComApartment final {
     ComApartment() noexcept : result(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
@@ -227,7 +241,8 @@ bool firewall_interface_types_are_owned(
     }
     const bool local_network_rule =
         equals_insensitive(desired.name, kWirelessAnnouncementRuleName) ||
-        equals_insensitive(desired.name, kWirelessIdrRuleName);
+        equals_insensitive(desired.name, kWirelessIdrRuleName) ||
+        equals_insensitive(desired.name, kWirelessFirstPairingRuleName);
     return local_network_rule &&
         firewall_interface_types_equal(
             desired.interface_types, kLocalNetworkInterfaceTypes) &&
@@ -368,8 +383,10 @@ std::string describe_rule_mismatch(
         return "field=remote_port expected=" + std::to_string(desired.remote_port) +
             " actual=" + std::to_string(existing.remote_port);
     }
-    if (existing.protocol != HostFirewallProtocol::udp ||
-        existing.protocol_number != NET_FW_IP_PROTOCOL_UDP) return "field=protocol";
+    if (existing.protocol != desired.protocol ||
+        existing.protocol_number != firewall_protocol_number(desired.protocol)) {
+        return "field=protocol";
+    }
     if (desired.inbound != existing.inbound) {
         return "field=inbound expected=" + std::string{bool_value(desired.inbound)} +
             " actual=" + bool_value(existing.inbound);
@@ -445,7 +462,7 @@ std::string describe_active_profiles(
 }
 
 std::optional<std::uint16_t> parse_port(std::wstring_view value) noexcept {
-    if (value.empty()) return std::nullopt;
+    if (value.empty() || value == L"*") return kAnyFirewallPort;
     std::uint32_t port{};
     for (const wchar_t character : value) {
         if (character < L'0' || character > L'9') return std::nullopt;
@@ -846,7 +863,7 @@ HRESULT set_rule_interfaces(INetFwRule2* rule, const std::wstring& interface_nam
 HostFirewallRuleSnapshot snapshot_from_policy(const HostFirewallRulePolicy& policy) {
     HostFirewallRuleSnapshot snapshot{};
     static_cast<HostFirewallRulePolicy&>(snapshot) = policy;
-    snapshot.protocol_number = NET_FW_IP_PROTOCOL_UDP;
+    snapshot.protocol_number = firewall_protocol_number(policy.protocol);
     snapshot.edge_traversal_options = NET_FW_EDGE_TRAVERSAL_TYPE_DENY;
     snapshot.profiles = NET_FW_PROFILE2_ALL;
     snapshot.all_profiles = true;
@@ -861,7 +878,8 @@ HRESULT create_rule_from_snapshot(
     if (FAILED(result) || rule == nullptr) return FAILED(result) ? result : E_NOINTERFACE;
     INetFwRule* base_rule = rule.Get();
     const std::wstring local_port = std::to_wstring(snapshot.local_port);
-    const std::wstring remote_port = std::to_wstring(snapshot.remote_port);
+    const std::wstring remote_port = snapshot.remote_port == kAnyFirewallPort
+        ? L"*" : std::to_wstring(snapshot.remote_port);
     const std::wstring local_address{
         snapshot.local_address.begin(), snapshot.local_address.end()};
     const std::wstring remote_addresses{
@@ -1029,8 +1047,8 @@ bool firewall_rule_is_owned(
         firewall_addresses_equal(desired.remote_addresses, snapshot.remote_addresses) &&
         desired.local_port == snapshot.local_port &&
         desired.remote_port == snapshot.remote_port &&
-        snapshot.protocol_number == NET_FW_IP_PROTOCOL_UDP &&
-        snapshot.protocol == HostFirewallProtocol::udp && snapshot.inbound &&
+        snapshot.protocol_number == firewall_protocol_number(desired.protocol) &&
+        snapshot.protocol == desired.protocol && snapshot.inbound &&
         snapshot.enabled && snapshot.allow && !snapshot.edge_traversal &&
         snapshot.edge_traversal_options == NET_FW_EDGE_TRAVERSAL_TYPE_DENY &&
         snapshot.profiles == NET_FW_PROFILE2_ALL &&
@@ -1265,7 +1283,8 @@ std::vector<HostFirewallRulePolicy> build_host_firewall_policy(
                           const char* local_address,
                           std::uint16_t local_port,
                           const char* remote_addresses,
-                          std::uint16_t remote_port) {
+                          std::uint16_t remote_port,
+                          HostFirewallProtocol protocol = HostFirewallProtocol::udp) {
         HostFirewallRulePolicy policy{};
         policy.name = name;
         policy.description = description;
@@ -1276,6 +1295,7 @@ std::vector<HostFirewallRulePolicy> build_host_firewall_policy(
         policy.remote_addresses = remote_addresses;
         policy.local_port = local_port;
         policy.remote_port = remote_port;
+        policy.protocol = protocol;
         return policy;
     };
     return {
@@ -1295,6 +1315,15 @@ std::vector<HostFirewallRulePolicy> build_host_firewall_policy(
         rule(kWirelessIdrRuleName, kWirelessRuleDescription,
              kLocalNetworkInterfaceTypes, kAnyLocalAddress, kWiredIdrPort,
              kLocalSubnet, kWiredVideoPort),
+        rule(kCat6FirstPairingRuleName, kCat6FirstPairingRuleDescription,
+             kWiredInterfaceType, kWiredHostIpv4,
+             kWiredAuthenticatedControlPort, kWiredMobileIpv4,
+             kAnyFirewallPort, HostFirewallProtocol::tcp),
+        rule(kWirelessFirstPairingRuleName,
+             kWirelessFirstPairingRuleDescription,
+             kLocalNetworkInterfaceTypes, kAnyLocalAddress,
+             kWiredAuthenticatedControlPort, kLocalSubnet,
+             kAnyFirewallPort, HostFirewallProtocol::tcp),
     };
 }
 
@@ -1312,9 +1341,8 @@ bool host_firewall_rule_is_current(
         firewall_addresses_equal(desired.remote_addresses, existing.remote_addresses) &&
         desired.local_port == existing.local_port &&
         desired.remote_port == existing.remote_port &&
-        desired.protocol == HostFirewallProtocol::udp &&
-        existing.protocol == HostFirewallProtocol::udp &&
-        existing.protocol_number == NET_FW_IP_PROTOCOL_UDP &&
+        desired.protocol == existing.protocol &&
+        existing.protocol_number == firewall_protocol_number(desired.protocol) &&
         desired.inbound == existing.inbound && desired.enabled == existing.enabled &&
         desired.allow == existing.allow && desired.edge_traversal == existing.edge_traversal &&
         existing.edge_traversal_options == NET_FW_EDGE_TRAVERSAL_TYPE_DENY &&

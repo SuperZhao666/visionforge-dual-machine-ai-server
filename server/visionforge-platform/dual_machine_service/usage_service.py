@@ -716,6 +716,10 @@ class UsageService:
         now = _now(now_epoch)
         normalized = _normalize_stop(command)
         signed_payload = usage_stop_payload(normalized)
+        # Stop is an attenuation operation bound to the immutable session,
+        # exact signed lease and both device proofs. Its idempotent replay
+        # must remain valid after the short data-plane lease expires; a later
+        # session has a different session_id and cannot be stopped by it.
         previous_claims = self._verify_previous_lease(
             normalized["previous_lease"],
             now_epoch=now,
@@ -723,6 +727,7 @@ class UsageService:
             not_before_grace_seconds=(
                 self.settings.usage_renewal_window_seconds
             ),
+            allow_expired_for_stop=True,
         )
         connection = connect_database(self.settings)
         repository = UsageRepository(connection)
@@ -905,6 +910,7 @@ class UsageService:
         now_epoch: int,
         grace_seconds: int = LEASE_RETRY_GRACE_SECONDS,
         not_before_grace_seconds: int = 0,
+        allow_expired_for_stop: bool = False,
     ) -> dict[str, Any]:
         try:
             return self.token_codec.verify_usage_lease(
@@ -912,6 +918,7 @@ class UsageService:
                 now_epoch=now_epoch,
                 expiration_grace_seconds=grace_seconds,
                 not_before_grace_seconds=not_before_grace_seconds,
+                allow_expired_for_stop=allow_expired_for_stop,
             )
         except TokenInvalid as exc:
             raise DualMachineServiceError(

@@ -485,6 +485,7 @@ def test_formal_start_and_renewal_charge_once_with_contiguous_leases(
     assert started["billing_started"] is True
     assert started["usage_lease_not_before_epoch"] == 1_700_000_100
     assert started["usage_lease_expires_at_epoch"] == 1_700_000_105
+    assert activated_pair["settings"].usage_renewal_window_seconds == 4
 
     heartbeat_command = _signed_heartbeat(
         activated_pair,
@@ -501,11 +502,11 @@ def test_formal_start_and_renewal_charge_once_with_contiguous_leases(
     ):
         service.heartbeat_usage(
             heartbeat_command,
-            now_epoch=1_700_000_102,
+            now_epoch=1_700_000_100,
         )
     heartbeat = service.heartbeat_usage(
         heartbeat_command,
-        now_epoch=1_700_000_103,
+        now_epoch=1_700_000_101,
     )
     repeated = service.heartbeat_usage(
         heartbeat_command,
@@ -1122,8 +1123,22 @@ def test_stop_adds_no_charge_and_does_not_refund_current_segment(
     )
     stopped = service.stop_usage(command, now_epoch=1_700_000_102)
     repeated = service.stop_usage(command, now_epoch=1_700_000_103)
+    expired_replay = service.stop_usage(command, now_epoch=1_700_001_103)
 
     assert repeated == stopped
+    assert expired_replay == stopped
+    forged_expired_replay = {
+        **command,
+        "android_signature_b64": command["host_signature_b64"],
+    }
+    with pytest.raises(
+        DualMachineServiceError,
+        match="usage_device_proof_invalid",
+    ):
+        service.stop_usage(
+            forged_expired_replay,
+            now_epoch=1_700_001_104,
+        )
     assert stopped["charged_seconds"] == 0
     assert stopped["remaining_seconds"] == 86_395
     assert stopped["status"] == "ended"

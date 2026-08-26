@@ -4,6 +4,7 @@ import java.util.Arrays;
 
 /** Fixed-size replay window over unsigned 64-bit counter bit patterns. */
 final class UnsignedReplayWindow {
+    private static final int MAX_WINDOW_SIZE = 1024;
     private final int windowSize;
     private final long[] seenWords;
     private boolean initialized;
@@ -11,10 +12,10 @@ final class UnsignedReplayWindow {
 
     UnsignedReplayWindow(int windowSize) {
         if (windowSize < 1
-                || windowSize > AuthenticatedDataPlaneV2.MAX_REPLAY_WINDOW_SIZE) {
+                || windowSize > MAX_WINDOW_SIZE) {
             throw new IllegalArgumentException(
                     "windowSize must be in [1, "
-                            + AuthenticatedDataPlaneV2.MAX_REPLAY_WINDOW_SIZE
+                            + MAX_WINDOW_SIZE
                             + "]");
         }
         this.windowSize = windowSize;

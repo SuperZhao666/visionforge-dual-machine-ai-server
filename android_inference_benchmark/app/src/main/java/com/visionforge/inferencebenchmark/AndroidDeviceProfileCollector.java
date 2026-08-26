@@ -1,5 +1,6 @@
 package com.visionforge.inferencebenchmark;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.os.Build;
 import android.provider.Settings;
@@ -37,6 +38,7 @@ final class AndroidDeviceProfileCollector {
         return hardware.equals(board) ? hardware : hardware + " " + board;
     }
 
+    @SuppressLint("HardwareIds")
     static DualMachineAndroidDeviceProfile collect(Context context) {
         if (context == null) {
             throw new IllegalArgumentException("context is required");

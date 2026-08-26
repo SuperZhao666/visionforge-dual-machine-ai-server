@@ -293,6 +293,37 @@ std::optional<std::string> build_usage_start_payload(
     return payload;
 }
 
+std::optional<std::string> build_usage_start_cancel_payload(
+    const UsageStartCancelProof& proof) {
+    if (!common_usage_fields_valid(
+            proof.entitlement_id, proof.pair_id, proof.protocol_version,
+            proof.revocation_version) ||
+        !is_nonzero_lower_hex(
+            proof.channel_binding_sha256, kSha256Characters) ||
+        !is_nonzero_lower_hex(proof.request_id, kHex128Characters) ||
+        !is_nonzero_lower_hex(proof.request_nonce, kHex128Characters) ||
+        !is_nonzero_lower_hex(proof.start_request_id, kHex128Characters)) {
+        return std::nullopt;
+    }
+    std::string payload{"{"};
+    append_string_field(
+        payload, "channel_binding_sha256",
+        proof.channel_binding_sha256, true);
+    append_string_field(payload, "domain", kUsageStartCancelDomain);
+    append_string_field(payload, "entitlement_id", proof.entitlement_id);
+    append_string_field(payload, "pair_id", proof.pair_id);
+    append_unsigned_field(
+        payload, "protocol_version", proof.protocol_version);
+    append_string_field(payload, "request_id", proof.request_id);
+    append_string_field(payload, "request_nonce", proof.request_nonce);
+    append_unsigned_field(
+        payload, "revocation_version", proof.revocation_version);
+    append_string_field(
+        payload, "start_request_id", proof.start_request_id);
+    payload.push_back('}');
+    return payload;
+}
+
 std::optional<std::string> build_usage_heartbeat_payload(
     const UsageHeartbeatProof& proof) {
     if (!common_usage_fields_valid(

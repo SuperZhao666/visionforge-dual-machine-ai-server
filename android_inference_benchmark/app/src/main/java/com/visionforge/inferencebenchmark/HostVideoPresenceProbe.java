@@ -137,9 +137,8 @@ final class HostVideoPresenceProbe {
                 throw cancelled(null);
             }
             socket.setReuseAddress(false);
-            endpoint.network.bindSocket(socket);
             try {
-                socket.bind(new InetSocketAddress(localAddress, port));
+                SelectedNetworkDatagramSocket.bind(endpoint, socket, port);
             } catch (BindException failure) {
                 if (!isLocalAddressUnavailable(failure)) throw failure;
                 // CAT6 -> Wi-Fi fallback can revoke the fixed CAT6 address a

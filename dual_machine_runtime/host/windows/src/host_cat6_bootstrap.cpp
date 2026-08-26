@@ -48,10 +48,8 @@ void append_diagnostic(
 
 bool direct_link_detection_is_temporarily_pending(
     const HostDirectLinkProvisioningResult& result) noexcept {
-    if (result.status != HostDirectLinkStatus::no_wired_adapter) return false;
-    return result.detail.find("not_operational") != std::string::npos ||
-        result.detail.find("oper=down") != std::string::npos ||
-        result.detail.find("dad=tentative") != std::string::npos;
+    return result.status == HostDirectLinkStatus::no_wired_adapter &&
+        result.detection_temporarily_pending;
 }
 
 bool wait_direct_link_startup_probe_slice(

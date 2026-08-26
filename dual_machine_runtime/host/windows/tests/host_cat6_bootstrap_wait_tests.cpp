@@ -161,9 +161,8 @@ int main() {
             std::string::npos ||
         bootstrap_source.find("HostDirectLinkStatus::no_wired_adapter") ==
             std::string::npos ||
-        bootstrap_source.find("not_operational") == std::string::npos ||
-        bootstrap_source.find("oper=down") == std::string::npos ||
-        bootstrap_source.find("dad=tentative") == std::string::npos ||
+        bootstrap_source.find("result.detection_temporarily_pending") ==
+            std::string::npos ||
         bootstrap_source.find("direct_link_warmup_retry") ==
             std::string::npos ||
         bootstrap_source.find(
@@ -174,6 +173,38 @@ int main() {
         std::cerr
             << "CAT6 direct-link startup warmup contract is missing in "
             << bootstrap_source_path << "\n";
+        return 1;
+    }
+
+    const std::string provisioner_header_path =
+        std::string(VFDUAL_SOURCE_DIR) +
+        "/host/windows/include/vfdual/host_direct_link_provisioner.hpp";
+    std::ifstream provisioner_header_file(provisioner_header_path);
+    const std::string provisioner_header(
+        (std::istreambuf_iterator<char>(provisioner_header_file)),
+        std::istreambuf_iterator<char>());
+    const std::string provisioner_source_path =
+        std::string(VFDUAL_SOURCE_DIR) +
+        "/host/windows/src/host_direct_link_provisioner.cpp";
+    std::ifstream provisioner_source_file(provisioner_source_path);
+    const std::string provisioner_source(
+        (std::istreambuf_iterator<char>(provisioner_source_file)),
+        std::istreambuf_iterator<char>());
+    if (provisioner_header.find("detection_temporarily_pending") ==
+            std::string::npos ||
+        provisioner_source.find(
+            "has_temporarily_pending_direct_link_candidate(adapters)") ==
+            std::string::npos ||
+        provisioner_source.find("HostAdapterTransport::ethernet") ==
+            std::string::npos ||
+        provisioner_source.find("!adapter.has_default_gateway") ==
+            std::string::npos ||
+        provisioner_source.find("IpDadStateTentative") ==
+            std::string::npos) {
+        std::cerr
+            << "CAT6 warm-up must be driven by a structured physical "
+               "Ethernet pending signal, not unrelated adapter detail in "
+            << provisioner_source_path << "\n";
         return 1;
     }
 

@@ -5,6 +5,7 @@ import java.util.Objects;
 /** Immutable, non-secret presentation state for card authorization and billing. */
 public final class DualMachineAuthorizationUiState {
     public enum Status {
+        WAITING_FOR_HOST,
         READY_FOR_ACTIVATION,
         ACTIVATING,
         ACTIVATION_PENDING,
@@ -15,14 +16,19 @@ public final class DualMachineAuthorizationUiState {
         STOPPING,
         EXHAUSTED,
         REVOKED,
+        SECURITY_CONFIGURATION_ERROR,
         ERROR
     }
 
     public final Status status;
     public final boolean authorizationReady;
+    public final boolean activationReady;
     public final long remainingSeconds;
     public final long totalConsumedSeconds;
     public final boolean balanceKnown;
+    public final boolean displayBalanceKnown;
+    public final boolean balanceStale;
+    public final long balanceSynchronizedAtEpochSeconds;
     public final boolean permanent;
     public final String detail;
 
@@ -69,16 +75,70 @@ public final class DualMachineAuthorizationUiState {
             boolean balanceKnown,
             boolean permanent,
             String detail) {
+        this(
+                status,
+                authorizationReady,
+                authorizationReady,
+                remainingSeconds,
+                totalConsumedSeconds,
+                balanceKnown,
+                permanent,
+                detail);
+    }
+
+    public DualMachineAuthorizationUiState(
+            Status status,
+            boolean authorizationReady,
+            boolean activationReady,
+            long remainingSeconds,
+            long totalConsumedSeconds,
+            boolean balanceKnown,
+            boolean permanent,
+            String detail) {
+        this(
+                status,
+                authorizationReady,
+                activationReady,
+                remainingSeconds,
+                totalConsumedSeconds,
+                balanceKnown,
+                balanceKnown,
+                false,
+                0L,
+                permanent,
+                detail);
+    }
+
+    public DualMachineAuthorizationUiState(
+            Status status,
+            boolean authorizationReady,
+            boolean activationReady,
+            long remainingSeconds,
+            long totalConsumedSeconds,
+            boolean balanceKnown,
+            boolean displayBalanceKnown,
+            boolean balanceStale,
+            long balanceSynchronizedAtEpochSeconds,
+            boolean permanent,
+            String detail) {
         if (status == null || remainingSeconds < 0L
-                || totalConsumedSeconds < 0L) {
+                || totalConsumedSeconds < 0L
+                || (balanceKnown && !displayBalanceKnown)
+                || (balanceStale && (!displayBalanceKnown || balanceKnown
+                || balanceSynchronizedAtEpochSeconds <= 0L))) {
             throw new IllegalArgumentException(
                     "authorization presentation state is invalid");
         }
         this.status = status;
         this.authorizationReady = authorizationReady;
+        this.activationReady = activationReady;
         this.remainingSeconds = remainingSeconds;
         this.totalConsumedSeconds = totalConsumedSeconds;
         this.balanceKnown = balanceKnown;
+        this.displayBalanceKnown = displayBalanceKnown;
+        this.balanceStale = balanceStale;
+        this.balanceSynchronizedAtEpochSeconds =
+                balanceSynchronizedAtEpochSeconds;
         this.permanent = permanent;
         this.detail = detail == null ? "" : detail;
     }
@@ -118,13 +178,23 @@ public final class DualMachineAuthorizationUiState {
     }
 
     public boolean canActivateCard() {
-        return authorizationReady
+        return activationReady
                 && !operationInFlight()
                 && status == Status.READY_FOR_ACTIVATION;
     }
 
+    /**
+     * Card text may be prepared before Host authentication so the UI never
+     * presents a visible but inert input. Submission remains fail-closed in
+     * {@link #canActivateCard()} until a proof-producing Host is available.
+     */
+    public boolean canEnterCardCode() {
+        return status == Status.WAITING_FOR_HOST
+                || status == Status.READY_FOR_ACTIVATION;
+    }
+
     public boolean canResumeActivation() {
-        return authorizationReady && status == Status.ACTIVATION_PENDING;
+        return activationReady && status == Status.ACTIVATION_PENDING;
     }
 
     public boolean canRefreshStatus() {
@@ -144,7 +214,8 @@ public final class DualMachineAuthorizationUiState {
     }
 
     public boolean isActivationCardVisible() {
-        return status == Status.READY_FOR_ACTIVATION
+        return status == Status.WAITING_FOR_HOST
+                || status == Status.READY_FOR_ACTIVATION
                 || status == Status.ACTIVATING
                 || status == Status.ACTIVATION_PENDING;
     }
@@ -169,16 +240,23 @@ public final class DualMachineAuthorizationUiState {
                 (DualMachineAuthorizationUiState) candidate;
         return status == other.status
                 && authorizationReady == other.authorizationReady
+                && activationReady == other.activationReady
                 && remainingSeconds == other.remainingSeconds
                 && totalConsumedSeconds == other.totalConsumedSeconds
                 && balanceKnown == other.balanceKnown
+                && displayBalanceKnown == other.displayBalanceKnown
+                && balanceStale == other.balanceStale
+                && balanceSynchronizedAtEpochSeconds
+                == other.balanceSynchronizedAtEpochSeconds
                 && permanent == other.permanent
                 && Objects.equals(detail, other.detail);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(status, authorizationReady, remainingSeconds,
-                totalConsumedSeconds, balanceKnown, permanent, detail);
+        return Objects.hash(status, authorizationReady, activationReady,
+                remainingSeconds, totalConsumedSeconds, balanceKnown,
+                displayBalanceKnown, balanceStale,
+                balanceSynchronizedAtEpochSeconds, permanent, detail);
     }
 }

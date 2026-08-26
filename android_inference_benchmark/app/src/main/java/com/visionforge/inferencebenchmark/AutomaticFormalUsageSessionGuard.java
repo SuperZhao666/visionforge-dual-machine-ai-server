@@ -1,17 +1,19 @@
 package com.visionforge.inferencebenchmark;
 
+import java.util.Locale;
+
 /**
  * Process-local safety policy for automatic formal-usage generations.
  *
  * <p>A paid generation may be opened only while armed. Once that generation
  * closes, ordinary maintenance ticks and a still-running Host stream cannot
  * create another session. The guard re-arms only after the existing 31-bit
- * video sequence proves that the Host started a fresh stream.</p>
+ * authenticated control claim proves that the Host operator requested a new
+ * stream after the previous data plane was absent. Raw/pre-lease video can
+ * update diagnostics but can never re-arm billing.</p>
  */
 final class AutomaticFormalUsageSessionGuard {
     static final long MAX_LOGICAL_FRAME_SEQUENCE = 0x7fff_ffffL;
-    private static final long NATURAL_WRAP_GUARD_FRAMES = 4_096L;
-    private static final int REQUIRED_RESTART_CONFIRMATIONS = 2;
 
     enum State {
         ARMED,
@@ -24,8 +26,14 @@ final class AutomaticFormalUsageSessionGuard {
     enum HostFrameOutcome {
         RECORDED,
         SAME_STREAM_BLOCKED,
-        RESTART_CANDIDATE_RECORDED,
-        NEW_STREAM_REARMED,
+        INVALID_IGNORED
+    }
+
+    enum HostStartIntentOutcome {
+        NEW_START_INTENT_REARMED,
+        HOST_ABSENCE_NOT_CONFIRMED,
+        DUPLICATE_IGNORED,
+        STATE_IGNORED,
         INVALID_IGNORED
     }
 
@@ -40,6 +48,8 @@ final class AutomaticFormalUsageSessionGuard {
         final boolean hostAbsenceConfirmed;
         final long restartCandidateSequence;
         final int restartCandidateConfirmations;
+        final long lastHostStartIntentConnectionId;
+        final long lastHostStartIntentToken;
 
         Snapshot(
                 State state,
@@ -51,7 +61,9 @@ final class AutomaticFormalUsageSessionGuard {
                 boolean automaticStopSignalled,
                 boolean hostAbsenceConfirmed,
                 long restartCandidateSequence,
-                int restartCandidateConfirmations) {
+                int restartCandidateConfirmations,
+                long lastHostStartIntentConnectionId,
+                long lastHostStartIntentToken) {
             this.state = state;
             this.startRequestId = startRequestId;
             this.channelBindingSha256 = channelBindingSha256;
@@ -63,10 +75,13 @@ final class AutomaticFormalUsageSessionGuard {
             this.restartCandidateSequence = restartCandidateSequence;
             this.restartCandidateConfirmations =
                     restartCandidateConfirmations;
+            this.lastHostStartIntentConnectionId =
+                    lastHostStartIntentConnectionId;
+            this.lastHostStartIntentToken = lastHostStartIntentToken;
         }
 
         String detail() {
-            return "state=" + state.name().toLowerCase()
+            return "state=" + state.name().toLowerCase(Locale.ROOT)
                     + " reservation_owned=" + !startRequestId.isEmpty()
                     + " last_host_frame_sequence=" + lastHostFrameSequence
                     + " progress_observed=" + progressObserved
@@ -75,7 +90,11 @@ final class AutomaticFormalUsageSessionGuard {
                     + " restart_candidate_sequence="
                     + restartCandidateSequence
                     + " restart_candidate_confirmations="
-                    + restartCandidateConfirmations;
+                    + restartCandidateConfirmations
+                    + " last_host_start_intent_connection_id="
+                    + Long.toUnsignedString(lastHostStartIntentConnectionId)
+                    + " last_host_start_intent_token="
+                    + lastHostStartIntentToken;
         }
     }
 
@@ -90,6 +109,8 @@ final class AutomaticFormalUsageSessionGuard {
     private boolean hostAbsenceConfirmed;
     private long restartCandidateSequence = -1L;
     private int restartCandidateConfirmations;
+    private long lastHostStartIntentConnectionId;
+    private long lastHostStartIntentToken;
 
     synchronized boolean isAutomaticStartAllowed() {
         return state == State.ARMED;
@@ -104,60 +125,43 @@ final class AutomaticFormalUsageSessionGuard {
         if (!isValidFrameSequence(logicalFrameSequence)) {
             return HostFrameOutcome.INVALID_IGNORED;
         }
-        boolean resumableBoundary =
-                state == State.BLOCKED_UNTIL_HOST_PROGRESS_RESUMES;
-        boolean strictlyBlocked =
-                state == State.BLOCKED_UNTIL_NEW_HOST_STREAM;
-        if (!resumableBoundary && !strictlyBlocked) {
-            // The native receiver exposes its latest completed access unit,
-            // so an active-stream encoder reset is the new baseline for the
-            // same paid generation rather than a reason to open another one.
-            lastHostFrameSequence = logicalFrameSequence;
+        boolean blocked = state == State.BLOCKED_UNTIL_HOST_PROGRESS_RESUMES
+                || state == State.BLOCKED_UNTIL_NEW_HOST_STREAM;
+        lastHostFrameSequence = logicalFrameSequence;
+        if (!blocked) {
             resetHostRestartEvidence();
             return HostFrameOutcome.RECORDED;
         }
-        if (lastHostFrameSequence < 0L) {
-            // Unknown prior generation must remain fail-closed.
-            return HostFrameOutcome.SAME_STREAM_BLOCKED;
-        }
-        if (restartCandidateConfirmations > 0) {
-            return resumableBoundary
-                    ? confirmResumedProgressCandidate(logicalFrameSequence)
-                    : confirmRestartCandidate(logicalFrameSequence);
-        }
-        if (!hostAbsenceConfirmed) {
-            if (logicalFrameSequence > lastHostFrameSequence) {
-                lastHostFrameSequence = logicalFrameSequence;
-            }
-            resetHostRestartEvidence();
-            return HostFrameOutcome.SAME_STREAM_BLOCKED;
-        }
-        if (resumableBoundary
-                && logicalFrameSequence != lastHostFrameSequence) {
-            restartCandidateSequence = logicalFrameSequence;
-            restartCandidateConfirmations = 1;
-            hostAbsentSinceElapsedMillis = -1L;
-            hostAbsenceConfirmed = false;
-            return HostFrameOutcome.RESTART_CANDIDATE_RECORDED;
-        }
-        if (isNaturalSequenceWrap(
-                lastHostFrameSequence, logicalFrameSequence)) {
-            lastHostFrameSequence = logicalFrameSequence;
-            resetHostRestartEvidence();
-            return HostFrameOutcome.SAME_STREAM_BLOCKED;
-        }
-        if (logicalFrameSequence < lastHostFrameSequence) {
-            restartCandidateSequence = logicalFrameSequence;
-            restartCandidateConfirmations = 1;
-            hostAbsentSinceElapsedMillis = -1L;
-            hostAbsenceConfirmed = false;
-            return HostFrameOutcome.RESTART_CANDIDATE_RECORDED;
-        }
-        if (logicalFrameSequence > lastHostFrameSequence) {
-            lastHostFrameSequence = logicalFrameSequence;
-        }
+        // Defense in depth: even a syntactically valid sequence reset is not
+        // an authority to create a new paid generation. Only the one-shot
+        // claim on the VFB1-derived authenticated control channel can re-arm.
         resetHostRestartEvidence();
         return HostFrameOutcome.SAME_STREAM_BLOCKED;
+    }
+
+    synchronized HostStartIntentOutcome recordAuthenticatedHostStartIntent(
+            long connectionId,
+            long intentToken) {
+        if (connectionId == 0L || intentToken <= 0L) {
+            return HostStartIntentOutcome.INVALID_IGNORED;
+        }
+        if (!requiresHostRearmProbe()) {
+            return HostStartIntentOutcome.STATE_IGNORED;
+        }
+        if (connectionId == lastHostStartIntentConnectionId
+                && intentToken == lastHostStartIntentToken) {
+            return HostStartIntentOutcome.DUPLICATE_IGNORED;
+        }
+        if (!hostAbsenceConfirmed) {
+            return HostStartIntentOutcome.HOST_ABSENCE_NOT_CONFIRMED;
+        }
+        state = State.ARMED;
+        clearOwner();
+        lastHostStartIntentConnectionId = connectionId;
+        lastHostStartIntentToken = intentToken;
+        resetProgressWatchdog();
+        resetHostRestartEvidence();
+        return HostStartIntentOutcome.NEW_START_INTENT_REARMED;
     }
 
     synchronized boolean reserveFormalStart(
@@ -328,79 +332,15 @@ final class AutomaticFormalUsageSessionGuard {
                 automaticStopSignalled,
                 hostAbsenceConfirmed,
                 restartCandidateSequence,
-                restartCandidateConfirmations);
+                restartCandidateConfirmations,
+                lastHostStartIntentConnectionId,
+                lastHostStartIntentToken);
     }
 
     private void resetProgressWatchdog() {
         progressObserved = false;
         noProgressSinceElapsedMillis = -1L;
         automaticStopSignalled = false;
-    }
-
-    private HostFrameOutcome confirmRestartCandidate(
-            long logicalFrameSequence) {
-        boolean remainsBeforePriorGeneration =
-                logicalFrameSequence < lastHostFrameSequence;
-        if (!remainsBeforePriorGeneration) {
-            if (logicalFrameSequence > lastHostFrameSequence) {
-                lastHostFrameSequence = logicalFrameSequence;
-            }
-            resetHostRestartEvidence();
-            return HostFrameOutcome.SAME_STREAM_BLOCKED;
-        }
-        if (logicalFrameSequence < restartCandidateSequence) {
-            // A second rapid Host restart can reset the 31-bit sequence again
-            // before the first candidate receives its confirmation.  Preserve
-            // the already-proven host-absence boundary, replace the candidate,
-            // and still require a later strictly-forward observation.
-            restartCandidateSequence = logicalFrameSequence;
-            restartCandidateConfirmations = 1;
-            return HostFrameOutcome.RESTART_CANDIDATE_RECORDED;
-        }
-        if (logicalFrameSequence == restartCandidateSequence) {
-            // A duplicate/reordered UDP observation is not a confirmation, but
-            // it must not erase a valid restart candidate either.
-            return HostFrameOutcome.RESTART_CANDIDATE_RECORDED;
-        }
-        restartCandidateSequence = logicalFrameSequence;
-        restartCandidateConfirmations++;
-        if (restartCandidateConfirmations
-                < REQUIRED_RESTART_CONFIRMATIONS) {
-            return HostFrameOutcome.RESTART_CANDIDATE_RECORDED;
-        }
-        state = State.ARMED;
-        clearOwner();
-        lastHostFrameSequence = logicalFrameSequence;
-        resetProgressWatchdog();
-        resetHostRestartEvidence();
-        return HostFrameOutcome.NEW_STREAM_REARMED;
-    }
-
-    private HostFrameOutcome confirmResumedProgressCandidate(
-            long logicalFrameSequence) {
-        if (logicalFrameSequence == restartCandidateSequence) {
-            return HostFrameOutcome.RESTART_CANDIDATE_RECORDED;
-        }
-        if (logicalFrameSequence < restartCandidateSequence) {
-            // A restart or 31-bit sequence wrap happened while the resumed
-            // stream candidate was being confirmed.  Replace the candidate
-            // and still demand a later strictly-forward observation.
-            restartCandidateSequence = logicalFrameSequence;
-            restartCandidateConfirmations = 1;
-            return HostFrameOutcome.RESTART_CANDIDATE_RECORDED;
-        }
-        restartCandidateSequence = logicalFrameSequence;
-        restartCandidateConfirmations++;
-        if (restartCandidateConfirmations
-                < REQUIRED_RESTART_CONFIRMATIONS) {
-            return HostFrameOutcome.RESTART_CANDIDATE_RECORDED;
-        }
-        state = State.ARMED;
-        clearOwner();
-        lastHostFrameSequence = logicalFrameSequence;
-        resetProgressWatchdog();
-        resetHostRestartEvidence();
-        return HostFrameOutcome.NEW_STREAM_REARMED;
     }
 
     private void resetHostRestartEvidence() {
@@ -439,9 +379,4 @@ final class AutomaticFormalUsageSessionGuard {
         return value >= 0L && value <= MAX_LOGICAL_FRAME_SEQUENCE;
     }
 
-    private static boolean isNaturalSequenceWrap(long previous, long current) {
-        return previous >= MAX_LOGICAL_FRAME_SEQUENCE
-                - NATURAL_WRAP_GUARD_FRAMES
-                && current < previous;
-    }
 }

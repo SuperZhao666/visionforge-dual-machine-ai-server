@@ -16,7 +16,8 @@ public final class VideoWireProtocol {
     public static final int REPEATED_MAGIC = 0x5646_3252; // VF2R
     public static final int HEADER_BYTES =
             com.visionforge.mobile.domain.video.VideoFragmentHeader.BYTE_LENGTH;
-    public static final int PAYLOAD_BYTES = 1_400;
+    /** Inner payload leaves exactly 48 bytes for the mandatory VFA2 header/tag. */
+    public static final int PAYLOAD_BYTES = 1_344;
     public static final int MAX_DATAGRAM_BYTES = HEADER_BYTES + PAYLOAD_BYTES;
     public static final int MAX_ACCESS_UNIT_BYTES = 2 * 1024 * 1024;
     public static final int MAX_FRAGMENT_COUNT =

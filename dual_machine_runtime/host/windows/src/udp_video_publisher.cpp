@@ -10,11 +10,14 @@ namespace vfdual {
 bool UdpVideoPublisher::connect_to(
     std::string_view host, std::uint16_t port, std::uint16_t local_port,
     std::string_view local_host,
-    const VideoDataPlanePermitSource& permit_source) noexcept {
+    const VideoDataPlanePermitSource& permit_source,
+    std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+        authenticated_session) noexcept {
     reset();
-    if (!permit_source) return false;
+    if (!permit_source || !authenticated_session) return false;
     try {
         permit_source_ = permit_source;
+        authenticated_session_ = std::move(authenticated_session);
     } catch (...) {
         permit_source_ = {};
         return false;
@@ -34,6 +37,7 @@ bool UdpVideoPublisher::connect_to(
 void UdpVideoPublisher::reset() noexcept {
     socket_.close();
     permit_source_ = {};
+    authenticated_session_.reset();
 }
 
 VideoPublishResult UdpVideoPublisher::publish(
@@ -84,13 +88,26 @@ VideoPublishResult UdpVideoPublisher::publish(
             result.stage = VideoPublishResult::Stage::authorization_check;
             return result;
         }
-        if (!socket_.send(
-                std::span<const std::byte>{datagram.data(), datagram_size})) {
+        if (!authenticated_session_) {
+            result.stage = VideoPublishResult::Stage::authorization_check;
+            return result;
+        }
+        PacketSealResult sealed = authenticated_session_->seal_video(
+            std::span<const std::byte>{datagram.data(), datagram_size});
+        if (sealed.status != PacketSealStatus::sealed) {
+            result.stage = VideoPublishResult::Stage::encode_datagram;
+            return result;
+        }
+        if (!authorization_permits_send()) {
+            result.stage = VideoPublishResult::Stage::authorization_check;
+            return result;
+        }
+        if (!socket_.send(sealed.datagram)) {
             result.stage = VideoPublishResult::Stage::socket_send;
             return result;
         }
         ++result.fragments_sent;
-        result.bytes_sent += static_cast<std::uint32_t>(datagram_size);
+        result.bytes_sent += static_cast<std::uint32_t>(sealed.datagram.size());
     }
     result.success = result.fragments_sent == result.expected_fragments;
     result.stage = result.success

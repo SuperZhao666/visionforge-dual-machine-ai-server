@@ -26,8 +26,9 @@ import javax.net.ssl.HttpsURLConnection;
  * <p>A recording fake {@link HttpsURLConnection} proves the sensitive request
  * body can only be written after {@code connect()} and SPKI pin validation,
  * that redirects are never followed, that origin/path escape and request or
- * response size bounds are enforced, and that every accepted connection is
- * disconnected on success and on every failure path.</p>
+ * response size bounds are enforced, that a fully consumed successful response
+ * remains eligible for Android's bounded HTTPS keep-alive pool, and that every
+ * failure path disconnects the accepted connection.</p>
  *
  * <p>Note: the non-HTTPS rejection branch runs before the transport accepts
  * the connection (the rejected object may not even be an
@@ -115,8 +116,8 @@ public final class DualMachineHttpsJsonTransportSelfTest {
                 "User-Agent header mismatch");
         check("no-store".equals(connection.getRequestProperty("Cache-Control")),
                 "Cache-Control header mismatch");
-        check(connection.disconnectCount == 1,
-                "connection must be disconnected exactly once");
+        check(connection.disconnectCount == 0,
+                "fully consumed success must remain eligible for connection reuse");
     }
 
     private static void pinMismatchWritesNoSensitiveByte(
@@ -248,8 +249,8 @@ public final class DualMachineHttpsJsonTransportSelfTest {
                 "exactly-maximum request must use fixed-length streaming");
         check(connection.requestBody.size() == MAXIMUM_REQUEST_BYTES,
                 "exactly-maximum request body must be fully written");
-        check(connection.disconnectCount == 1,
-                "exactly-maximum request must disconnect");
+        check(connection.disconnectCount == 0,
+                "exactly-maximum successful request must remain reusable");
 
         byte[][] invalidPayloads = {
                 null,
@@ -284,8 +285,8 @@ public final class DualMachineHttpsJsonTransportSelfTest {
         byte[] response = exactTransport.postJson(API_PATH, jsonPayload(16));
         check(response.length == MAXIMUM_RESPONSE_BYTES,
                 "exactly-maximum response must be accepted");
-        check(exactConnection.disconnectCount == 1,
-                "exactly-maximum response path must disconnect");
+        check(exactConnection.disconnectCount == 0,
+                "exactly-maximum successful response must remain reusable");
 
         FakeHttpsConnection overConnection = new FakeHttpsConnection(pinned);
         overConnection.responseBody = new byte[MAXIMUM_RESPONSE_BYTES + 1];

@@ -10,6 +10,11 @@ namespace vfdual {
 class HostAuthenticatedControlCoordinatorV1;
 class HostPairGenerationPopSignerV1;
 class HostPeerHandshakeTranscriptSignerV1;
+class HostFirstPairingUserConfirmationSignerV1;
+class HostActivationConfirmationSignerV1;
+class HostUsageAuthorizationSignerV1;
+class HostFirstPairingCoordinatorV1;
+class HostRuntimeAuthorizationCoordinator;
 
 inline constexpr std::wstring_view kHostDeviceIdentityProbeArgument{
     L"--host-device-identity-probe"};
@@ -47,12 +52,26 @@ private:
     peer_handshake_signer() noexcept;
     [[nodiscard]] HostPairGenerationPopSignerV1&
     pair_generation_pop_signer() noexcept;
+    [[nodiscard]] HostFirstPairingUserConfirmationSignerV1&
+    first_pairing_user_confirmation_signer() noexcept;
+    [[nodiscard]] HostActivationConfirmationSignerV1&
+    activation_confirmation_signer() noexcept;
+    [[nodiscard]] HostUsageAuthorizationSignerV1&
+    usage_authorization_signer() noexcept;
 
     friend class HostAuthenticatedControlCoordinatorV1;
+    friend class HostFirstPairingCoordinatorV1;
+    friend class HostRuntimeAuthorizationCoordinator;
 
     std::unique_ptr<HostCngDeviceIdentity> identity_;
     std::unique_ptr<HostPeerHandshakeTranscriptSignerV1> handshake_signer_;
     std::unique_ptr<HostPairGenerationPopSignerV1> pair_pop_signer_;
+    std::unique_ptr<HostFirstPairingUserConfirmationSignerV1>
+        first_pairing_user_confirmation_signer_;
+    std::unique_ptr<HostActivationConfirmationSignerV1>
+        activation_confirmation_signer_;
+    std::unique_ptr<HostUsageAuthorizationSignerV1>
+        usage_authorization_signer_;
 };
 
 }  // namespace vfdual

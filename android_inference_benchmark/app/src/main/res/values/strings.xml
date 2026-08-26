@@ -36,13 +36,13 @@
     <string name="state_disconnected">未连接</string>
     <string name="state_stopped">未启动</string>
     <string name="metric_phone_p50">手机处理耗时</string>
-    <string name="metric_input">新画面接收</string>
+    <string name="metric_input">画面接收</string>
     <string name="metric_qnn">AI耗时</string>
     <string name="metric_failures">失败</string>
     <string name="control_auto_locked">控制输出已关闭，等待画面、AI 和鼠标设备就绪</string>
 
     <string name="ai_runtime_label">手机端 AI</string>
-    <string name="metric_decoded">新画面解码</string>
+    <string name="metric_decoded">画面解码</string>
     <string name="metric_inference">新画面推理</string>
     <string name="latency_trend">延迟趋势</string>
     <string name="latency_trend_window">最近 30 秒</string>
@@ -66,8 +66,6 @@
     <string name="control_effective_limits">当前有效：未标定安全上限 %1$d；单步上限 %2$.0f；步间变化上限 %3$.0f。</string>
     <string name="control_effective_limits_pending">当前有效限幅等待原生控制配置。</string>
     <string name="inference_confidence">检测置信度</string>
-    <string name="advanced_smoothing">平滑与限幅</string>
-    <string name="advanced_smoothing_detail">目标切换确认只要求新目标连续稳定，不暂停画面，也不限制捕获、解码或 AI 帧率。移动会自适应抑制检测抖动；只有画面、AI 和鼠标设备都就绪时才会输出。</string>
     <string name="control_trigger_title">物理触发方式</string>
     <string name="control_trigger_detail">始终开启无需按键，检测到目标即可持续输出；右键与侧键来自鼠标设备本身，松开立即停止输出。</string>
     <string name="trigger_always">始终开启</string>
@@ -78,15 +76,6 @@
     <string name="trigger_status_connecting">按键流连接中</string>
     <string name="trigger_status_pressed">已按住</string>
     <string name="trigger_status_ready">等待按住</string>
-    <string name="section_personal_trajectory">个性化移动</string>
-    <string name="personal_trajectory_title">我的移动画像</string>
-    <string name="personal_trajectory_switch">启用</string>
-    <string name="personal_profile_loaded">已加载画像：%1$s</string>
-    <string name="personal_profile_not_loaded">尚未导入可用画像；导入前原生规划器保持标准轨迹。</string>
-    <string name="action_import_personal_trajectory">导入 VF 轨迹画像 JSON</string>
-    <string name="personal_speed">个人速度</string>
-    <string name="personal_stability">个人稳定度</string>
-    <string name="personal_variation">个人变化度</string>
     <string name="action_restore_defaults">恢复默认</string>
 
     <string name="status_waiting_ethernet">正在检测 CAT6；不可用时会自动回退到无线局域网。</string>

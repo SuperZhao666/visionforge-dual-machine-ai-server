@@ -2,6 +2,9 @@
 
 #include "vfdual/host_pair_generation_pop_signer_v1.hpp"
 #include "vfdual/host_peer_handshake_transcript_signer_v1.hpp"
+#include "vfdual/host_first_pairing_user_confirmation_signer_v1.hpp"
+#include "vfdual/host_activation_confirmation_signer_v1.hpp"
+#include "vfdual/host_usage_authorization_signer_v1.hpp"
 
 #include <utility>
 
@@ -13,7 +16,14 @@ HostDeviceIdentityRuntime::HostDeviceIdentityRuntime(
       handshake_signer_(
           std::make_unique<HostPeerHandshakeTranscriptSignerV1>(*identity_)),
       pair_pop_signer_(
-          std::make_unique<HostPairGenerationPopSignerV1>(*identity_)) {}
+          std::make_unique<HostPairGenerationPopSignerV1>(*identity_)),
+      first_pairing_user_confirmation_signer_(
+          std::make_unique<HostFirstPairingUserConfirmationSignerV1>(
+              *identity_)),
+      activation_confirmation_signer_(
+          std::make_unique<HostActivationConfirmationSignerV1>(*identity_)),
+      usage_authorization_signer_(
+          std::make_unique<HostUsageAuthorizationSignerV1>(*identity_)) {}
 
 HostDeviceIdentityRuntime::~HostDeviceIdentityRuntime() = default;
 
@@ -48,6 +58,21 @@ HostDeviceIdentityRuntime::peer_handshake_signer() noexcept {
 HostPairGenerationPopSignerV1&
 HostDeviceIdentityRuntime::pair_generation_pop_signer() noexcept {
     return *pair_pop_signer_;
+}
+
+HostFirstPairingUserConfirmationSignerV1&
+HostDeviceIdentityRuntime::first_pairing_user_confirmation_signer() noexcept {
+    return *first_pairing_user_confirmation_signer_;
+}
+
+HostActivationConfirmationSignerV1&
+HostDeviceIdentityRuntime::activation_confirmation_signer() noexcept {
+    return *activation_confirmation_signer_;
+}
+
+HostUsageAuthorizationSignerV1&
+HostDeviceIdentityRuntime::usage_authorization_signer() noexcept {
+    return *usage_authorization_signer_;
 }
 
 }  // namespace vfdual

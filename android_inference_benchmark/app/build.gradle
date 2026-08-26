@@ -330,6 +330,10 @@ def productionReleaseSigningCertificateSha256 = hasProductionReleaseSigning
         : ''
 
 android {
+    // Instrumentation normally targets debug. Physical QA recovery can opt in
+    // to the side-by-side QA package without changing production artifacts.
+    testBuildType providers.gradleProperty(
+            'visionforgeAndroidTestBuildType').getOrElse('debug')
     namespace = 'com.visionforge.inferencebenchmark'
     compileSdk 35
 
@@ -387,6 +391,15 @@ android {
             } else if (allowDevelopmentReleaseSigning) {
                 signingConfig signingConfigs.debug
             }
+        }
+        // Owner-only signed build: production package/version/signing identity
+        // with the owner's four self-trained models staged locally. This is
+        // deliberately separate from the public release task, whose encrypted
+        // model-delivery and formal-security gates remain fail closed.
+        owner {
+            initWith release
+            matchingFallbacks = ['release']
+            resValue 'string', 'app_name', 'VisionForge'
         }
     }
 
@@ -557,11 +570,22 @@ tasks.register('verifyProductionReleaseVersion') {
     }
 }
 
+// QA and owner packages exercise the live production authorization service.
+// Never let a locally staged model bundle produce an installable APK whose
+// TLS pins or lease/pair public keys are empty.  That broken combination used
+// to fail only after installation as a misleading card/network UI error.
+def securityMaterialRequiredPackageTasks = [
+        'packageQa',
+        'packageOwner',
+        'packageRelease',
+        'bundleRelease',
+]
 tasks.configureEach { task ->
-    if (task.name in ['packageRelease', 'bundleRelease']) {
-        task.dependsOn(
-                tasks.named('verifyDualMachineReleaseSecurityInputs'),
-                tasks.named('verifyProductionReleaseVersion'))
+    if (task.name in securityMaterialRequiredPackageTasks) {
+        task.dependsOn(tasks.named('verifyDualMachineReleaseSecurityInputs'))
+    }
+    if (task.name in ['packageOwner', 'packageRelease', 'bundleRelease']) {
+        task.dependsOn(tasks.named('verifyProductionReleaseVersion'))
     }
 }
 
@@ -576,7 +600,10 @@ if (privateArtifactLock.schema != 'visionforge-android-private-artifacts-lock-v1
         || privateArtifactLock.policy?.public_source_tree_must_not_contain_locked_bytes != true
         || privateArtifactLock.policy?.release_requires_encrypted_session_delivery != true
         || privateArtifactLock.policy?.release_plaintext_allowed != false
-        || privateArtifactLock.policy?.plaintext_allowed_variants != ['debug', 'qa']
+        || privateArtifactLock.policy?.plaintext_allowed_variants
+            != ['debug', 'qa', 'owner']
+        || privateArtifactLock.policy?.owner_private_release_plaintext_allowed
+            != true
         || privateArtifactLock.policy?.source_root_environment
             != 'VISIONFORGE_ANDROID_PRIVATE_ARTIFACT_ROOT'
         || !(privateArtifactLock.artifacts instanceof List)
@@ -612,12 +639,14 @@ def generatedDebugPrivateArtifacts = layout.buildDirectory.dir(
         'generated/private-artifacts/debug').get().asFile
 def generatedQaPrivateArtifacts = layout.buildDirectory.dir(
         'generated/private-artifacts/qa').get().asFile
+def generatedOwnerPrivateArtifacts = layout.buildDirectory.dir(
+        'generated/private-artifacts/owner').get().asFile
 def qnnRuntimeDir = new File(generatedDebugPrivateArtifacts, 'jniLibs/arm64-v8a')
 def qnnAssetDir = new File(generatedDebugPrivateArtifacts, 'assets/qnn')
 // Public `check` must remain runnable without the protected private-artifact
 // runner. Only an explicit debug/QA package or lint task opts into staging.
 def privateArtifactBuildRequested = gradle.startParameter.taskNames.any { taskPath ->
-    taskPath.toLowerCase(Locale.ROOT) ==~ /.*(assemble|bundle|lint)(debug|qa)$/
+    taskPath.toLowerCase(Locale.ROOT) ==~ /.*(assemble|bundle|lint)(debug|qa|owner)$/
 }
 // The four user-trained LFS models remain in Git for owner-controlled recovery,
 // but src/main is not an Android native-library source. This prevents any local
@@ -628,6 +657,8 @@ android.sourceSets.debug.assets.srcDir(new File(generatedDebugPrivateArtifacts, 
 android.sourceSets.debug.jniLibs.srcDir(new File(generatedDebugPrivateArtifacts, 'jniLibs'))
 android.sourceSets.qa.assets.srcDir(new File(generatedQaPrivateArtifacts, 'assets'))
 android.sourceSets.qa.jniLibs.srcDir(new File(generatedQaPrivateArtifacts, 'jniLibs'))
+android.sourceSets.owner.assets.srcDir(new File(generatedOwnerPrivateArtifacts, 'assets'))
+android.sourceSets.owner.jniLibs.srcDir(new File(generatedOwnerPrivateArtifacts, 'jniLibs'))
 
 def registerPrivateArtifactStaging = { String variant, File outputDirectory ->
     String taskName = "prepare${variant.capitalize()}PrivateAndroidArtifacts"
@@ -667,11 +698,48 @@ def prepareDebugPrivateArtifactsTask = registerPrivateArtifactStaging(
         'debug', generatedDebugPrivateArtifacts)
 def prepareQaPrivateArtifactsTask = registerPrivateArtifactStaging(
         'qa', generatedQaPrivateArtifacts)
+def prepareOwnerPrivateArtifactsTask = registerPrivateArtifactStaging(
+        'owner', generatedOwnerPrivateArtifacts)
 tasks.configureEach { task ->
     if (privateArtifactBuildRequested && task.name == 'preDebugBuild') {
         task.dependsOn(prepareDebugPrivateArtifactsTask)
     } else if (privateArtifactBuildRequested && task.name == 'preQaBuild') {
         task.dependsOn(prepareQaPrivateArtifactsTask)
+    } else if (privateArtifactBuildRequested && task.name == 'preOwnerBuild') {
+        task.dependsOn(prepareOwnerPrivateArtifactsTask)
+    }
+}
+
+def ownerPrivateReleaseOptIn = providers
+        .gradleProperty('visionforgeOwnerPrivateRelease')
+        .getOrElse('false')
+        .toBoolean()
+def verifyOwnerPrivateReleasePolicyTask = tasks.register(
+        'verifyOwnerPrivateReleasePolicy') {
+    group = 'verification'
+    description =
+            'Requires explicit owner-only opt-in and a real production signing identity.'
+    doLast {
+        if (!ownerPrivateReleaseOptIn) {
+            throw new GradleException(
+                    'Owner-only APK requires -PvisionforgeOwnerPrivateRelease=true.')
+        }
+        if (!hasProductionReleaseSigning) {
+            throw new GradleException(
+                    'Owner-only APK requires the configured production signing certificate.')
+        }
+        requireProductionReleaseSigningCertificate()
+        println(
+                'VISIONFORGE_OWNER_PRIVATE_RELEASE=v1:'
+                        + 'package=com.visionforge.mobile'
+                        + ':production_signing=true'
+                        + ':public_release=false'
+                        + ':owner_models_embedded=true')
+    }
+}
+tasks.configureEach { task ->
+    if (task.name in ['packageOwner', 'bundleOwner']) {
+        task.dependsOn(verifyOwnerPrivateReleasePolicyTask)
     }
 }
 
@@ -1376,6 +1444,9 @@ tasks.configureEach { task ->
     } else if (privateArtifactBuildRequested && packagesNativeOrAssets
             && lowerTaskName.contains('qa')) {
         task.dependsOn(prepareQaPrivateArtifactsTask)
+    } else if (privateArtifactBuildRequested && packagesNativeOrAssets
+            && lowerTaskName.contains('owner')) {
+        task.dependsOn(prepareOwnerPrivateArtifactsTask)
     }
     // Lint may inspect debug/QA staged assets; release lint remains source-only.
     if (privateArtifactBuildRequested && lowerTaskName.contains('lint')
@@ -1384,12 +1455,20 @@ tasks.configureEach { task ->
     } else if (privateArtifactBuildRequested && lowerTaskName.contains('lint')
             && lowerTaskName.contains('qa')) {
         task.dependsOn(prepareQaPrivateArtifactsTask)
+    } else if (privateArtifactBuildRequested && lowerTaskName.contains('lint')
+            && lowerTaskName.contains('owner')) {
+        task.dependsOn(prepareOwnerPrivateArtifactsTask)
     }
 }
 
 // This module keeps dependency-free contract checks under src/test and runs
 // them through the explicit verify* JavaExec tasks below. They are not JUnit
 // tests, so Gradle 9's empty-test-suite failure must not mask those real gates.
+// Keep the conventional Android unit-test compiler away from those standalone
+// sources as well: several gates deliberately provide minimal android.* stubs
+// on an otherwise empty classpath, which cannot be compiled inside the AGP
+// mockable-android module. Explicit JavaCompile gates below still own them.
+android.sourceSets.test.java.setSrcDirs([])
 tasks.withType(Test).configureEach {
     failOnNoDiscoveredTests = false
 }
@@ -1492,7 +1571,10 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/main/java/com/visionforge/inferencebenchmark/EthernetTransportContract.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileTransportEndpoint.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileTransportCatalog.java',
-            'src/main/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbe.java',
+            'src/main/java/com/visionforge/inferencebenchmark/SelectedNetworkDatagramSocket.java',
+             'src/main/java/com/visionforge/inferencebenchmark/AuthenticatedHostStartIntentClaimV1.java',
+             'src/main/java/com/visionforge/inferencebenchmark/PairGenerationChallengeReplayPolicy.java',
+             'src/main/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbe.java',
             'src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeCommandProtocol.java',
             'src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimePhase.java',
             'src/main/java/com/visionforge/inferencebenchmark/runtime/MobileRuntimeReadModel.java',
@@ -1513,6 +1595,7 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/main/java/com/visionforge/mobile/domain/video/VideoPacketKind.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileThrowableDiagnostics.java',
             'src/main/java/com/visionforge/inferencebenchmark/NativeVideoInferencePipeline.java',
+            'src/main/java/com/visionforge/inferencebenchmark/ConfirmedMobileDataPlaneMaterialV2.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileAimTarget.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileModelCatalog.java',
             'src/main/java/com/visionforge/inferencebenchmark/MobileControlTuning.java',
@@ -1527,6 +1610,8 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/main/java/com/visionforge/inferencebenchmark/ui/FxTransitionPolicy.java',
             'src/test/java/com/visionforge/inferencebenchmark/MobileRuntimeSnapshotSelfTest.java',
             'src/test/java/android/net/Network.java',
+            'src/test/java/android/system/ErrnoException.java',
+            'src/test/java/android/system/OsConstants.java',
             'src/test/java/com/visionforge/inferencebenchmark/MobileTransportEndpointTestFixtures.java',
             'src/test/java/com/visionforge/inferencebenchmark/MobileModelCatalogSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/MobileControlTuningSelfTest.java',
@@ -1534,6 +1619,9 @@ tasks.register('compileMobileRuntimeSnapshotSelfTest', JavaCompile) {
             'src/test/java/com/visionforge/inferencebenchmark/MobilePipelineCoordinatorSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/MobileTransportCatalogSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/HostVideoPresenceProbeSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/SelectedNetworkDatagramSocketSelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/AuthenticatedHostStartIntentClaimV1SelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/PairGenerationChallengeReplayPolicySelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/video/DecoderRestartCoordinatorSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/video/HostVideoPreflightVerifierSelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/video/VideoPreflightReassemblyWindowSelfTest.java',
@@ -1710,6 +1798,10 @@ tasks.register('compileAuthenticatedPeerHandshakeV1SelfTest', JavaCompile) {
             fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
                 include '*.java'
             },
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedControlRecordV1.java',
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/UnsignedReplayWindow.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
             'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedPeerHandshakeV1SelfTest.java')
     classpath = files()
     destinationDirectory = authenticatedPeerHandshakeV1SelfTestClasses
@@ -1747,6 +1839,10 @@ tasks.register('compilePairGenerationProposalV1SelfTest', JavaCompile) {
             fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
                 include '*.java'
             },
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedControlRecordV1.java',
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/UnsignedReplayWindow.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
             'src/test/java/com/visionforge/inferencebenchmark/handshake/PairGenerationProposalV1SelfTest.java')
     classpath = files()
     destinationDirectory = pairGenerationProposalV1SelfTestClasses
@@ -1784,6 +1880,10 @@ tasks.register('compilePairGenerationPopV1SelfTest', JavaCompile) {
             fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
                 include '*.java'
             },
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedControlRecordV1.java',
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/UnsignedReplayWindow.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
             'src/test/java/com/visionforge/inferencebenchmark/handshake/PairGenerationPopV1SelfTest.java')
     classpath = files()
     destinationDirectory = pairGenerationPopV1SelfTestClasses
@@ -1821,10 +1921,21 @@ tasks.register('compileAuthenticatedControlBootstrapV1SelfTest', JavaCompile) {
     source = files(
             'src/main/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapPayloadV1.java',
             'src/main/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1.java',
+            'src/main/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlTcpChannelV1.java',
             'src/main/java/com/visionforge/inferencebenchmark/handshake/ControlBootstrapSequenceV1.java',
+             'src/main/java/com/visionforge/inferencebenchmark/handshake/FirstPairingCommitmentV1.java',
+             'src/main/java/com/visionforge/inferencebenchmark/handshake/FirstPairingUserConfirmationV1.java',
+             'src/main/java/com/visionforge/inferencebenchmark/handshake/FirstPairingBootstrapPayloadV1.java',
+             'src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedControlRecordV1.java',
+             'src/main/java/com/visionforge/inferencebenchmark/dataplane/UnsignedReplayWindow.java',
+             'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
+             'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
             'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapPayloadV1SelfTest.java',
             'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlBootstrapRecordV1SelfTest.java',
-            'src/test/java/com/visionforge/inferencebenchmark/handshake/ControlBootstrapSequenceV1SelfTest.java')
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/AuthenticatedControlTcpChannelV1SelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/handshake/ControlBootstrapSequenceV1SelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/handshake/FirstPairingCommitmentV1SelfTest.java',
+             'src/test/java/com/visionforge/inferencebenchmark/handshake/FirstPairingBootstrapPayloadV1SelfTest.java')
     classpath = files()
     destinationDirectory = authenticatedControlBootstrapV1SelfTestClasses
     sourceCompatibility = JavaVersion.VERSION_1_8.toString()
@@ -1850,6 +1961,15 @@ tasks.register('verifyAuthenticatedControlBootstrapPayloadV1', JavaExec) {
     mainClass =
             'com.visionforge.inferencebenchmark.handshake.AuthenticatedControlBootstrapPayloadV1SelfTest'
 }
+tasks.register('verifyAuthenticatedControlTcpChannelV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs real loopback VFB1 TCP deadlines, endpoint binding, short-write and record-boundary contracts.'
+    dependsOn(tasks.named('compileAuthenticatedControlBootstrapV1SelfTest'))
+    classpath = files(authenticatedControlBootstrapV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.AuthenticatedControlTcpChannelV1SelfTest'
+}
 tasks.register('verifyControlBootstrapSequenceV1', JavaExec) {
     group = 'verification'
     description =
@@ -1859,18 +1979,42 @@ tasks.register('verifyControlBootstrapSequenceV1', JavaExec) {
     mainClass =
             'com.visionforge.inferencebenchmark.handshake.ControlBootstrapSequenceV1SelfTest'
 }
+tasks.register('verifyFirstPairingCommitmentV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs the frozen cross-language first-pairing commitment and user-confirmation vector.'
+    dependsOn(tasks.named('compileAuthenticatedControlBootstrapV1SelfTest'))
+    classpath = files(authenticatedControlBootstrapV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.FirstPairingCommitmentV1SelfTest'
+}
+tasks.register('verifyFirstPairingBootstrapPayloadV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs first-pairing offer, confirmation, activation and completion wire contracts.'
+    dependsOn(tasks.named('compileAuthenticatedControlBootstrapV1SelfTest'))
+    classpath = files(authenticatedControlBootstrapV1SelfTestClasses)
+    mainClass =
+            'com.visionforge.inferencebenchmark.handshake.FirstPairingBootstrapPayloadV1SelfTest'
+}
 tasks.named('check').configure {
     dependsOn(
             tasks.named('verifyAuthenticatedControlBootstrapV1'),
             tasks.named('verifyAuthenticatedControlBootstrapPayloadV1'),
-            tasks.named('verifyControlBootstrapSequenceV1'))
+            tasks.named('verifyAuthenticatedControlTcpChannelV1'),
+             tasks.named('verifyControlBootstrapSequenceV1'),
+             tasks.named('verifyFirstPairingCommitmentV1'),
+             tasks.named('verifyFirstPairingBootstrapPayloadV1'))
 }
 tasks.configureEach { task ->
     if (task.name == 'preReleaseBuild') {
         task.dependsOn(
                 tasks.named('verifyAuthenticatedControlBootstrapV1'),
                 tasks.named('verifyAuthenticatedControlBootstrapPayloadV1'),
-                tasks.named('verifyControlBootstrapSequenceV1'))
+                tasks.named('verifyAuthenticatedControlTcpChannelV1'),
+                 tasks.named('verifyControlBootstrapSequenceV1'),
+                 tasks.named('verifyFirstPairingCommitmentV1'),
+                 tasks.named('verifyFirstPairingBootstrapPayloadV1'))
     }
 }
 
@@ -1922,7 +2066,8 @@ def debugMainJavaClasses = layout.buildDirectory.dir(
 tasks.register('compileAndroidBoundPeerHandshakeSessionSelfTest', JavaCompile) {
     dependsOn('compileDebugJavaWithJavac')
     source = files(
-            'src/test/java/com/visionforge/inferencebenchmark/AndroidBoundPeerHandshakeSessionSelfTest.java')
+            'src/test/java/com/visionforge/inferencebenchmark/AndroidBoundPeerHandshakeSessionSelfTest.java',
+            'src/test/java/com/visionforge/inferencebenchmark/AndroidFirstPairingUserConfirmationV1SelfTest.java')
     classpath = files(
             debugMainJavaClasses,
             android.bootClasspath)
@@ -1944,12 +2089,28 @@ tasks.register('verifyAndroidBoundPeerHandshakeSession', JavaExec) {
     mainClass =
             'com.visionforge.inferencebenchmark.AndroidBoundPeerHandshakeSessionSelfTest'
 }
+tasks.register('verifyAndroidFirstPairingUserConfirmationV1', JavaExec) {
+    group = 'verification'
+    description =
+            'Runs AndroidKeyStore-shaped VFU1 signing, Host verification, mutation and identity-binding gates.'
+    dependsOn(tasks.named('compileAndroidBoundPeerHandshakeSessionSelfTest'))
+    classpath = files(
+            androidBoundPeerHandshakeSelfTestClasses,
+            debugMainJavaClasses,
+            android.bootClasspath)
+    mainClass =
+            'com.visionforge.inferencebenchmark.AndroidFirstPairingUserConfirmationV1SelfTest'
+}
 tasks.named('check').configure {
-    dependsOn(tasks.named('verifyAndroidBoundPeerHandshakeSession'))
+    dependsOn(
+            tasks.named('verifyAndroidBoundPeerHandshakeSession'),
+            tasks.named('verifyAndroidFirstPairingUserConfirmationV1'))
 }
 tasks.configureEach { task ->
     if (task.name == 'preReleaseBuild') {
-        task.dependsOn(tasks.named('verifyAndroidBoundPeerHandshakeSession'))
+        task.dependsOn(
+                tasks.named('verifyAndroidBoundPeerHandshakeSession'),
+                tasks.named('verifyAndroidFirstPairingUserConfirmationV1'))
     }
 }
 
@@ -1979,6 +2140,7 @@ tasks.register('compileDualMachineAuthorizationPresentationSelfTest', JavaCompil
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineCardCode.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineEntitlementRecord.java',
+            'src/main/java/com/visionforge/inferencebenchmark/DualMachinePresentationBalance.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineFormalUsageStateMachine.java',
             'src/main/java/com/visionforge/inferencebenchmark/ui/DualMachineAuthorizationUiState.java',
             'src/main/java/com/visionforge/inferencebenchmark/ui/DualMachineAuthorizationUiMapper.java',
@@ -2112,6 +2274,8 @@ tasks.register('compileDualMachineCardAuthorizationCoordinatorSelfTests', JavaCo
             fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
                 include '*.java'
             },
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedControlRecordV1.java',
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/UnsignedReplayWindow.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineDeviceProofs.java',
@@ -2215,6 +2379,8 @@ tasks.register('compileDualMachineSidecarHttpClientSelfTest', JavaCompile) {
             fileTree('src/main/java/com/visionforge/inferencebenchmark/handshake') {
                 include '*.java'
             },
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/AuthenticatedControlRecordV1.java',
+            'src/main/java/com/visionforge/inferencebenchmark/dataplane/UnsignedReplayWindow.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachinePairingIdentityCodec.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineUsageAuthorizationContract.java',
             'src/main/java/com/visionforge/inferencebenchmark/DualMachineTlsPinPolicy.java',
@@ -2675,9 +2841,10 @@ def verifyMobilePublicContractsTask = tasks.register('verifyMobilePublicContract
             tasks.named('verifyAuthenticatedPeerHandshakeV1'),
             tasks.named('verifyPairGenerationProposalV1'),
             tasks.named('verifyPairGenerationPopV1'),
-            tasks.named('verifyPairGenerationCredentialV1'),
-            tasks.named('verifyAndroidBoundPeerHandshakeSession'),
-            tasks.named('verifyDualMachineUsageAuthorizationContract'),
+             tasks.named('verifyPairGenerationCredentialV1'),
+             tasks.named('verifyAndroidBoundPeerHandshakeSession'),
+             tasks.named('verifyAndroidFirstPairingUserConfirmationV1'),
+             tasks.named('verifyDualMachineUsageAuthorizationContract'),
             tasks.named('verifyDualMachineUsageLease'),
             tasks.named('verifyDualMachineAuthorizationPresentation'),
             tasks.named('verifyDualMachineCardAuthorizationFoundation'),

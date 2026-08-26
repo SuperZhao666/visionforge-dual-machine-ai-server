@@ -290,6 +290,42 @@ void verifies_shared_counter_and_round_trip() {
     CHECK(opened_accept.plaintext == accept_plaintext);
 }
 
+void verifies_start_intent_claim_types_share_counter_and_round_trip() {
+    TestOnlyProvider provider;
+    vfdual::AuthenticatedControlRecordSealerV1 sealer(make_key(), provider);
+    vfdual::AuthenticatedControlRecordOpenerV1 opener(make_key(), provider);
+
+    const std::vector<std::byte> request_plaintext(
+        16U, std::byte{0x11U});
+    const std::vector<std::byte> response_plaintext(
+        32U, std::byte{0x22U});
+    const auto request = sealer.seal(
+        vfdual::ControlMessageTypeV1::host_start_intent_claim_request,
+        request_plaintext);
+    const auto response = sealer.seal(
+        vfdual::ControlMessageTypeV1::host_start_intent_claim_response,
+        response_plaintext);
+
+    CHECK(request.status == vfdual::ControlRecordSealStatusV1::sealed);
+    CHECK(response.status == vfdual::ControlRecordSealStatusV1::sealed);
+    CHECK(request.counter == 0U);
+    CHECK(response.counter == 1U);
+
+    const auto opened_request = opener.open(request.envelope);
+    CHECK(opened_request.status ==
+        vfdual::ControlRecordOpenStatusV1::opened);
+    CHECK(opened_request.message_type ==
+        vfdual::ControlMessageTypeV1::host_start_intent_claim_request);
+    CHECK(opened_request.plaintext == request_plaintext);
+
+    const auto opened_response = opener.open(response.envelope);
+    CHECK(opened_response.status ==
+        vfdual::ControlRecordOpenStatusV1::opened);
+    CHECK(opened_response.message_type ==
+        vfdual::ControlMessageTypeV1::host_start_intent_claim_response);
+    CHECK(opened_response.plaintext == response_plaintext);
+}
+
 void verifies_mutations_do_not_commit_replay_state() {
     TestOnlyProvider provider;
     vfdual::AuthenticatedControlRecordSealerV1 sealer(make_key(), provider);
@@ -432,6 +468,7 @@ void verifies_platform_aes_gcm_vector() {
 
 int main() {
     verifies_shared_counter_and_round_trip();
+    verifies_start_intent_claim_types_share_counter_and_round_trip();
     verifies_mutations_do_not_commit_replay_state();
     verifies_strict_parser();
     verifies_provider_failure_burns_counter_and_limit();

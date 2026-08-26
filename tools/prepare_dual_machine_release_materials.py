@@ -21,6 +21,11 @@ SCHEMA = "visionforge-dual-machine-release-materials-v1"
 PUBLIC_KEY_BEGIN = "-----BEGIN PUBLIC KEY-----"
 PUBLIC_KEY_END = "-----END PUBLIC KEY-----"
 TLS_PIN_PATTERN = re.compile(r"^sha256/[A-Za-z0-9+/]{43}=$")
+DEFAULT_PAIR_CREDENTIAL_PUBLIC_KEY_FILE = (
+    Path(__file__).resolve().parents[1]
+    / "dual_machine_runtime"
+    / "production_pair_generation_credential_v1_public.pem"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,41 +90,87 @@ def fetch_leaf_tls_spki_pin(
     return tls_spki_pin_from_der_spki(der_spki)
 
 
-def load_ticket_public_key_material(path: Path) -> TicketPublicKeyMaterial:
+def resolve_current_tls_spki_pin(
+    hostname: str,
+    *,
+    configured_pin: str | None = None,
+    connect_host: str | None = None,
+    port: int = 443,
+    timeout_sec: float = 10.0,
+    verify_configured_against_live: bool = False,
+) -> tuple[str, bool]:
+    """Resolve the current leaf pin and optionally prove it against the live peer.
+
+    A canonical Base64 value is not evidence that the value belongs to the
+    production certificate. Strict release preparation therefore compares a
+    caller-supplied pin with a freshly fetched, hostname-validated leaf SPKI.
+    Non-strict/offline tooling may still carry an explicitly supplied pin, but
+    the returned boolean makes the lack of live verification visible.
+    """
+    normalized = validate_tls_pin(configured_pin) if configured_pin else None
+    if normalized is not None and not verify_configured_against_live:
+        return normalized, False
+
+    live_pin = fetch_leaf_tls_spki_pin(
+        hostname,
+        connect_host=connect_host,
+        port=port,
+        timeout_sec=timeout_sec,
+    )
+    if normalized is not None and normalized != live_pin:
+        raise ValueError(
+            "configured current TLS SPKI pin does not match the live leaf certificate"
+        )
+    return live_pin, True
+
+
+def _load_rsa_public_key_material(
+    path: Path,
+    *,
+    material_name: str,
+) -> TicketPublicKeyMaterial:
     path = path.expanduser().resolve(strict=True)
     contents = path.read_bytes()
     if len(contents) < 256 or len(contents) > 16 * 1024:
-        raise ValueError(f"ticket public key PEM size is invalid: {path}")
+        raise ValueError(f"{material_name} public key PEM size is invalid: {path}")
     try:
         text = contents.decode("ascii").strip()
     except UnicodeDecodeError as exc:
-        raise ValueError(f"ticket public key PEM is not ASCII: {path}") from exc
+        raise ValueError(f"{material_name} public key PEM is not ASCII: {path}") from exc
     if (
         not text.startswith(PUBLIC_KEY_BEGIN)
         or not text.endswith(PUBLIC_KEY_END)
         or "PRIVATE KEY" in text
         or text.find(PUBLIC_KEY_BEGIN, 1) >= 0
     ):
-        raise ValueError(f"ticket key must be exactly one public PEM: {path}")
+        raise ValueError(
+            f"{material_name} key must be exactly one public PEM: {path}"
+        )
 
     body = text[len(PUBLIC_KEY_BEGIN): -len(PUBLIC_KEY_END)]
     try:
         embedded_der = base64.b64decode(re.sub(r"\s", "", body), validate=True)
     except ValueError as exc:
-        raise ValueError(f"ticket public key PEM body is invalid: {path}") from exc
+        raise ValueError(
+            f"{material_name} public key PEM body is invalid: {path}"
+        ) from exc
 
     public_key = serialization.load_pem_public_key(contents)
     if not isinstance(public_key, rsa.RSAPublicKey):
-        raise ValueError(f"ticket public key must be RSA: {path}")
+        raise ValueError(f"{material_name} public key must be RSA: {path}")
     if public_key.key_size < 3072:
-        raise ValueError(f"ticket public key must be RSA-3072 or stronger: {path}")
+        raise ValueError(
+            f"{material_name} public key must be RSA-3072 or stronger: {path}"
+        )
 
     canonical_der = public_key.public_bytes(
         serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     )
     if canonical_der != embedded_der:
-        raise ValueError(f"ticket public key PEM is not canonical SPKI: {path}")
+        raise ValueError(
+            f"{material_name} public key PEM is not canonical SPKI: {path}"
+        )
 
     key_sha256 = sha256_hex(canonical_der)
     return TicketPublicKeyMaterial(
@@ -131,18 +182,54 @@ def load_ticket_public_key_material(path: Path) -> TicketPublicKeyMaterial:
     )
 
 
-def load_ticket_public_key_materials(
+def load_ticket_public_key_material(path: Path) -> TicketPublicKeyMaterial:
+    return _load_rsa_public_key_material(path, material_name="ticket")
+
+
+def load_pair_credential_public_key_material(
+    path: Path,
+) -> TicketPublicKeyMaterial:
+    return _load_rsa_public_key_material(path, material_name="pair credential")
+
+
+def _load_distinct_public_key_materials(
     paths: Sequence[Path],
+    *,
+    material_name: str,
 ) -> tuple[TicketPublicKeyMaterial, ...]:
     if len(paths) > 3:
-        raise ValueError("release supports at most 3 pinned ticket public keys")
-    materials = tuple(load_ticket_public_key_material(path) for path in paths)
+        raise ValueError(
+            f"release supports at most 3 pinned {material_name} public keys"
+        )
+    loader = (
+        load_ticket_public_key_material
+        if material_name == "ticket"
+        else load_pair_credential_public_key_material
+    )
+    materials = tuple(loader(path) for path in paths)
     seen: set[str] = set()
     for material in materials:
         if material.sha256_hex in seen:
-            raise ValueError(f"duplicated ticket public key: {material.path}")
+            raise ValueError(
+                f"duplicated {material_name} public key: {material.path}"
+            )
         seen.add(material.sha256_hex)
     return materials
+
+
+def load_ticket_public_key_materials(
+    paths: Sequence[Path],
+) -> tuple[TicketPublicKeyMaterial, ...]:
+    return _load_distinct_public_key_materials(paths, material_name="ticket")
+
+
+def load_pair_credential_public_key_materials(
+    paths: Sequence[Path],
+) -> tuple[TicketPublicKeyMaterial, ...]:
+    return _load_distinct_public_key_materials(
+        paths,
+        material_name="pair credential",
+    )
 
 
 def build_release_material_report(
@@ -154,24 +241,26 @@ def build_release_material_report(
     backup_tls_pins: Sequence[str],
     ticket_public_key_files: Sequence[Path],
     api_origin: str,
+    pair_credential_public_key_files: Sequence[Path] = (),
     timeout_sec: float = 10.0,
     strict_release: bool = False,
 ) -> dict[str, Any]:
-    current_pin = (
-        validate_tls_pin(current_tls_pin)
-        if current_tls_pin
-        else fetch_leaf_tls_spki_pin(
-            tls_host,
-            connect_host=tls_connect_host,
-            port=tls_port,
-            timeout_sec=timeout_sec,
-        )
+    current_pin, current_pin_live_verified = resolve_current_tls_spki_pin(
+        tls_host,
+        configured_pin=current_tls_pin,
+        connect_host=tls_connect_host,
+        port=tls_port,
+        timeout_sec=timeout_sec,
+        verify_configured_against_live=strict_release,
     )
     configured_pins = [current_pin]
     configured_pins.extend(validate_tls_pin(pin) for pin in backup_tls_pins)
     unique_pins = list(dict.fromkeys(configured_pins))
 
     ticket_keys = load_ticket_public_key_materials(ticket_public_key_files)
+    pair_credential_keys = load_pair_credential_public_key_materials(
+        pair_credential_public_key_files
+    )
     warnings: list[str] = []
     errors: list[str] = []
     if len(unique_pins) != len(configured_pins):
@@ -187,9 +276,29 @@ def build_release_material_report(
     if not ticket_keys:
         message = "release requires at least one RSA-3072+ ticket public key"
         (errors if strict_release else warnings).append(message)
+    if not pair_credential_keys:
+        message = (
+            "release requires at least one RSA-3072+ pair-credential public key"
+        )
+        (errors if strict_release else warnings).append(message)
+
+    ticket_key_ids = {item.sha256_hex for item in ticket_keys}
+    reused_key_ids = ticket_key_ids.intersection(
+        item.sha256_hex for item in pair_credential_keys
+    )
+    if reused_key_ids:
+        errors.append(
+            "usage-ticket and pair-credential verification keys must be disjoint"
+        )
 
     first_key = ticket_keys[0].path if ticket_keys else None
     previous_key_paths = [str(item.path) for item in ticket_keys[1:]]
+    first_pair_key = (
+        pair_credential_keys[0].path if pair_credential_keys else None
+    )
+    previous_pair_key_paths = [
+        str(item.path) for item in pair_credential_keys[1:]
+    ]
     return {
         "schema": SCHEMA,
         "ok": not errors,
@@ -203,6 +312,7 @@ def build_release_material_report(
             "connect_host": tls_connect_host or tls_host,
             "port": tls_port,
             "current_leaf_spki_pin": current_pin,
+            "current_leaf_spki_pin_live_verified": current_pin_live_verified,
             "release_pins": unique_pins,
         },
         "ticket_public_keys": [
@@ -214,6 +324,15 @@ def build_release_material_report(
             }
             for item in ticket_keys
         ],
+        "pair_credential_public_keys": [
+            {
+                "path": str(item.path),
+                "key_id": item.key_id,
+                "sha256_hex": item.sha256_hex,
+                "modulus_bits": item.modulus_bits,
+            }
+            for item in pair_credential_keys
+        ],
         "android_gradle_inputs": {
             "VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS": ",".join(unique_pins),
             "VISIONFORGE_DUAL_MACHINE_TICKET_PUBLIC_KEY_FILE": (
@@ -222,6 +341,13 @@ def build_release_material_report(
             "VISIONFORGE_DUAL_MACHINE_PREVIOUS_TICKET_PUBLIC_KEY_FILES": (
                 ";".join(previous_key_paths)
             ),
+            "VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE": (
+                str(first_pair_key) if first_pair_key else ""
+            ),
+            (
+                "VISIONFORGE_DUAL_MACHINE_PREVIOUS_PAIR_CREDENTIAL_"
+                "PUBLIC_KEY_FILES"
+            ): ";".join(previous_pair_key_paths),
         },
         "host_release_inputs": {
             "HOST_ROLE": "authenticated_video_publisher",
@@ -247,6 +373,7 @@ def write_android_gradle_env_files(
     output_json: Path,
 ) -> dict[str, str]:
     android = report["android_gradle_inputs"]
+    output_json.parent.mkdir(parents=True, exist_ok=True)
     env_path = output_json.with_name("dual-machine-android-gradle-env.ps1")
     command_path = output_json.with_name("dual-machine-android-release-build-command.txt")
     lines = [
@@ -263,6 +390,16 @@ def write_android_gradle_env_files(
         _powershell_env_line(
             "VISIONFORGE_DUAL_MACHINE_PREVIOUS_TICKET_PUBLIC_KEY_FILES",
             android["VISIONFORGE_DUAL_MACHINE_PREVIOUS_TICKET_PUBLIC_KEY_FILES"],
+        ),
+        _powershell_env_line(
+            "VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE",
+            android["VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE"],
+        ),
+        _powershell_env_line(
+            "VISIONFORGE_DUAL_MACHINE_PREVIOUS_PAIR_CREDENTIAL_PUBLIC_KEY_FILES",
+            android[
+                "VISIONFORGE_DUAL_MACHINE_PREVIOUS_PAIR_CREDENTIAL_PUBLIC_KEY_FILES"
+            ],
         ),
         "",
     ]
@@ -298,6 +435,10 @@ def _text_report(report: dict[str, Any]) -> str:
         f"- current TLS SPKI pin: {tls['current_leaf_spki_pin']}",
         f"- release TLS pin count: {len(tls['release_pins'])}",
         f"- ticket public key count: {len(report['ticket_public_keys'])}",
+        (
+            "- pair-credential public key count: "
+            f"{len(report['pair_credential_public_keys'])}"
+        ),
         "- Android Gradle inputs:",
         "  VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS="
         + android["VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS"],
@@ -305,6 +446,12 @@ def _text_report(report: dict[str, Any]) -> str:
         + android["VISIONFORGE_DUAL_MACHINE_TICKET_PUBLIC_KEY_FILE"],
         "  VISIONFORGE_DUAL_MACHINE_PREVIOUS_TICKET_PUBLIC_KEY_FILES="
         + android["VISIONFORGE_DUAL_MACHINE_PREVIOUS_TICKET_PUBLIC_KEY_FILES"],
+        "  VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE="
+        + android["VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE"],
+        "  VISIONFORGE_DUAL_MACHINE_PREVIOUS_PAIR_CREDENTIAL_PUBLIC_KEY_FILES="
+        + android[
+            "VISIONFORGE_DUAL_MACHINE_PREVIOUS_PAIR_CREDENTIAL_PUBLIC_KEY_FILES"
+        ],
         "- Host release inputs:",
         "  HOST_ROLE=" + host["HOST_ROLE"],
         "  HOST_AUTHORIZATION_GATE=" + host["HOST_AUTHORIZATION_GATE"],
@@ -331,7 +478,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Prepare public-only dual-machine release material evidence. "
-            "This tool never reads ticket private keys."
+            "This tool never reads ticket or pair-credential private keys."
         ),
     )
     parser.add_argument("--tls-host", default="www.visionforge.cloud")
@@ -346,8 +493,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--current-tls-pin",
         help=(
-            "Optional canonical current TLS SPKI pin. When supplied, the tool "
-            "does not open a TLS socket."
+            "Optional canonical current TLS SPKI pin. Strict release mode "
+            "still connects to the TLS peer and rejects a mismatch; only "
+            "non-strict preparation may use this value offline."
         ),
     )
     parser.add_argument(
@@ -364,6 +512,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="RSA-3072+ public PEM for RS256 usage-lease verification.",
     )
     parser.add_argument(
+        "--pair-credential-public-key-file",
+        action="append",
+        type=Path,
+        help=(
+            "RSA-3072+ public PEM for pair-generation credential verification. "
+            "Defaults to the deployed repository public key."
+        ),
+    )
+    parser.add_argument(
         "--api-origin",
         default="https://www.visionforge.cloud",
     )
@@ -371,7 +528,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--strict-release",
         action="store_true",
-        help="Fail unless backup TLS pin and ticket public keys are present.",
+        help=(
+            "Fail unless backup TLS pin plus disjoint ticket and pair-credential "
+            "public keys are present."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -397,6 +557,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             current_tls_pin=args.current_tls_pin,
             backup_tls_pins=args.backup_tls_pin,
             ticket_public_key_files=args.ticket_public_key_file,
+            pair_credential_public_key_files=(
+                args.pair_credential_public_key_file
+                if args.pair_credential_public_key_file is not None
+                else (DEFAULT_PAIR_CREDENTIAL_PUBLIC_KEY_FILE,)
+            ),
             api_origin=args.api_origin,
             timeout_sec=args.timeout_sec,
             strict_release=args.strict_release,

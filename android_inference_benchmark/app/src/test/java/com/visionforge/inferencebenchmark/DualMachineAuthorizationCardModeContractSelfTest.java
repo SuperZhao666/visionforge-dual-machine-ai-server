@@ -20,10 +20,13 @@ final class DualMachineAuthorizationCardModeContractSelfTest {
         Path uiRoot = Paths.get(projectDirectory, "src", "main", "java", "com",
                 "visionforge", "inferencebenchmark", "ui");
         String authorizationScreen = read(uiRoot.resolve("AuthorizationScreen.java"));
+        String controlScreen = read(uiRoot.resolve("ControlScreen.java"));
         String actions = read(uiRoot.resolve("MobileAppActions.java"));
         String automationIds = read(uiRoot.resolve("UiAutomationIds.java"));
         String strings = read(Paths.get(projectDirectory, "src", "main", "res",
                 "values", "dual_machine_authorization_strings.xml"));
+        String generalStrings = read(Paths.get(projectDirectory, "src", "main", "res",
+                "values", "strings.xml"));
 
         require(authorizationScreen.contains(
                 "Card-key activation and remaining-time presentation boundary"));
@@ -36,6 +39,25 @@ final class DualMachineAuthorizationCardModeContractSelfTest {
                 "DualMachineCardCode.normalizeAndValidate(raw);"));
         require(authorizationScreen.contains("cardCode.getText().clear();"));
         require(authorizationScreen.contains("actions.onActivateCard(normalized);"));
+        require(authorizationScreen.contains(
+                "authorization.canEnterCardCode()"));
+        require(!authorizationScreen.contains(
+                "if (!submissionEnabled) return;"));
+        require(authorizationScreen.contains(
+                "R.string.authorization_start_host_before_activation"));
+        require(!authorizationScreen.contains(
+                "R.string.authorization_zero_cost_notice"));
+        require(!strings.contains("authorization_zero_cost_notice"));
+        require(!controlScreen.contains("createAdvancedNoteCard"));
+        require(!controlScreen.contains("toggleAdvancedNote"));
+        require(!controlScreen.contains("createPersonalTrajectoryCard"));
+        require(!controlScreen.contains("renderPersonalTrajectory"));
+        require(!controlScreen.contains("R.string.advanced_smoothing"));
+        require(!controlScreen.contains("R.string.personal_trajectory_title"));
+        require(!generalStrings.contains(
+                "<string name=\"advanced_smoothing\">"));
+        require(!generalStrings.contains(
+                "<string name=\"personal_trajectory_title\">"));
         require(!authorizationScreen.contains("pairingPackage"));
         require(!authorizationScreen.contains("submitPairingPackage"));
         require(!actions.contains("onImportPairingPackage"));
@@ -74,7 +96,16 @@ final class DualMachineAuthorizationCardModeContractSelfTest {
         require(strings.contains(
                 "<string name=\"section_authorization_balance\">卡密剩余时间</string>"));
         require(strings.contains(
-                "<string name=\"authorization_balance_pending\">待同步</string>"));
+                "<string name=\"authorization_balance_not_activated\">未激活</string>"));
+        require(strings.contains(
+                "<string name=\"authorization_balance_activating\">激活中</string>"));
+        require(strings.contains(
+                "<string name=\"authorization_balance_verifying\">核验中</string>"));
+        require(!strings.contains("待同步"));
+        require(strings.contains(
+                "<string name=\"authorization_balance_unavailable\">不可用</string>"));
+        require(strings.contains(
+                "<string name=\"authorization_security_configuration_error\">授权配置不可用</string>"));
         require(!strings.contains("卡密与剩余时间"));
         require(!strings.contains("authorization_remaining"));
         require(!strings.contains("action_top_up_card"));
@@ -82,27 +113,56 @@ final class DualMachineAuthorizationCardModeContractSelfTest {
         require(!strings.contains("续费"));
         require(!strings.contains("续时"));
         require(count(authorizationScreen, "section_authorization_balance") == 1);
-        require(authorizationScreen.contains("authorization.balanceKnown"));
         require(authorizationScreen.contains(
-                "if (!authorization.balanceKnown)"));
+                "authorization.displayBalanceKnown"));
         require(authorizationScreen.contains(
-                "R.string.authorization_balance_pending"));
+                "if (!authorization.displayBalanceKnown)"));
+        require(authorizationScreen.contains(
+                "R.string.authorization_balance_not_activated"));
+        require(authorizationScreen.contains(
+                "R.string.authorization_balance_activating"));
+        require(authorizationScreen.contains(
+                "R.string.authorization_balance_verifying"));
+        require(authorizationScreen.contains(
+                "case SECURITY_CONFIGURATION_ERROR:"));
+        require(authorizationScreen.contains(
+                "R.string.authorization_security_configuration_error"));
+        require(authorizationScreen.contains(
+                "R.string.authorization_balance_unavailable"));
+        int unavailableBalanceBranch = authorizationScreen.indexOf(
+                "authorization.status"
+                        + " == DualMachineAuthorizationUiState.Status"
+                        + ".SECURITY_CONFIGURATION_ERROR");
         require(authorizationScreen.contains(
                 "authorization.isActivationCardVisible()"));
         int permanentBranch = authorizationScreen.indexOf(
                 "if (authorization.permanent)");
         int knownBalanceBranch = authorizationScreen.indexOf(
-                "if (!authorization.balanceKnown)", permanentBranch);
-        int pendingBalanceBranch = authorizationScreen.indexOf(
-                "R.string.authorization_balance_pending",
+                "if (!authorization.displayBalanceKnown)", permanentBranch);
+        int notActivatedBalanceBranch = authorizationScreen.indexOf(
+                "R.string.authorization_balance_not_activated",
                 knownBalanceBranch);
+        int activatingBalanceBranch = authorizationScreen.indexOf(
+                "R.string.authorization_balance_activating",
+                notActivatedBalanceBranch);
+        int verifyingBalanceBranch = authorizationScreen.indexOf(
+                "R.string.authorization_balance_verifying",
+                activatingBalanceBranch);
         int durationBranch = authorizationScreen.indexOf(
-                "return formatDuration(authorization.remainingSeconds)",
-                pendingBalanceBranch);
+                "formatDuration(authorization.remainingSeconds)",
+                verifyingBalanceBranch);
         require(permanentBranch >= 0);
+        require(unavailableBalanceBranch > permanentBranch);
+        require(knownBalanceBranch > unavailableBalanceBranch);
         require(knownBalanceBranch > permanentBranch);
-        require(pendingBalanceBranch > knownBalanceBranch);
-        require(durationBranch > pendingBalanceBranch);
+        require(notActivatedBalanceBranch > knownBalanceBranch);
+        require(activatingBalanceBranch > notActivatedBalanceBranch);
+        require(verifyingBalanceBranch > activatingBalanceBranch);
+        require(durationBranch > verifyingBalanceBranch);
+        require(authorizationScreen.contains(
+                "authorization.balanceStale"));
+        require(authorizationScreen.contains(
+                "R.string.authorization_balance_last_verified"));
         require(!authorizationScreen.contains("authorization_remaining"));
         require(!authorizationScreen.contains("action_top_up_card"));
         require(!containsLoginFieldToken(authorizationScreen));

@@ -8,6 +8,7 @@
 #include "vfdual/host_display_catalog.hpp"
 #include "vfdual/host_preferred_probe_log_policy.hpp"
 #include "vfdual/host_recovery_policy.hpp"
+#include "vfdual/host_runtime_diagnostics.hpp"
 #include "vfdual/h264_encoder_config.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -560,68 +561,6 @@ HostStreamMetrics copy_metrics(const HostApplicationStats& source, std::uint64_t
     return metrics;
 }
 
-std::string_view encoder_candidate_name(HostEncoderCandidate candidate) noexcept {
-    switch (candidate) {
-        case HostEncoderCandidate::nvenc_same_adapter_async_shared:
-            return "nvenc_same_adapter_async_shared";
-        case HostEncoderCandidate::nvenc_capture_device:
-            return "nvenc_capture_device";
-        case HostEncoderCandidate::nvenc_cross_adapter:
-            return "nvenc_cross_adapter";
-        case HostEncoderCandidate::windows_hardware_capture_device:
-            return "windows_hardware_capture_device";
-        case HostEncoderCandidate::software_cpu:
-            return "software_cpu";
-    }
-    return "unknown";
-}
-
-std::string_view desktop_video_initialization_stage_name(
-    DesktopVideoInitializationStage stage) noexcept {
-    switch (stage) {
-        case DesktopVideoInitializationStage::none:
-            return "none";
-        case DesktopVideoInitializationStage::validate_config:
-            return "validate_config";
-        case DesktopVideoInitializationStage::capture_initialize:
-            return "capture_initialize";
-        case DesktopVideoInitializationStage::hybrid_pipeline_initialize:
-            return "hybrid_pipeline_initialize";
-        case DesktopVideoInitializationStage::frame_bridge_initialize:
-            return "frame_bridge_initialize";
-        case DesktopVideoInitializationStage::nvenc_initialize:
-            return "nvenc_initialize";
-        case DesktopVideoInitializationStage::media_foundation_hardware_initialize:
-            return "media_foundation_hardware_initialize";
-        case DesktopVideoInitializationStage::media_foundation_software_initialize:
-            return "media_foundation_software_initialize";
-        case DesktopVideoInitializationStage::udp_publisher_connect:
-            return "udp_publisher_connect";
-        case DesktopVideoInitializationStage::complete:
-            return "complete";
-    }
-    return "unknown";
-}
-
-std::string_view host_application_start_stage_name(
-    HostApplicationStartStage stage) noexcept {
-    switch (stage) {
-        case HostApplicationStartStage::none:
-            return "none";
-        case HostApplicationStartStage::video_initialize:
-            return "video_initialize";
-        case HostApplicationStartStage::idr_listener_start:
-            return "idr_listener_start";
-        case HostApplicationStartStage::mouse_button_publisher_start:
-            return "mouse_button_publisher_start";
-        case HostApplicationStartStage::metrics_csv_open:
-            return "metrics_csv_open";
-        case HostApplicationStartStage::complete:
-            return "complete";
-    }
-    return "unknown";
-}
-
 HostVideoFailureKind host_video_failure_kind(
     DesktopVideoStepStatus status) noexcept {
     switch (status) {
@@ -1079,14 +1018,18 @@ bool HostRuntimeService::start(const HostStreamSettings& settings, std::string& 
     }
     if (authorization_gate_ == nullptr ||
         !authorization_gate_->permits_data_plane()) {
+        (void)offer_pending_start_intent();
         error =
             "Authenticated Host/Android peer session and a current verified "
             "server usage lease are required before Host streaming can start.";
         write_host_event(
             "host_start_rejected",
-            "reason=host_authorization_closed secure_data_plane_required=true");
+            "reason=host_authorization_closed secure_data_plane_required=true "
+            "authenticated_start_intent_pending=true prelease_video=false "
+            "billing_started=false");
         return false;
     }
+    complete_pending_start_intent();
     {
         std::lock_guard lock(mutex_);
         last_metrics_.reset();
@@ -1158,6 +1101,7 @@ bool HostRuntimeService::start(const HostStreamSettings& settings, std::string& 
 }
 void HostRuntimeService::request_stop() noexcept {
     if (authorization_gate_ != nullptr) authorization_gate_->stop();
+    cancel_pending_start_intent();
     {
         std::lock_guard lock(mutex_);
         stop_requested_ = true;
@@ -1166,6 +1110,7 @@ void HostRuntimeService::request_stop() noexcept {
 }
 void HostRuntimeService::stop() noexcept {
     if (authorization_gate_ != nullptr) authorization_gate_->stop();
+    cancel_pending_start_intent();
     stop_runtime();
 }
 void HostRuntimeService::stop_runtime() noexcept {
@@ -1454,13 +1399,29 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
         start_condition_.notify_all();
         return;
     }
+    std::shared_ptr<HostAuthenticatedDataPlaneSessionV2>
+        authenticated_data_plane_session;
+    {
+        std::lock_guard lock(mutex_);
+        authenticated_data_plane_session = authenticated_data_plane_session_;
+    }
+    if (!authenticated_data_plane_session) {
+        std::lock_guard lock(mutex_);
+        last_error_ =
+            "Confirmed VFA2 data-plane session is unavailable; "
+            "failure_stage=authenticated_data_plane_session";
+        write_host_event("host_runtime_initialization_failed", last_error_);
+        start_finished_ = true;
+        start_condition_.notify_all();
+        return;
+    }
     HostApplication application;
     if (!application.start(create_runtime_config(
             settings, metrics_path, stream_epoch,
             [authorization_gate = authorization_gate_]() noexcept {
                 return authorization_gate != nullptr &&
                     authorization_gate->permits_data_plane();
-            }))) {
+            }), authenticated_data_plane_session)) {
         std::lock_guard lock(mutex_);
         last_error_ =
             "Unable to initialize the DXGI/H.264/UDP host runtime; " +
@@ -1618,6 +1579,22 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
             last_metrics_ = copy_metrics(stats, published_offset, timeout_offset, stream_epoch,
                                          successful_recoveries,
                                          active_session, monitor_snapshot, settings);
+        }
+        if (stats.last_video_step.status ==
+            DesktopVideoStepStatus::data_plane_closed) {
+            // Lease expiry/revocation is an authoritative stop condition, not
+            // a recoverable capture/encoder/transport failure.  Retrying here
+            // would keep resources active and leave the UI claiming that the
+            // Host is sending after the authenticated data plane has closed.
+            {
+                std::lock_guard lock(mutex_);
+                last_error_ = "Host streaming stopped because verified server usage lease authorization closed.";
+            }
+            write_host_event(
+                "host_stream_authorization_closed",
+                "stage=pre_capture_permit action=stop_stream "
+                "recovery_suppressed=true data_plane_open=false");
+            break;
         }
         const auto now = std::chrono::steady_clock::now();
         const HostVideoForwardProgressDecision video_progress =
@@ -1902,6 +1879,22 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
         }
         bool recovered = false;
         while (!read_stop_requested(mutex_, stop_requested_)) {
+            if (authorization_gate_ == nullptr ||
+                !authorization_gate_->permits_data_plane()) {
+                // A capture/encoder recovery may outlive the short formal
+                // lease that authorized it.  Re-check the authoritative gate
+                // before scheduling another retry so recovery cannot keep the
+                // Host active or bootstrap a fresh transport after expiry.
+                {
+                    std::lock_guard lock(mutex_);
+                    last_error_ = "Host streaming stopped because verified server usage lease authorization closed during recovery.";
+                }
+                write_host_event(
+                    "host_stream_authorization_closed",
+                    "stage=recovery action=stop_stream "
+                    "recovery_suppressed=true data_plane_open=false");
+                break;
+            }
             const bool committing_preferred_transport =
                 ready_preferred_session.has_value();
             const HostRecoveryDecision decision = committing_preferred_transport
@@ -2114,7 +2107,7 @@ void HostRuntimeService::run(HostStreamSettings settings, std::stop_token startu
                     [authorization_gate = authorization_gate_]() noexcept {
                         return authorization_gate != nullptr &&
                             authorization_gate->permits_data_plane();
-                    }))) {
+                    }), authenticated_data_plane_session)) {
                 recovery_stage = "runtime_initialize";
                 recovery_detail =
                     "failure_stage=runtime_initialize " +

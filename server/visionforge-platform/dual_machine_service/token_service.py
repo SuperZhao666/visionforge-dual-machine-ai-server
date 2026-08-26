@@ -227,6 +227,7 @@ class RsaTokenCodec:
         now_epoch: int | None = None,
         expiration_grace_seconds: int = 0,
         not_before_grace_seconds: int = 0,
+        allow_expired_for_stop: bool = False,
     ) -> dict[str, Any]:
         header, payload, signing_input, signature = _decode_token(token)
         if header.get("alg") != "RS256" or header.get("typ") != "JWT":
@@ -248,6 +249,7 @@ class RsaTokenCodec:
             expiration_grace_seconds=expiration_grace_seconds,
             not_before_grace_seconds=not_before_grace_seconds,
             maximum_ttl_seconds=int(self.lease_ttl_seconds),
+            allow_expired_for_stop=allow_expired_for_stop,
         )
         return payload
 
@@ -319,6 +321,7 @@ def _validate_usage_claims(
     expiration_grace_seconds: int,
     not_before_grace_seconds: int,
     maximum_ttl_seconds: int,
+    allow_expired_for_stop: bool,
 ) -> None:
     try:
         issued_at = payload.get("iat")
@@ -373,8 +376,11 @@ def _validate_usage_claims(
             or expires_at - not_before > int(maximum_ttl_seconds)
             or not_before
             > now_epoch + max(0, int(not_before_grace_seconds))
-            or expires_at + max(0, int(expiration_grace_seconds))
-            <= now_epoch
+            or (
+                not allow_expired_for_stop
+                and expires_at + max(0, int(expiration_grace_seconds))
+                <= now_epoch
+            )
         ):
             raise TokenInvalid("dual_machine_usage_lease_invalid")
         expected_jti = hashlib.sha256(canonical_json({

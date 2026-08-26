@@ -15,8 +15,11 @@ if str(ROOT) not in sys.path:
 
 from tools.prepare_dual_machine_release_materials import (  # noqa: E402
     build_release_material_report,
+    load_pair_credential_public_key_material,
+    load_pair_credential_public_key_materials,
     load_ticket_public_key_material,
     load_ticket_public_key_materials,
+    resolve_current_tls_spki_pin,
     tls_spki_pin_from_der_spki,
     validate_tls_pin,
     write_android_gradle_env_files,
@@ -84,11 +87,32 @@ def test_ticket_public_key_materials_reject_duplicate_keys(
         load_ticket_public_key_materials((key_path, key_path))
 
 
+def test_pair_credential_public_key_material_requires_rsa_3072_plus(
+    tmp_path: Path,
+) -> None:
+    strong = _write_public_key(tmp_path, "pair-strong.pem", bits=3072)
+    weak = _write_public_key(tmp_path, "pair-weak.pem", bits=2048)
+
+    assert load_pair_credential_public_key_material(strong).modulus_bits == 3072
+    with pytest.raises(ValueError, match="pair credential.*RSA-3072"):
+        load_pair_credential_public_key_material(weak)
+
+
+def test_pair_credential_public_key_materials_reject_duplicate_keys(
+    tmp_path: Path,
+) -> None:
+    key_path = _write_public_key(tmp_path, "pair.pem")
+
+    with pytest.raises(ValueError, match="duplicated pair credential"):
+        load_pair_credential_public_key_materials((key_path, key_path))
+
+
 def test_release_material_report_outputs_build_inputs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     ticket_key = _write_public_key(tmp_path, "ticket.pem")
+    pair_key = _write_public_key(tmp_path, "pair.pem")
     current_pin = _pin(b"leaf")
     backup_pin = _pin(b"offline-backup")
     monkeypatch.setattr(
@@ -101,12 +125,14 @@ def test_release_material_report_outputs_build_inputs(
         tls_port=443,
         backup_tls_pins=(backup_pin,),
         ticket_public_key_files=(ticket_key,),
+        pair_credential_public_key_files=(pair_key,),
         api_origin="https://www.visionforge.cloud",
         strict_release=True,
     )
 
     assert report["ok"] is True
     assert report["tls"]["release_pins"] == [current_pin, backup_pin]
+    assert report["tls"]["current_leaf_spki_pin_live_verified"] is True
     android = report["android_gradle_inputs"]
     assert android["VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS"] == (
         current_pin + "," + backup_pin
@@ -114,6 +140,10 @@ def test_release_material_report_outputs_build_inputs(
     assert android["VISIONFORGE_DUAL_MACHINE_TICKET_PUBLIC_KEY_FILE"] == (
         str(ticket_key)
     )
+    assert android[
+        "VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE"
+    ] == str(pair_key)
+    assert report["pair_credential_public_keys"][0]["modulus_bits"] == 3072
     host = report["host_release_inputs"]
     assert host == {
         "HOST_ROLE": "authenticated_video_publisher",
@@ -129,6 +159,7 @@ def test_release_material_writer_emits_public_gradle_env_files(
     tmp_path: Path,
 ) -> None:
     ticket_key = _write_public_key(tmp_path, "ticket.pem")
+    pair_key = _write_public_key(tmp_path, "pair.pem")
     current_pin = _pin(b"leaf")
     backup_pin = _pin(b"offline-backup")
     monkeypatch.setattr(
@@ -140,6 +171,7 @@ def test_release_material_writer_emits_public_gradle_env_files(
         tls_port=443,
         backup_tls_pins=(backup_pin,),
         ticket_public_key_files=(ticket_key,),
+        pair_credential_public_key_files=(pair_key,),
         api_origin="https://www.visionforge.cloud",
         strict_release=True,
     )
@@ -160,6 +192,11 @@ def test_release_material_writer_emits_public_gradle_env_files(
     assert "VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS" in env_text
     assert "VISIONFORGE_DUAL_MACHINE_TICKET_PUBLIC_KEY_FILE" in env_text
     assert "VISIONFORGE_DUAL_MACHINE_PREVIOUS_TICKET_PUBLIC_KEY_FILES" in env_text
+    assert "VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE" in env_text
+    assert (
+        "VISIONFORGE_DUAL_MACHINE_PREVIOUS_PAIR_CREDENTIAL_PUBLIC_KEY_FILES"
+        in env_text
+    )
     assert current_pin in env_text
     assert backup_pin in env_text
     assert "build_android_production_release.py" in command_text
@@ -170,8 +207,46 @@ def test_release_material_writer_emits_public_gradle_env_files(
     assert "STORE_PASSWORD" not in serialized
 
 
-def test_strict_release_fails_without_backup_pin_or_ticket_key() -> None:
+def test_release_material_writer_creates_missing_output_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ticket_key = _write_public_key(tmp_path, "ticket.pem")
+    pair_key = _write_public_key(tmp_path, "pair.pem")
     current_pin = _pin(b"leaf")
+    backup_pin = _pin(b"offline-backup")
+    monkeypatch.setattr(
+        "tools.prepare_dual_machine_release_materials.fetch_leaf_tls_spki_pin",
+        lambda *args, **kwargs: current_pin,
+    )
+    report = build_release_material_report(
+        tls_host="www.visionforge.cloud",
+        tls_port=443,
+        backup_tls_pins=(backup_pin,),
+        ticket_public_key_files=(ticket_key,),
+        pair_credential_public_key_files=(pair_key,),
+        api_origin="https://www.visionforge.cloud",
+        strict_release=True,
+    )
+    output_json = tmp_path / "missing" / "nested" / "materials.json"
+
+    generated = write_android_gradle_env_files(
+        report=report,
+        output_json=output_json,
+    )
+
+    assert Path(generated["android_gradle_env"]).is_file()
+    assert Path(generated["android_release_build_command"]).is_file()
+
+
+def test_strict_release_fails_without_backup_pin_or_ticket_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_pin = _pin(b"leaf")
+    monkeypatch.setattr(
+        "tools.prepare_dual_machine_release_materials.fetch_leaf_tls_spki_pin",
+        lambda *args, **kwargs: current_pin,
+    )
 
     report = build_release_material_report(
         tls_host="www.visionforge.cloud",
@@ -179,6 +254,7 @@ def test_strict_release_fails_without_backup_pin_or_ticket_key() -> None:
         current_tls_pin=current_pin,
         backup_tls_pins=(),
         ticket_public_key_files=(),
+        pair_credential_public_key_files=(),
         api_origin="https://www.visionforge.cloud",
         strict_release=True,
     )
@@ -192,13 +268,46 @@ def test_strict_release_fails_without_backup_pin_or_ticket_key() -> None:
     assert (
         "release requires at least one RSA-3072+ ticket public key"
     ) in report["errors"]
+    assert (
+        "release requires at least one RSA-3072+ pair-credential public key"
+    ) in report["errors"]
 
 
-def test_current_tls_pin_override_does_not_open_network(
+def test_release_rejects_key_reuse_between_ticket_and_pair_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reused_key = _write_public_key(tmp_path, "reused.pem")
+    current_pin = _pin(b"leaf")
+    backup_pin = _pin(b"offline-backup")
+    monkeypatch.setattr(
+        "tools.prepare_dual_machine_release_materials.fetch_leaf_tls_spki_pin",
+        lambda *args, **kwargs: current_pin,
+    )
+
+    report = build_release_material_report(
+        tls_host="www.visionforge.cloud",
+        tls_port=443,
+        backup_tls_pins=(backup_pin,),
+        ticket_public_key_files=(reused_key,),
+        pair_credential_public_key_files=(reused_key,),
+        api_origin="https://www.visionforge.cloud",
+        strict_release=True,
+    )
+
+    assert report["ok"] is False
+    assert (
+        "usage-ticket and pair-credential verification keys must be disjoint"
+        in report["errors"]
+    )
+
+
+def test_non_strict_current_tls_pin_override_does_not_open_network(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     ticket_key = _write_public_key(tmp_path, "ticket.pem")
+    pair_key = _write_public_key(tmp_path, "pair.pem")
     current_pin = _pin(b"leaf")
     backup_pin = _pin(b"offline-backup")
 
@@ -215,12 +324,58 @@ def test_current_tls_pin_override_does_not_open_network(
         current_tls_pin=current_pin,
         backup_tls_pins=(backup_pin,),
         ticket_public_key_files=(ticket_key,),
+        pair_credential_public_key_files=(pair_key,),
         api_origin="https://www.visionforge.cloud",
-        strict_release=True,
+        strict_release=False,
     )
 
     assert report["ok"] is True
     assert report["tls"]["current_leaf_spki_pin"] == current_pin
+    assert report["tls"]["current_leaf_spki_pin_live_verified"] is False
+
+
+def test_strict_current_tls_pin_override_must_match_live_peer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ticket_key = _write_public_key(tmp_path, "ticket.pem")
+    configured_pin = _pin(b"mistyped-leaf")
+    live_pin = _pin(b"live-leaf")
+    backup_pin = _pin(b"offline-backup")
+    monkeypatch.setattr(
+        "tools.prepare_dual_machine_release_materials.fetch_leaf_tls_spki_pin",
+        lambda *args, **kwargs: live_pin,
+    )
+
+    with pytest.raises(ValueError, match="does not match the live leaf"):
+        build_release_material_report(
+            tls_host="www.visionforge.cloud",
+            tls_port=443,
+            current_tls_pin=configured_pin,
+            backup_tls_pins=(backup_pin,),
+            ticket_public_key_files=(ticket_key,),
+            api_origin="https://www.visionforge.cloud",
+            strict_release=True,
+        )
+
+
+def test_strict_current_tls_pin_override_records_live_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_pin = _pin(b"live-leaf")
+    monkeypatch.setattr(
+        "tools.prepare_dual_machine_release_materials.fetch_leaf_tls_spki_pin",
+        lambda *args, **kwargs: current_pin,
+    )
+
+    resolved, live_verified = resolve_current_tls_spki_pin(
+        "www.visionforge.cloud",
+        configured_pin=current_pin,
+        verify_configured_against_live=True,
+    )
+
+    assert resolved == current_pin
+    assert live_verified is True
 
 
 def test_release_material_json_contains_no_private_key_material(
@@ -228,6 +383,7 @@ def test_release_material_json_contains_no_private_key_material(
     tmp_path: Path,
 ) -> None:
     ticket_key = _write_public_key(tmp_path, "ticket.pem")
+    pair_key = _write_public_key(tmp_path, "pair.pem")
     current_pin = _pin(b"leaf")
     backup_pin = _pin(b"offline-backup")
     monkeypatch.setattr(
@@ -240,6 +396,7 @@ def test_release_material_json_contains_no_private_key_material(
         tls_port=443,
         backup_tls_pins=(backup_pin,),
         ticket_public_key_files=(ticket_key,),
+        pair_credential_public_key_files=(pair_key,),
         api_origin="https://www.visionforge.cloud",
         strict_release=True,
     )
@@ -248,7 +405,9 @@ def test_release_material_json_contains_no_private_key_material(
     assert "PRIVATE KEY" not in serialized
     assert "load_pem_private_key" not in serialized
     assert report["ticket_public_keys"][0]["modulus_bits"] == 3072
+    assert report["pair_credential_public_keys"][0]["modulus_bits"] == 3072
     assert "pem_base64" not in report["ticket_public_keys"][0]
+    assert "pem_base64" not in report["pair_credential_public_keys"][0]
     assert "VFDUAL_DUAL_MACHINE_TICKET_PUBLIC_KEYS_BASE64" not in serialized
     assert report["host_release_inputs"]["HOST_AUTHORIZATION_GATE"] == "required"
     assert report["host_release_inputs"]["HOST_FORMAL_RELEASE_STATUS"] == (

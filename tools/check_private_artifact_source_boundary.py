@@ -83,10 +83,25 @@ def load_lock(lock_path: Path) -> tuple[str, list[LockedArtifact]]:
     for key, value in required.items():
         if policy.get(key) is not value:
             raise BoundaryPolicyError(f"private-artifact policy {key} must be {value!r}")
-    if policy.get("plaintext_allowed_variants") != ["debug", "qa"]:
+    configured_variants = policy.get("plaintext_allowed_variants")
+    owner_private_allowed = policy.get(
+        "owner_private_release_plaintext_allowed"
+    )
+    if configured_variants == ["debug", "qa"] and owner_private_allowed in {
+        None,
+        False,
+    }:
+        allowed_plaintext_variants = ["debug", "qa"]
+    elif (
+        configured_variants == ["debug", "qa", "owner"]
+        and owner_private_allowed is True
+    ):
+        allowed_plaintext_variants = ["debug", "qa", "owner"]
+    else:
         raise BoundaryPolicyError(
             "private-artifact policy plaintext_allowed_variants must be "
-            "exactly ['debug', 'qa']"
+            "exactly ['debug', 'qa'], or ['debug', 'qa', 'owner'] with "
+            "explicit owner-private approval"
         )
     if (
         policy.get("source_root_environment")
@@ -137,9 +152,9 @@ def load_lock(lock_path: Path) -> tuple[str, list[LockedArtifact]]:
             raise BoundaryPolicyError(
                 f"artifact {artifact_id} must explicitly require license review"
             )
-        if entry.get("allowed_variants") != ["debug", "qa"]:
+        if entry.get("allowed_variants") != allowed_plaintext_variants:
             raise BoundaryPolicyError(
-                f"artifact {artifact_id} variants must be exactly ['debug', 'qa']"
+                f"artifact {artifact_id} variants do not match the policy"
             )
         repository_path: PurePosixPath | None = None
         if public_repository_allowed:

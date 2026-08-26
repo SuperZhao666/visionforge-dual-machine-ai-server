@@ -51,7 +51,15 @@ public final class AuthenticatedControlBootstrapRecordV1 {
         HOST_HANDSHAKE_SIGNATURE(7),
         ANDROID_HANDSHAKE_CONFIRMATION(8),
         HOST_FINISHED(9),
-        ABORT(10);
+        ABORT(10),
+        HOST_FIRST_PAIR_OFFER(11),
+        ANDROID_FIRST_PAIR_OFFER(12),
+        ANDROID_FIRST_PAIR_CONFIRMATION(13),
+        HOST_FIRST_PAIR_CONFIRMATION(14),
+        ACTIVATION_PROOF_REQUEST(15),
+        HOST_ACTIVATION_SIGNATURE(16),
+        ACTIVATION_RESULT(17),
+        FIRST_PAIR_COMPLETE(18);
 
         private final int code;
 
@@ -145,6 +153,203 @@ public final class AuthenticatedControlBootstrapRecordV1 {
         }
     }
 
+    /** Result of feeding an arbitrary TCP fragment into {@link StreamDecoder}. */
+    public enum StreamStatus {
+        NEED_MORE,
+        RECORD_READY,
+        OUTPUT_PENDING,
+        REJECTED,
+        ALLOCATION_FAILED
+    }
+
+    public static final class FeedResult {
+        private final StreamStatus status;
+        private final int consumed;
+        private final Reason rejection;
+
+        private FeedResult(
+                StreamStatus status,
+                int consumed,
+                Reason rejection) {
+            this.status = status;
+            this.consumed = consumed;
+            this.rejection = rejection;
+        }
+
+        public StreamStatus status() {
+            return status;
+        }
+
+        public int consumed() {
+            return consumed;
+        }
+
+        public Reason rejection() {
+            return rejection;
+        }
+    }
+
+    /**
+     * Bounded incremental decoder for the unauthenticated VFB1 TCP envelope.
+     *
+     * <p>It consumes at most one record at a time and returns the exact source
+     * byte count consumed. A caller can therefore retain a coalesced remainder,
+     * take the ready record, and feed the remainder as the next record. A bad
+     * header permanently rejects this decoder because the owning TCP attempt
+     * must be closed and restarted with fresh handshake state.</p>
+     */
+    public static final class StreamDecoder implements AutoCloseable {
+        private final Direction expectedDirection;
+        private final byte[] header = new byte[HEADER_BYTES];
+        private int headerBytes;
+        private byte[] encoded;
+        private int encodedBytes;
+        private boolean ready;
+        private boolean rejected;
+        private boolean closed;
+        private Reason rejection = Reason.RECORD_TOO_SHORT;
+
+        public StreamDecoder(Direction expectedDirection) {
+            this.expectedDirection = expectedDirection;
+            if (expectedDirection == null) {
+                rejected = true;
+                rejection = Reason.INVALID_DIRECTION;
+            }
+        }
+
+        public synchronized FeedResult feed(byte[] source) {
+            if (source == null) {
+                throw new IllegalArgumentException("source is required");
+            }
+            return feed(source, 0, source.length);
+        }
+
+        public synchronized FeedResult feed(
+                byte[] source,
+                int offset,
+                int length) {
+            if (source == null) {
+                throw new IllegalArgumentException("source is required");
+            }
+            if (offset < 0 || length < 0 || offset > source.length - length) {
+                throw new IndexOutOfBoundsException("invalid source range");
+            }
+            if (closed) {
+                return result(StreamStatus.REJECTED, 0, Reason.CLOSED);
+            }
+            if (rejected) {
+                return result(StreamStatus.REJECTED, 0, rejection);
+            }
+            if (ready) {
+                return result(StreamStatus.OUTPUT_PENDING, 0, null);
+            }
+
+            int consumed = 0;
+            try {
+                if (headerBytes < HEADER_BYTES) {
+                    int copied = Math.min(HEADER_BYTES - headerBytes, length);
+                    System.arraycopy(
+                            source, offset, header, headerBytes, copied);
+                    headerBytes += copied;
+                    consumed += copied;
+                    if (headerBytes < HEADER_BYTES) {
+                        return result(
+                                StreamStatus.NEED_MORE,
+                                consumed,
+                                Reason.RECORD_TOO_SHORT);
+                    }
+                    int payloadBytes = inspectHeader(
+                            header, expectedDirection);
+                    encoded = new byte[HEADER_BYTES + payloadBytes];
+                    System.arraycopy(
+                            header, 0, encoded, 0, HEADER_BYTES);
+                    encodedBytes = HEADER_BYTES;
+                    Arrays.fill(header, (byte) 0);
+                }
+
+                int copied = Math.min(
+                        encoded.length - encodedBytes,
+                        length - consumed);
+                System.arraycopy(
+                        source,
+                        offset + consumed,
+                        encoded,
+                        encodedBytes,
+                        copied);
+                encodedBytes += copied;
+                consumed += copied;
+                if (encodedBytes < encoded.length) {
+                    return result(
+                            StreamStatus.NEED_MORE,
+                            consumed,
+                            Reason.RECORD_TOO_SHORT);
+                }
+                ready = true;
+                return result(StreamStatus.RECORD_READY, consumed, null);
+            } catch (BootstrapException malformed) {
+                reject(malformed.reason());
+                return result(StreamStatus.REJECTED, consumed, rejection);
+            } catch (OutOfMemoryError allocationFailure) {
+                reject(Reason.RECORD_TOO_SHORT);
+                return result(
+                        StreamStatus.ALLOCATION_FAILED,
+                        consumed,
+                        rejection);
+            }
+        }
+
+        /** Transfers one complete encoded record and resets for the next. */
+        public synchronized byte[] takeEncodedRecord() {
+            if (closed || rejected || !ready || encoded == null) {
+                throw new IllegalStateException("no VFB1 record is ready");
+            }
+            byte[] result = encoded;
+            encoded = null;
+            encodedBytes = 0;
+            headerBytes = 0;
+            ready = false;
+            rejection = Reason.RECORD_TOO_SHORT;
+            Arrays.fill(header, (byte) 0);
+            return result;
+        }
+
+        public synchronized boolean recordReady() {
+            return ready;
+        }
+
+        public synchronized boolean failed() {
+            return rejected || closed;
+        }
+
+        @Override
+        public synchronized void close() {
+            if (closed) return;
+            closed = true;
+            ready = false;
+            clear(encoded, header);
+            encoded = null;
+            encodedBytes = 0;
+            headerBytes = 0;
+        }
+
+        private void reject(Reason reason) {
+            rejected = true;
+            ready = false;
+            rejection = reason;
+            clear(encoded, header);
+            encoded = null;
+            encodedBytes = 0;
+            headerBytes = 0;
+        }
+
+        private static FeedResult result(
+                StreamStatus status,
+                int consumed,
+                Reason rejection) {
+            return new FeedResult(status, consumed, rejection);
+        }
+    }
+
     public static boolean isAllowed(Direction direction, MessageType messageType) {
         if (direction == null || messageType == null) return false;
         if (messageType == MessageType.ABORT) return true;
@@ -153,12 +358,20 @@ public final class AuthenticatedControlBootstrapRecordV1 {
                     || messageType == MessageType.HOST_CHALLENGE_PROOF
                     || messageType == MessageType.HOST_FINAL_PROOF
                     || messageType == MessageType.HOST_HANDSHAKE_SIGNATURE
-                    || messageType == MessageType.HOST_FINISHED;
+                    || messageType == MessageType.HOST_FINISHED
+                    || messageType == MessageType.HOST_FIRST_PAIR_OFFER
+                    || messageType == MessageType.HOST_FIRST_PAIR_CONFIRMATION
+                    || messageType == MessageType.HOST_ACTIVATION_SIGNATURE
+                    || messageType == MessageType.FIRST_PAIR_COMPLETE;
         }
         return messageType == MessageType.ANDROID_CHALLENGE_REQUEST
                 || messageType == MessageType.SERVER_CHALLENGE
                 || messageType == MessageType.PAIR_GENERATION_CREDENTIAL
-                || messageType == MessageType.ANDROID_HANDSHAKE_CONFIRMATION;
+                || messageType == MessageType.ANDROID_HANDSHAKE_CONFIRMATION
+                || messageType == MessageType.ANDROID_FIRST_PAIR_OFFER
+                || messageType == MessageType.ANDROID_FIRST_PAIR_CONFIRMATION
+                || messageType == MessageType.ACTIVATION_PROOF_REQUEST
+                || messageType == MessageType.ACTIVATION_RESULT;
     }
 
     public static byte[] encode(
@@ -192,48 +405,71 @@ public final class AuthenticatedControlBootstrapRecordV1 {
         if (encoded == null || encoded.length < HEADER_BYTES) {
             throw failure(Reason.RECORD_TOO_SHORT);
         }
-        if (expectedDirection == null) {
-            throw failure(Reason.INVALID_DIRECTION);
-        }
         byte[] copy = encoded.clone();
         try {
-            ByteBuffer input = ByteBuffer.wrap(copy);
-            byte[] magic = new byte[MAGIC.length];
-            input.get(magic);
-            if (!Arrays.equals(magic, MAGIC)) {
-                throw failure(Reason.INVALID_MAGIC);
-            }
-            if (Byte.toUnsignedInt(input.get()) != VERSION) {
-                throw failure(Reason.UNSUPPORTED_VERSION);
-            }
-            if (Byte.toUnsignedInt(input.get()) != HEADER_BYTES) {
-                throw failure(Reason.INVALID_HEADER_SIZE);
-            }
-            Direction direction = Direction.fromCode(
-                    Byte.toUnsignedInt(input.get()));
-            if (direction != expectedDirection) {
-                throw failure(Reason.UNEXPECTED_DIRECTION);
-            }
-            MessageType messageType = MessageType.fromCode(
-                    Byte.toUnsignedInt(input.get()));
-            if (!isAllowed(direction, messageType)) {
-                throw failure(Reason.DIRECTION_MISMATCH);
-            }
-            long payloadLength = Integer.toUnsignedLong(input.getInt());
-            if (payloadLength == 0L) {
-                throw failure(Reason.PAYLOAD_EMPTY);
-            }
-            if (payloadLength > MAX_PAYLOAD_BYTES) {
-                throw failure(Reason.PAYLOAD_TOO_LARGE);
-            }
-            if (payloadLength != input.remaining()) {
+            int payloadLength = inspectHeader(copy, expectedDirection);
+            if (HEADER_BYTES + payloadLength != copy.length) {
                 throw failure(Reason.LENGTH_MISMATCH);
             }
-            byte[] payload = new byte[(int) payloadLength];
+            ByteBuffer input = ByteBuffer.wrap(copy);
+            input.position(6);
+            Direction direction = Direction.fromCode(
+                    Byte.toUnsignedInt(input.get()));
+            MessageType messageType = MessageType.fromCode(
+                    Byte.toUnsignedInt(input.get()));
+            input.position(HEADER_BYTES);
+            byte[] payload = new byte[payloadLength];
             input.get(payload);
             return new Record(direction, messageType, payload);
         } finally {
             Arrays.fill(copy, (byte) 0);
+        }
+    }
+
+    private static int inspectHeader(
+            byte[] encoded,
+            Direction expectedDirection) throws BootstrapException {
+        if (encoded == null || encoded.length < HEADER_BYTES) {
+            throw failure(Reason.RECORD_TOO_SHORT);
+        }
+        if (expectedDirection == null) {
+            throw failure(Reason.INVALID_DIRECTION);
+        }
+        ByteBuffer input = ByteBuffer.wrap(encoded, 0, HEADER_BYTES);
+        byte[] magic = new byte[MAGIC.length];
+        input.get(magic);
+        if (!Arrays.equals(magic, MAGIC)) {
+            throw failure(Reason.INVALID_MAGIC);
+        }
+        if (Byte.toUnsignedInt(input.get()) != VERSION) {
+            throw failure(Reason.UNSUPPORTED_VERSION);
+        }
+        if (Byte.toUnsignedInt(input.get()) != HEADER_BYTES) {
+            throw failure(Reason.INVALID_HEADER_SIZE);
+        }
+        Direction direction = Direction.fromCode(
+                Byte.toUnsignedInt(input.get()));
+        if (direction != expectedDirection) {
+            throw failure(Reason.UNEXPECTED_DIRECTION);
+        }
+        MessageType messageType = MessageType.fromCode(
+                Byte.toUnsignedInt(input.get()));
+        if (!isAllowed(direction, messageType)) {
+            throw failure(Reason.DIRECTION_MISMATCH);
+        }
+        long payloadLength = Integer.toUnsignedLong(input.getInt());
+        if (payloadLength == 0L) {
+            throw failure(Reason.PAYLOAD_EMPTY);
+        }
+        if (payloadLength > MAX_PAYLOAD_BYTES) {
+            throw failure(Reason.PAYLOAD_TOO_LARGE);
+        }
+        return (int) payloadLength;
+    }
+
+    private static void clear(byte[]... values) {
+        for (byte[] value : values) {
+            if (value != null) Arrays.fill(value, (byte) 0);
         }
     }
 

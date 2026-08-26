@@ -717,6 +717,20 @@ private:
             binding.host_key_sha256, binding.android_key_sha256);
 }
 
+[[nodiscard]] bool expected_confirmed_peer_binding_valid(
+    const UsageLeaseBinding& binding) noexcept {
+    return lower_hex_valid(binding.entitlement_id, 32U) &&
+        lower_hex_valid(binding.pair_id, 32U) &&
+        binding.session_id.empty() &&
+        binding.protocol_version == kUsageLeaseProtocolVersion &&
+        binding.revocation_version > 0U &&
+        lower_hex_valid(binding.host_key_sha256, 64U) &&
+        lower_hex_valid(binding.android_key_sha256, 64U) &&
+        lower_hex_valid(binding.channel_binding_sha256, 64U) &&
+        !constant_time_equal(
+            binding.host_key_sha256, binding.android_key_sha256);
+}
+
 [[nodiscard]] bool claims_valid(
     const ParsedClaims& claims,
     const std::uint64_t trusted_now_epoch) {
@@ -757,11 +771,13 @@ private:
 
 [[nodiscard]] bool claims_match_expected(
     const ParsedClaims& claims,
-    const UsageLeaseBinding& expected) noexcept {
+    const UsageLeaseBinding& expected,
+    const bool accept_signed_session_id) noexcept {
     return constant_time_equal(
                claims.entitlement_id, expected.entitlement_id) &&
         constant_time_equal(claims.pair_id, expected.pair_id) &&
-        constant_time_equal(claims.session_id, expected.session_id) &&
+        (accept_signed_session_id ||
+            constant_time_equal(claims.session_id, expected.session_id)) &&
         claims.protocol_version == expected.protocol_version &&
         claims.revocation_version == expected.revocation_version &&
         constant_time_equal(
@@ -929,7 +945,34 @@ HostUsageLeaseVerificationResultV1 HostUsageLeaseVerifierV1::verify(
     const std::string_view compact_token_ascii,
     const UsageLeaseBinding& expected_binding,
     const std::uint64_t trusted_now_epoch) const noexcept {
-    if (!expected_binding_valid(expected_binding)) {
+    return verify_internal(
+        compact_token_ascii,
+        expected_binding,
+        trusted_now_epoch,
+        false);
+}
+
+HostUsageLeaseVerificationResultV1
+HostUsageLeaseVerifierV1::verify_for_confirmed_peer_with_signed_session(
+    const std::string_view compact_token_ascii,
+    const UsageLeaseBinding& expected_peer_binding,
+    const std::uint64_t trusted_now_epoch) const noexcept {
+    return verify_internal(
+        compact_token_ascii,
+        expected_peer_binding,
+        trusted_now_epoch,
+        true);
+}
+
+HostUsageLeaseVerificationResultV1 HostUsageLeaseVerifierV1::verify_internal(
+    const std::string_view compact_token_ascii,
+    const UsageLeaseBinding& expected_binding,
+    const std::uint64_t trusted_now_epoch,
+    const bool accept_signed_session_id) const noexcept {
+    const bool binding_valid = accept_signed_session_id
+        ? expected_confirmed_peer_binding_valid(expected_binding)
+        : expected_binding_valid(expected_binding);
+    if (!binding_valid) {
         return {std::nullopt, error(
             HostUsageLeaseVerificationErrorCodeV1::source_invalid)};
     }
@@ -993,7 +1036,8 @@ HostUsageLeaseVerificationResultV1 HostUsageLeaseVerifierV1::verify(
         ParsedClaims parsed;
         if (!parse_canonical_payload(payload_raw, parsed) ||
             !claims_valid(parsed, trusted_now_epoch) ||
-            !claims_match_expected(parsed, expected_binding)) {
+            !claims_match_expected(
+                parsed, expected_binding, accept_signed_session_id)) {
             return {std::nullopt, error(
                 HostUsageLeaseVerificationErrorCodeV1::token_invalid)};
         }

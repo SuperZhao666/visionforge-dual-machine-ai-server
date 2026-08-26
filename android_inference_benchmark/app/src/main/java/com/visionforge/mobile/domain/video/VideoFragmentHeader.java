@@ -22,7 +22,8 @@ public record VideoFragmentHeader(
 
     public static final int PROTOCOL_VERSION = 2;
     public static final int BYTE_LENGTH = 20;
-    public static final int PAYLOAD_BYTES = 1_400;
+    /** Inner VFP2 payload; the mandatory VFA2 envelope adds the remaining 48 bytes. */
+    public static final int PAYLOAD_BYTES = 1_344;
     public static final int MAX_ACCESS_UNIT_BYTES = 2 * 1024 * 1024;
     public static final int MAX_FRAGMENT_COUNT =
             (MAX_ACCESS_UNIT_BYTES + PAYLOAD_BYTES - 1) / PAYLOAD_BYTES;

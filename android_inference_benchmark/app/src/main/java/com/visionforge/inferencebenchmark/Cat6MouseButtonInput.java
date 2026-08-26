@@ -230,10 +230,8 @@ final class Cat6MouseButtonInput implements ControlButtonInput, AutoCloseable {
         try {
             socket = new DatagramSocket(null);
             socket.setReuseAddress(false);
-            endpoint.network.bindSocket(socket);
-            socket.bind(new InetSocketAddress(
-                    InetAddress.getByName(endpoint.localIpv4),
-                    Cat6MouseButtonProtocol.PORT));
+            SelectedNetworkDatagramSocket.bind(
+                    endpoint, socket, Cat6MouseButtonProtocol.PORT);
             socket.setSoTimeout(RECEIVE_TIMEOUT_MILLIS);
             if (generation.get() != workerGeneration) return;
             activeSocket = socket;

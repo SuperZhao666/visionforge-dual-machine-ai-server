@@ -4,7 +4,7 @@ import java.io.IOException;
 import java.net.DatagramSocket;
 
 /** Minimal test-only Android Network stub for dependency-free JavaCompile gates. */
-public final class Network {
+public class Network {
     private final long networkHandle;
 
     public Network() {

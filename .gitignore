@@ -61,6 +61,7 @@ build-artifacts/
 **/*secret*.pem
 
 # Release/staging output
+/out/
 releases/
 _release_staging/
 _release_validation/

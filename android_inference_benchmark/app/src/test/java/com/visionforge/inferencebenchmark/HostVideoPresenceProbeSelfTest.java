@@ -38,7 +38,10 @@ final class HostVideoPresenceProbeSelfTest {
         byte[] repeated = packet(
                 HostVideoPresenceProbe.VIDEO_REPEATED_PACKET_MAGIC, 1, 2, 12);
         byte[] maximumFragmentCount = packet(
-                HostVideoPresenceProbe.VIDEO_PACKET_MAGIC, 1_497, 1_498, 1);
+                HostVideoPresenceProbe.VIDEO_PACKET_MAGIC,
+                VideoWireProtocol.MAX_FRAGMENT_COUNT - 1,
+                VideoWireProtocol.MAX_FRAGMENT_COUNT,
+                1);
         require(HostVideoPresenceProbe.isValidVideoDatagram(
                 normal, normal.length));
         require(HostVideoPresenceProbe.isValidVideoDatagram(
@@ -78,7 +81,10 @@ final class HostVideoPresenceProbeSelfTest {
                 indexOutOfRange, indexOutOfRange.length));
 
         byte[] excessiveCount = valid.clone();
-        writeUnsignedShort(excessiveCount, 18, 1_499);
+        writeUnsignedShort(
+                excessiveCount,
+                18,
+                VideoWireProtocol.MAX_FRAGMENT_COUNT + 1);
         require(!HostVideoPresenceProbe.isValidVideoDatagram(
                 excessiveCount, excessiveCount.length));
         require(HostVideoPresenceProbe.logicalFrameSequence(

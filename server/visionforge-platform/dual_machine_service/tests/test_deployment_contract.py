@@ -53,7 +53,7 @@ def test_sidecar_environment_uses_independent_database_and_keys() -> None:
         "DUAL_MACHINE_PAIR_CREDENTIAL_PRIVATE_KEY_PASSWORD=",
         "DUAL_MACHINE_PAIR_CREDENTIAL_TTL_SECONDS=15",
         "DUAL_MACHINE_USAGE_LEASE_TTL_SECONDS=5",
-        "DUAL_MACHINE_USAGE_RENEWAL_WINDOW_SECONDS=2",
+        "DUAL_MACHINE_USAGE_RENEWAL_WINDOW_SECONDS=4",
     )
     assert all(item in environment for item in required)
     assert "vf_dual_machine.db" in environment

@@ -146,7 +146,9 @@ create_sidecar_secrets() {
     printf 'DUAL_MACHINE_PAIR_CREDENTIAL_PRIVATE_KEY_PASSWORD=\n'
     printf 'DUAL_MACHINE_PAIR_CREDENTIAL_TTL_SECONDS=15\n'
     printf 'DUAL_MACHINE_USAGE_LEASE_TTL_SECONDS=5\n'
-    printf 'DUAL_MACHINE_USAGE_RENEWAL_WINDOW_SECONDS=2\n'
+    # A successor remains contiguous (nbf=current expiry); this wider window
+    # only absorbs WAN/TLS/signing latency before the five-second lease closes.
+    printf 'DUAL_MACHINE_USAGE_RENEWAL_WINDOW_SECONDS=4\n'
   } > "${env_tmp}"
   unset license_secret token_secret admin_bridge_secret
   chown "${service_user}:${service_user}" "${env_tmp}"

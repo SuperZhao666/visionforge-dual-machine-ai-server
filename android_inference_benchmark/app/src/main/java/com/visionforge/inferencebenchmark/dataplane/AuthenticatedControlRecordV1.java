@@ -113,7 +113,13 @@ public final class AuthenticatedControlRecordV1 {
         LEASE_ACCEPT(2),
         LEASE_COMMIT(3),
         SESSION_CLOSE(4),
-        SESSION_CLOSE_ACK(5);
+        SESSION_CLOSE_ACK(5),
+        ENTITLEMENT_STATUS_SIGN_REQUEST(6),
+        ENTITLEMENT_STATUS_SIGN_RESPONSE(7),
+        USAGE_AUTHORIZATION_SIGN_REQUEST(8),
+        USAGE_AUTHORIZATION_SIGN_RESPONSE(9),
+        HOST_START_INTENT_CLAIM_REQUEST(10),
+        HOST_START_INTENT_CLAIM_RESPONSE(11);
 
         private final int wireCode;
 
@@ -131,6 +137,11 @@ public final class AuthenticatedControlRecordV1 {
             }
             return null;
         }
+    }
+
+    /** Shared framing predicate so TCP transport cannot lag new VFC1 types. */
+    public static boolean isKnownMessageTypeWireCode(int wireCode) {
+        return MessageType.fromWireCode(wireCode) != null;
     }
 
     /** Immutable key/counter/replay domain shared by every control message type. */

@@ -6,5 +6,9 @@ namespace vfdual {
 
 inline constexpr std::wstring_view kHostReleaseVersion{
     L"@VFDUAL_RELEASE_VERSION@"};
+inline constexpr std::string_view kHostReleaseVersionAscii{
+    "@VFDUAL_RELEASE_VERSION@"};
+inline constexpr std::string_view kHostClientProtocolVersion{
+    "@VFDUAL_CLIENT_PROTOCOL_VERSION@"};
 
 }  // namespace vfdual

@@ -150,6 +150,8 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
 
     private volatile Attachment attachment;
     private volatile DualMachineCardAuthorizationCoordinator cardCoordinator;
+    private volatile FirstPairingActivationCapability
+            firstPairingActivationCapability;
     private volatile DualMachineFormalUsageCoordinator formalCoordinator;
     private volatile DualMachineFormalUsageCoordinator
             retiringFormalCoordinator;
@@ -219,6 +221,24 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
     @FunctionalInterface
     public interface CheckedGenerationCommit {
         void run() throws IOException, GeneralSecurityException;
+    }
+
+    @FunctionalInterface
+    interface FirstPairingActivationCompletion {
+        void complete(DualMachineEntitlementRecord entitlement)
+                throws IOException, GeneralSecurityException;
+    }
+
+    private static final class FirstPairingActivationCapability {
+        final DualMachineCardAuthorizationCoordinator coordinator;
+        final FirstPairingActivationCompletion completion;
+
+        FirstPairingActivationCapability(
+                DualMachineCardAuthorizationCoordinator coordinator,
+                FirstPairingActivationCompletion completion) {
+            this.coordinator = coordinator;
+            this.completion = completion;
+        }
     }
 
     public DualMachineAuthorizationRuntime(
@@ -305,6 +325,7 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
                 throw new GeneralSecurityException(
                         "older formal usage generation is unresolved");
             }
+            firstPairingActivationCapability = null;
             previousFormal = formalCoordinator;
             previousAttachment = attachment;
             if (previousFormal == null) {
@@ -402,6 +423,26 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
     }
 
     /**
+     * Returns whether card activation has a live proof-producing authority.
+     * This deliberately does not imply an authenticated formal-use session or
+     * data-plane permission: a confirmed fresh pairing only owns activation.
+     */
+    public boolean hasCardActivationAuthority() {
+        synchronized (attachmentLock) {
+            if (closed) return false;
+            Attachment current = attachment;
+            boolean authenticatedAuthority =
+                    retiringFormalCoordinator == null
+                            && !attachmentMutationInProgress
+                            && current != null
+                            && cardCoordinator != null
+                            && current.isAuthenticated();
+            return authenticatedAuthority
+                    || firstPairingActivationCapability != null;
+        }
+    }
+
+    /**
      * Returns the exact channel binding owned by the currently authenticated
      * Host generation. The value is never reconstructed from route metadata.
      */
@@ -451,12 +492,65 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
 
     public DualMachineEntitlementRecord activateCard(String cardCode)
             throws IOException, GeneralSecurityException {
-        return requireCardCoordinator().activateCard(cardCode);
+        DualMachineCardAuthorizationCoordinator authenticated =
+                authenticatedCardCoordinatorOrNull();
+        if (authenticated != null) return authenticated.activateCard(cardCode);
+        FirstPairingActivationCapability firstPair =
+                requireFirstPairingActivationCapability();
+        DualMachineEntitlementRecord entitlement =
+                firstPair.coordinator.activateCard(cardCode);
+        completeFirstPairingActivation(firstPair, entitlement);
+        return entitlement;
     }
 
     public DualMachineEntitlementRecord resumePendingActivation()
             throws IOException, GeneralSecurityException {
-        return requireCardCoordinator().resumePendingActivation();
+        DualMachineCardAuthorizationCoordinator authenticated =
+                authenticatedCardCoordinatorOrNull();
+        if (authenticated != null) {
+            return authenticated.resumePendingActivation();
+        }
+        FirstPairingActivationCapability firstPair =
+                requireFirstPairingActivationCapability();
+        DualMachineEntitlementRecord entitlement =
+                firstPair.coordinator.resumePendingActivation();
+        completeFirstPairingActivation(firstPair, entitlement);
+        return entitlement;
+    }
+
+    void attachFirstPairingActivationHost(
+            DualMachineCardAuthorizationCoordinator.IdentityBinding
+                    hostIdentity,
+            DualMachineCardAuthorizationCoordinator.EpochClock epochClock,
+            FirstPairingActivationCompletion completion)
+            throws GeneralSecurityException {
+        if (hostIdentity == null || epochClock == null || completion == null) {
+            throw new IllegalArgumentException(
+                    "first-pair activation dependencies are required");
+        }
+        DualMachineCardAuthorizationCoordinator coordinator =
+                new DualMachineCardAuthorizationCoordinator(
+                        sidecar,
+                        stateMachine,
+                        entitlementStore,
+                        pendingActivationStore,
+                        hostIdentity,
+                        androidIdentity,
+                        androidIdentityAlias,
+                        idSource::nextHex128,
+                        epochClock);
+        synchronized (attachmentLock) {
+            requireOpen();
+            if (attachment != null || cardCoordinator != null
+                    || formalCoordinator != null
+                    || stateMachine.snapshot().entitlement != null) {
+                throw new GeneralSecurityException(
+                        "fresh-pair activation is unavailable");
+            }
+            firstPairingActivationCapability =
+                    new FirstPairingActivationCapability(
+                            coordinator, completion);
+        }
     }
 
     public DualMachineFormalUsageStateMachine.Snapshot refreshStatus()
@@ -648,6 +742,55 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Claims a due retry for the exact current formal generation after its
+     * Host authentication source has gone away. The immutable lifecycle owner
+     * already contains the signed stop material, so this path neither
+     * reconstructs Host authority nor authorizes a new start.
+     */
+    public FormalUsageLifecycleHandle
+            beginFormalUsageLifecycleStopRetryWithoutAuthenticatedHost(
+            BooleanSupplier claimCurrentGeneration) {
+        if (claimCurrentGeneration == null) {
+            throw new IllegalArgumentException(
+                    "formal stop retry claim is required");
+        }
+        synchronized (attachmentLock) {
+            Attachment currentAttachment = attachment;
+            DualMachineFormalUsageCoordinator coordinator =
+                    formalCoordinator;
+            if (closed || retiringFormalCoordinator != null
+                    || attachmentMutationInProgress
+                    || currentAttachment == null
+                    || cardCoordinator == null
+                    || coordinator == null
+                    || currentAttachment.isAuthenticated()
+                    || stateMachine.snapshot().state
+                    != DualMachineFormalUsageStateMachine.State.STOPPING) {
+                return null;
+            }
+            DualMachineFormalUsageCoordinator.LifecycleStopHandle lifecycle =
+                    coordinator.captureLifecycleStop();
+            if (lifecycle == null
+                    || !formalStopRetryPolicy.canAttempt(
+                    lifecycle.startRequestId,
+                    lifecycle.channelBindingSha256,
+                    monotonicNowNanos())
+                    || !claimCurrentGeneration.getAsBoolean()) {
+                return null;
+            }
+            cancelActiveStatusRefreshLocked();
+            long stopEpoch = ++lifecycleStopEpoch;
+            coordinator.requestImmediateLocalStop();
+            return new FormalUsageLifecycleHandle(
+                    this,
+                    coordinator,
+                    lifecycle.startCancellationHandle(),
+                    lifecycle,
+                    stopEpoch);
+        }
+    }
+
     /** Captures the exact retiring generation before current-receipt work. */
     public FormalUsageLifecycleHandle
             captureRetiringFormalUsageStopForMaintenance(
@@ -741,6 +884,12 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
                 .renewAfterObservedProgress();
     }
 
+    public long reconcileKnownAndroidPipelineRestart(
+            CurrentGenerationReceipt receipt) throws IOException {
+        return formalCoordinatorForReceipt(receipt)
+                .reconcileKnownAndroidPipelineRestart();
+    }
+
     public DualMachineFormalUsageCoordinator.RenewalOutcome
             retryPendingRenewal()
             throws IOException, GeneralSecurityException {
@@ -758,6 +907,11 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
             CurrentGenerationReceipt receipt) {
         return formalCoordinatorForReceipt(receipt)
                 .latestRenewalProgressObservation();
+    }
+
+    public DualMachineFormalUsageCoordinator.RenewalTiming
+            latestRenewalTiming(CurrentGenerationReceipt receipt) {
+        return formalCoordinatorForReceipt(receipt).latestRenewalTiming();
     }
 
     public long millisUntilRenewalWindow(long renewalWindowSeconds) {
@@ -897,6 +1051,7 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
         synchronized (attachmentLock) {
             if (closed) return;
             closed = true;
+            firstPairingActivationCapability = null;
         }
         detachAuthenticatedHost();
     }
@@ -934,17 +1089,39 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
         stateMachine.markCardActivationPending();
     }
 
-    private DualMachineCardAuthorizationCoordinator requireCardCoordinator()
-            throws GeneralSecurityException {
+    private DualMachineCardAuthorizationCoordinator
+            authenticatedCardCoordinatorOrNull() {
         Attachment current = attachment;
         DualMachineCardAuthorizationCoordinator coordinator = cardCoordinator;
-        if (closed || current == null || coordinator == null
-                || !current.isAuthenticated()) {
-            detachAuthenticatedHost();
+        return !closed && current != null && coordinator != null
+                && current.isAuthenticated() ? coordinator : null;
+    }
+
+    private FirstPairingActivationCapability
+            requireFirstPairingActivationCapability()
+            throws GeneralSecurityException {
+        FirstPairingActivationCapability capability =
+                firstPairingActivationCapability;
+        if (closed || capability == null) {
             throw new GeneralSecurityException(
-                    "authenticated Host session is unavailable");
+                    "confirmed fresh-pair activation is unavailable");
         }
-        return coordinator;
+        return capability;
+    }
+
+    private void completeFirstPairingActivation(
+            FirstPairingActivationCapability capability,
+            DualMachineEntitlementRecord entitlement)
+            throws IOException, GeneralSecurityException {
+        try {
+            capability.completion.complete(entitlement);
+        } finally {
+            synchronized (attachmentLock) {
+                if (firstPairingActivationCapability == capability) {
+                    firstPairingActivationCapability = null;
+                }
+            }
+        }
     }
 
     private DualMachineFormalUsageCoordinator requireFormalCoordinator() {
@@ -1057,8 +1234,9 @@ public final class DualMachineAuthorizationRuntime implements AutoCloseable {
             DualMachineFormalUsageCoordinator.LifecycleStopHandle lifecycle,
             DualMachineFormalUsageCoordinator.StopOutcome outcome) {
         if (lifecycle == null) return;
-        if ((outcome != null && outcome.serverConfirmed)
-                || !formal.hasPendingStartCancellation()) {
+        if (outcome != null
+                && (outcome.serverConfirmed
+                || outcome.definitelyNotStarted)) {
             formalStopRetryPolicy.recordResolved(
                     lifecycle.startRequestId,
                     lifecycle.channelBindingSha256);

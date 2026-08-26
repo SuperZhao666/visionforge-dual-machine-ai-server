@@ -38,6 +38,7 @@ namespace {
 constexpr char kTag[] = "VisionForgeMobile";
 constexpr std::uint16_t kMinimumPort = 1024;
 constexpr std::uint16_t kIdrRequestPort = 5001;
+constexpr std::uint16_t kAuthenticatedLoopbackVideoPort = 15000;
 constexpr std::uint16_t kCat6ReadyPort = 5003;
 constexpr std::uint16_t kCat6ProbePort = 5004;
 constexpr std::size_t kCat6ProbeBytes = 1200;
@@ -204,7 +205,9 @@ public:
     network_handle_bound_ = false;
     local_ipv4_bind_fallback_ = false;
     network_handle_bind_errno_ = 0;
-    if (port < kMinimumPort || network_handle == NETWORK_UNSPECIFIED) {
+    if (port != kAuthenticatedLoopbackVideoPort ||
+        local_ipv4 != "127.0.0.1" || expected_source_ipv4 != "127.0.0.1" ||
+        network_handle == NETWORK_UNSPECIFIED) {
       startup_stage_ = ReceiverStartupStage::invalid_arguments;
       startup_errno_ = EINVAL;
       return false;
@@ -237,8 +240,11 @@ public:
       startup_errno_ = errno;
       return false;
     }
-    const int network_bind_result =
-        ::android_setsocknetwork(network_handle, socket);
+    const bool authenticated_loopback_relay =
+        local_address.s_addr == htonl(INADDR_LOOPBACK) &&
+        expected_source_address.s_addr == htonl(INADDR_LOOPBACK);
+    const int network_bind_result = authenticated_loopback_relay
+        ? 0 : ::android_setsocknetwork(network_handle, socket);
     if (network_bind_result != 0) {
       const int network_bind_error =
           normalized_network_bind_error(network_bind_result);
@@ -254,7 +260,7 @@ public:
       // permission-denied results may use this fail-closed route fallback.
       local_ipv4_bind_fallback_ = true;
       network_handle_bind_errno_ = network_bind_error;
-    } else {
+    } else if (!authenticated_loopback_relay) {
       network_handle_bound_ = true;
     }
     if (!set_receive_timeout(socket, kInitialReceiveTimeoutUs)) {
@@ -1298,7 +1304,7 @@ Java_com_visionforge_inferencebenchmark_QnnHtpBridge_startNativeVideoReceiver(
     JNIEnv* environment, jclass, jstring local_ipv4, jstring expected_source_ipv4,
     jint port, jlong network_handle) {
   if (local_ipv4 == nullptr || expected_source_ipv4 == nullptr ||
-      port < kMinimumPort || port > 65535 || network_handle <= 0) {
+      port != kAuthenticatedLoopbackVideoPort || network_handle <= 0) {
     return JNI_FALSE;
   }
   const char* local_ipv4_chars = environment->GetStringUTFChars(local_ipv4, nullptr);

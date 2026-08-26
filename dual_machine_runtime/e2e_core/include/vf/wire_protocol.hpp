@@ -13,7 +13,7 @@ namespace vf {
 inline constexpr std::size_t kWireHeaderSize = 20;
 inline constexpr std::array<std::uint8_t, 4> kDataMagic{'V', 'F', '2', 'G'};
 inline constexpr std::array<std::uint8_t, 4> kRepeatMagic{'V', 'F', '2', 'R'};
-inline constexpr std::size_t kVideoPayloadBytes = 1400;
+inline constexpr std::size_t kVideoPayloadBytes = 1344;
 inline constexpr std::size_t kMaxAccessUnitBytes = 2U * 1024U * 1024U;
 inline constexpr std::uint16_t kMaxFragments = static_cast<std::uint16_t>(
     (kMaxAccessUnitBytes + kVideoPayloadBytes - 1U) / kVideoPayloadBytes);

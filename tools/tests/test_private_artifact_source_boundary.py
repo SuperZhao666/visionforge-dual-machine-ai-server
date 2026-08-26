@@ -190,6 +190,27 @@ class PrivateArtifactSourceBoundaryTests(unittest.TestCase):
         ):
             self.scan(["private-artifacts.lock.json"])
 
+    def test_explicit_owner_private_variant_preserves_source_boundary(self) -> None:
+        payload = json.loads(self.lock.read_text(encoding="utf-8"))
+        payload["policy"]["owner_private_release_plaintext_allowed"] = True
+        payload["policy"]["plaintext_allowed_variants"] = [
+            "debug",
+            "qa",
+            "owner",
+        ]
+        payload["artifacts"][0]["allowed_variants"] = [
+            "debug",
+            "qa",
+            "owner",
+        ]
+        self.lock.write_text(json.dumps(payload), encoding="utf-8")
+        self.write("src/manifest.json", b"metadata-only")
+
+        result = self.scan(["src/manifest.json", "private-artifacts.lock.json"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([], result["violations"])
+
 
 if __name__ == "__main__":
     unittest.main()

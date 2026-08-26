@@ -69,6 +69,7 @@ public final class DualMachineHttpsJsonTransport {
         }
         HttpsURLConnection connection = (HttpsURLConnection) opened;
         configure(connection, canonicalJson.length);
+        boolean reusableSuccess = false;
         try {
             // connect() performs TLS/hostname validation. Pinning is checked
             // before getOutputStream() can expose the sensitive request body.
@@ -84,9 +85,17 @@ public final class DualMachineHttpsJsonTransport {
                 throw new SidecarHttpException(status, response);
             }
             requireJsonContentType(connection.getContentType());
+            // Both streams are closed and the bounded response is completely
+            // consumed. Do not call disconnect() on this successful path:
+            // Android can return the already pinned TLS socket to its
+            // keep-alive pool, which keeps five-second lease renewals inside
+            // their signed window without weakening the lease deadline.
+            reusableSuccess = true;
             return response;
         } finally {
-            connection.disconnect();
+            if (!reusableSuccess) {
+                connection.disconnect();
+            }
         }
     }
 

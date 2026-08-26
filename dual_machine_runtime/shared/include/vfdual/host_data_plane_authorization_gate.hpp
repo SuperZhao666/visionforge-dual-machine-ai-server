@@ -25,7 +25,9 @@ namespace vfdual {
  */
 class HostDataPlaneAuthorizationGate final {
 public:
-    using MonotonicSecondsSource = std::function<std::uint64_t()>;
+    // Millisecond precision avoids false rollback when two independently
+    // truncated second counters cross their boundaries at different times.
+    using MonotonicMillisecondsSource = std::function<std::uint64_t()>;
 
     struct Snapshot final {
         bool peer_confirmed{};
@@ -39,7 +41,8 @@ public:
     };
 
     HostDataPlaneAuthorizationGate();
-    explicit HostDataPlaneAuthorizationGate(MonotonicSecondsSource monotonic_seconds);
+    explicit HostDataPlaneAuthorizationGate(
+        MonotonicMillisecondsSource monotonic_milliseconds);
 
     HostDataPlaneAuthorizationGate(const HostDataPlaneAuthorizationGate&) = delete;
     HostDataPlaneAuthorizationGate& operator=(
@@ -74,17 +77,17 @@ public:
 private:
     struct TrustedTimeAnchor final {
         std::uint64_t trusted_epoch{};
-        std::uint64_t monotonic_seconds{};
+        std::uint64_t monotonic_milliseconds{};
     };
 
-    [[nodiscard]] static std::uint64_t default_monotonic_seconds() noexcept;
+    [[nodiscard]] static std::uint64_t default_monotonic_milliseconds() noexcept;
     [[nodiscard]] bool read_monotonic_locked(std::uint64_t& destination) noexcept;
     [[nodiscard]] bool derive_trusted_now_locked(
         std::uint64_t& destination) noexcept;
     [[nodiscard]] Snapshot snapshot_locked() noexcept;
     void revoke_locked() noexcept;
 
-    MonotonicSecondsSource monotonic_seconds_;
+    MonotonicMillisecondsSource monotonic_milliseconds_;
     std::unique_ptr<UsageLeaseGate> lease_gate_;
     TrustedTimeAnchor anchor_{};
     bool peer_confirmed_{};

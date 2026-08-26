@@ -917,7 +917,9 @@ def _base_source_contracts(root: Path) -> tuple[SourceContract, ...]:
             path=root / "tests" / "test_prepare_dual_machine_release_materials.py",
             required=(
                 "test_strict_release_fails_without_backup_pin_or_ticket_key",
-                "test_current_tls_pin_override_does_not_open_network",
+                "test_non_strict_current_tls_pin_override_does_not_open_network",
+                "test_strict_current_tls_pin_override_must_match_live_peer",
+                "test_strict_current_tls_pin_override_records_live_verification",
                 "test_release_material_json_contains_no_private_key_material",
                 "test_release_material_writer_emits_public_gradle_env_files",
                 "write_android_gradle_env_files",
@@ -1233,8 +1235,11 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
                 "!actions.contains(\"onLogin\")",
                 "authorization_username",
                 "authorization_password",
-                "authorization.balanceKnown",
-                "R.string.authorization_balance_pending",
+                "authorization.displayBalanceKnown",
+                "authorization_balance_unavailable",
+                "R.string.authorization_balance_not_activated",
+                "R.string.authorization_balance_activating",
+                "R.string.authorization_balance_verifying",
                 "if (authorization.permanent)",
             ),
         ),
@@ -1242,12 +1247,16 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
             name="release-material-generator-public-only",
             path=root / "tools" / "prepare_dual_machine_release_materials.py",
             required=(
-                "This tool never reads ticket private keys.",
+                "This tool never reads ticket or pair-credential private keys.",
                 "fetch_leaf_tls_spki_pin",
                 "--tls-connect-host",
                 "--current-tls-pin",
-                "ticket public key must be RSA-3072 or stronger",
+                "_load_rsa_public_key_material",
+                'material_name="pair credential"',
+                "public key must be RSA-3072 or stronger",
                 "VISIONFORGE_DUAL_MACHINE_TLS_SPKI_PINS",
+                "VISIONFORGE_DUAL_MACHINE_PAIR_CREDENTIAL_PUBLIC_KEY_FILE",
+                "VISIONFORGE_DUAL_MACHINE_PREVIOUS_PAIR_CREDENTIAL_PUBLIC_KEY_FILES",
                 "host_release_inputs",
                 '"HOST_AUTHORIZATION_GATE": "required"',
                 '"HOST_RELEASE_SECURITY_INPUTS": "public_verification_keyring_required"',
@@ -1278,12 +1287,18 @@ def _source_contracts(root: Path = ROOT) -> tuple[SourceContract, ...]:
             ),
             required=(
                 "卡密剩余时间",
-                "待同步",
+                "未激活",
+                "激活中",
+                "核验中",
                 "永久",
                 "已自动布防",
-                "Host 只负责推送屏幕画面",
+                "等待电脑认证",
+                "卡密已保留。请先启动同一网络中的 VF Host 并完成认证，再点击激活。",
+                "只更新设备绑定，不重复充值或扣时",
             ),
             forbidden=(
+                "待同步",
+                "认证完成前不会发送卡密，也不会改变服务器状态",
                 "卡密与剩余时间",
                 "主机配置包",
                 "配对包",
@@ -3688,20 +3703,63 @@ def _python_ast_route_literals(path: Path) -> tuple[str, ...]:
     except (OSError, UnicodeError, SyntaxError):
         return ()
 
-    prefixes: list[str] = []
+    api_router_imports = []
+    api_router_bindings: list[ast.AST] = []
+    router_bindings: list[ast.AST] = []
     for statement in tree.body:
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            continue
-        target = statement.targets[0]
-        call = statement.value
-        if (
-            not isinstance(target, ast.Name)
-            or target.id != "router"
-            or not isinstance(call, ast.Call)
-            or not isinstance(call.func, ast.Name)
-            or call.func.id != "APIRouter"
-        ):
-            continue
+        if isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                bound_name = alias.asname or alias.name
+                if bound_name == "APIRouter":
+                    api_router_bindings.append(alias)
+                    if (
+                        statement.module == "fastapi"
+                        and alias.name == "APIRouter"
+                        and alias.asname is None
+                    ):
+                        api_router_imports.append(alias)
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if (alias.asname or alias.name.split(".", 1)[0]) == "APIRouter":
+                    api_router_bindings.append(alias)
+        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if statement.name == "APIRouter":
+                api_router_bindings.append(statement)
+            if statement.name == "router":
+                router_bindings.append(statement)
+        elif isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name) and target.id == "APIRouter":
+                    api_router_bindings.append(target)
+                if isinstance(target, ast.Name) and target.id == "router":
+                    router_bindings.append(statement)
+        elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            if statement.target.id == "APIRouter":
+                api_router_bindings.append(statement.target)
+            if statement.target.id == "router":
+                router_bindings.append(statement)
+
+    if len(api_router_imports) != 1 or api_router_bindings != api_router_imports:
+        return ()
+    if len(router_bindings) != 1 or not isinstance(router_bindings[0], ast.Assign):
+        return ()
+
+    router_assignment = router_bindings[0]
+    if len(router_assignment.targets) != 1:
+        return ()
+    target = router_assignment.targets[0]
+    call = router_assignment.value
+    if (
+        not isinstance(target, ast.Name)
+        or target.id != "router"
+        or not isinstance(call, ast.Call)
+        or not isinstance(call.func, ast.Name)
+        or call.func.id != "APIRouter"
+    ):
+        return ()
+
+    prefixes: list[str] = []
+    for call in (call,):
         prefix_keywords = [
             keyword
             for keyword in call.keywords

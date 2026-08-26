@@ -113,7 +113,7 @@ public final class MobileUiState {
     }
 
     public boolean pipelineRunning() {
-        return receiverRunning && qnnReady;
+        return receiverRunning && videoLinkLive && qnnReady;
     }
 
     public boolean selectedOutputTransportReady() {

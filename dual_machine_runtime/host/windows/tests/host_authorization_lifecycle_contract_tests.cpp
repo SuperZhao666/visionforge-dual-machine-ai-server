@@ -48,6 +48,32 @@ int main() {
         "host/windows/include/vfdual/host/application/host_runtime_facade.hpp");
     const std::string facade_source =
         read_source("host/windows/src/host_runtime_facade.cpp");
+    const std::string authorization_header =
+        read_source("host/windows/include/vfdual/host_runtime_service.hpp");
+    const std::string authorization_source =
+        read_source("host/windows/src/host_runtime_authorization.cpp");
+    const std::string authorization_coordinator = read_source(
+        "host/windows/security/src/host_runtime_authorization_coordinator.cpp");
+    const std::string cmake_source = read_source("CMakeLists.txt");
+
+    // MSVC /showIncludes output can be localized.  If Ninja loses that
+    // dependency stream, a header-only HostRuntimeService layout change can
+    // otherwise leave host_runtime_facade.cpp built against the old size and
+    // overlap HostRuntimeAuthorizationCoordinator at runtime.
+    VFDUAL_TEST_REQUIRE(cmake_source.find(
+                            "VFDUAL_HOST_RUNTIME_LAYOUT_HEADER") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(cmake_source.find(
+                            "host/windows/src/host_runtime_service.cpp") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(cmake_source.find(
+                            "host/windows/src/host_runtime_authorization.cpp") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(cmake_source.find(
+                            "host/windows/src/host_runtime_facade.cpp") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(cmake_source.find("OBJECT_DEPENDS") !=
+                         std::string::npos);
 
     const std::string start = slice_between(
         runtime_source,
@@ -56,6 +82,41 @@ int main() {
     VFDUAL_TEST_REQUIRE(start.find("stop_runtime();") != std::string::npos);
     VFDUAL_TEST_REQUIRE(start.find("\n    stop();") == std::string::npos);
     VFDUAL_TEST_REQUIRE(start.find("authorization_gate_->stop()") ==
+                         std::string::npos);
+
+    const std::string publish_step = slice_between(
+        runtime_source,
+        "const bool step_succeeded = application.publish_next();",
+        "const auto now = std::chrono::steady_clock::now();");
+    VFDUAL_TEST_REQUIRE(publish_step.find(
+                            "DesktopVideoStepStatus::data_plane_closed") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(publish_step.find(
+                            "\"host_stream_authorization_closed\"") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(publish_step.find(
+                            "recovery_suppressed=true data_plane_open=false") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(publish_step.find("break;") !=
+                         std::string::npos);
+
+    const std::string recovery_gate = slice_between(
+        runtime_source,
+        "while (!read_stop_requested(mutex_, stop_requested_)) {",
+        "const bool committing_preferred_transport =");
+    VFDUAL_TEST_REQUIRE(recovery_gate.find(
+                            "authorization_gate_->permits_data_plane()") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(recovery_gate.find(
+                            "\"host_stream_authorization_closed\"") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(recovery_gate.find(
+                            "stage=recovery action=stop_stream") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(recovery_gate.find(
+                            "recovery_suppressed=true data_plane_open=false") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(recovery_gate.find("break;") !=
                          std::string::npos);
 
     const std::string stop = slice_between(
@@ -87,6 +148,80 @@ int main() {
                          std::string::npos);
     VFDUAL_TEST_REQUIRE(facade_source.find(
                             "state_->runtime.revoke_data_plane_authorization") !=
+                         std::string::npos);
+
+    // One authenticated peer connection may carry multiple independently
+    // server-signed formal-use sessions.  A terminal old lease must not make
+    // the next sequence-zero session look like a fork, while an active or
+    // rollback-tainted gate remains fail-closed.
+    VFDUAL_TEST_REQUIRE(authorization_header.find(
+                            "reset_data_plane_authorization_for_new_session") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(authorization_source.find(
+                            "authorization_gate_->reset()") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(authorization_coordinator.find(
+                            "successor_session_genesis") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(authorization_coordinator.find(
+                            "UsageLeaseGateState::expired") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(authorization_coordinator.find(
+                            "UsageLeaseGateState::stopped") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(authorization_coordinator.find(
+                            "monotonic_clock_rollback") !=
+                         std::string::npos);
+
+    // Closing an authenticated channel deliberately interrupts the worker's
+    // blocking socket read.  That expected shutdown must not be emitted as a
+    // red transport failure (for example WSAENOTSOCK/WSANOTINITIALISED).
+    const std::string control_read_failure = slice_between(
+        authorization_coordinator,
+        "if (!incoming.succeeded()) {",
+        "auto opened = opener.open(incoming.encoded_record);");
+    const std::size_t stopping_guard = control_read_failure.find(
+        "if (stopping_.load()) break;");
+    const std::size_t failure_log = control_read_failure.find(
+        "\"host_authenticated_control_worker_failed\"");
+    VFDUAL_TEST_REQUIRE(stopping_guard != std::string::npos);
+    VFDUAL_TEST_REQUIRE(failure_log != std::string::npos);
+    VFDUAL_TEST_REQUIRE(stopping_guard < failure_log);
+
+    const std::size_t reset_for_successor = authorization_coordinator.find(
+        "runtime_.reset_data_plane_authorization_for_new_session()");
+    const std::size_t install_successor = authorization_coordinator.find(
+        "runtime_.install_confirmed_peer_binding(", reset_for_successor);
+    VFDUAL_TEST_REQUIRE(reset_for_successor != std::string::npos);
+    VFDUAL_TEST_REQUIRE(install_successor != std::string::npos);
+    VFDUAL_TEST_REQUIRE(reset_for_successor < install_successor);
+
+    const std::string facade_start = slice_between(
+        facade_source,
+        "bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& error)",
+        "void HostRuntimeFacade::request_stop() noexcept");
+    const std::size_t first_pair_start =
+        facade_start.find("state_->first_pairing.start(");
+    const std::size_t protected_runtime_start =
+        facade_start.find("state_->runtime.start(settings, error)");
+    VFDUAL_TEST_REQUIRE(first_pair_start != std::string::npos);
+    VFDUAL_TEST_REQUIRE(protected_runtime_start != std::string::npos);
+    VFDUAL_TEST_REQUIRE(first_pair_start < protected_runtime_start);
+    VFDUAL_TEST_REQUIRE(facade_start.find(
+                            "state_->first_pairing.provisional_pair_binding()") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_start.find(
+                            "if (persisted_pair.has_value() ||") !=
+                         std::string::npos);
+    const std::size_t wireless_discovery = facade_start.find(
+        "vfdual::discover_wireless_lan_mobile_session(");
+    VFDUAL_TEST_REQUIRE(wireless_discovery != std::string::npos);
+    VFDUAL_TEST_REQUIRE(first_pair_start < wireless_discovery);
+    VFDUAL_TEST_REQUIRE(wireless_discovery < protected_runtime_start);
+    VFDUAL_TEST_REQUIRE(facade_start.find("\"0.0.0.0\"") !=
+                         std::string::npos);
+    VFDUAL_TEST_REQUIRE(facade_start.find(
+                            "state_->runtime.stop();") ==
                          std::string::npos);
     return EXIT_SUCCESS;
 }
