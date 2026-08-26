@@ -9,6 +9,7 @@
 #include "vfdual/host_release_version.hpp"
 #include "vfdual/host_runtime_service.hpp"
 #include "vfdual/host_runtime_authorization_coordinator.hpp"
+#include "vfdual/host_ui_failure_copy.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -18,14 +19,17 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace vfdual::host::application {
@@ -44,6 +48,18 @@ namespace {
     std::free(local_app_data);
     return root / "VisionForge" / "DualMachine" /
         "host-pair-binding-v1.state";
+}
+
+void pause_wireless_discovery_retry(
+    const std::stop_token stop_token,
+    const std::chrono::milliseconds duration) noexcept {
+    constexpr auto kPollInterval = std::chrono::milliseconds{100};
+    auto remaining = duration;
+    while (!stop_token.stop_requested() && remaining.count() > 0) {
+        const auto interval = (std::min)(remaining, kPollInterval);
+        std::this_thread::sleep_for(interval);
+        remaining -= interval;
+    }
 }
 
 }  // namespace
@@ -128,10 +144,45 @@ struct HostRuntimeFacade::State final {
         return true;
     }
 
+    bool start_wireless_discovery_retries(std::string& error) noexcept {
+        if (wireless_discovery_retry_worker.joinable()) return true;
+        try {
+            wireless_discovery_retry_worker = std::jthread(
+                [this](const std::stop_token stop_token) noexcept {
+                    // The synchronous probe in HostRuntimeFacade::start keeps
+                    // the fast path immediate.  This short delay avoids
+                    // competing with HostRuntimeService's initial CAT6/WLAN
+                    // bootstrap while still covering a card entered after the
+                    // user clicked Start.
+                    pause_wireless_discovery_retry(
+                        stop_token, std::chrono::seconds{2});
+                    while (!stop_token.stop_requested()) {
+                        if (!authorization.has_authenticated_channel()) {
+                            (void)vfdual::discover_wireless_lan_mobile_session(
+                                std::chrono::milliseconds{1'500}, stop_token);
+                        }
+                        pause_wireless_discovery_retry(
+                            stop_token, std::chrono::milliseconds{500});
+                    }
+                });
+        } catch (...) {
+            error = "Host wireless discovery recovery worker could not start.";
+            return false;
+        }
+        return true;
+    }
+
+    void stop_wireless_discovery_retries() noexcept {
+        if (!wireless_discovery_retry_worker.joinable()) return;
+        wireless_discovery_retry_worker.request_stop();
+        wireless_discovery_retry_worker.join();
+    }
+
     void stop_security_services() noexcept {
         // Never hold the lifecycle mutex while joining the first-pair worker:
         // its server-confirmed callback may be finishing a control-listener
         // replacement through start_authenticated_control().
+        stop_wireless_discovery_retries();
         first_pairing.stop();
         std::lock_guard lifecycle_lock(security_lifecycle_mutex);
         authenticated_control.stop();
@@ -147,6 +198,7 @@ struct HostRuntimeFacade::State final {
     std::mutex security_lifecycle_mutex;
     vfdual::HostFirstPairingServiceV1 first_pairing;
     vfdual::HostAuthenticatedControlServiceV1 authenticated_control;
+    std::jthread wireless_discovery_retry_worker;
 };
 
 HostRuntimeFacade::HostRuntimeFacade(vfdual::IsolatedDhcpServer* owner)
@@ -245,6 +297,10 @@ bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& erro
         (void)vfdual::discover_wireless_lan_mobile_session(
             std::chrono::milliseconds{1'500});
     }
+    if (!state_->start_wireless_discovery_retries(error)) {
+        state_->stop_security_services();
+        return false;
+    }
     vfdual::HostStreamSettings settings{};
     settings.local_host = request.local_host;
     settings.phone_host = request.phone_host;
@@ -283,6 +339,16 @@ bool HostRuntimeFacade::start(const HostStartRequest& request, std::string& erro
             state_->authenticated_control.last_error();
         if (!authenticated_error.empty()) {
             error += " authenticated_control={" + authenticated_error + '}';
+        }
+        // A click made before activation intentionally leaves the security
+        // listeners and WLAN discovery recovery alive.  The GUI owns this
+        // pending user request and will call stop() if it is cancelled; once
+        // the authenticated lease arrives it performs one protected retry.
+        // For every non-authorization startup failure, stop the background
+        // probe immediately so a failed capture/encoder configuration cannot
+        // leave recovery work behind.
+        if (!vfdual::host_failure_is_authorization_pending(error)) {
+            state_->stop_wireless_discovery_retries();
         }
         return false;
     }
